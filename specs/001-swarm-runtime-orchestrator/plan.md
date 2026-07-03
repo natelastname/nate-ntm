@@ -16,9 +16,9 @@ Implement a single-swarm, event-driven nate_ntm runtime daemon that owns all ACP
 
 **Primary Dependencies**:
 - Python standard library: `asyncio`, `subprocess`, `signal`, `logging`, `pathlib`, `json`
-- OpenHands ACP client / protocol support via `mcp_agent_mail` and associated tooling
-- Agent Mail client or HTTP API wrapper for mailbox access
-- JSON-RPC server or equivalent request/response protocol layer for the local runtime control API
+- OpenHands ACP client/protocol support for agent subprocess control
+- `mcp_agent_mail` client or HTTP/MCP API wrapper for mailbox coordination
+- JSON-RPC-style server layer over localhost WebSocket for the runtime control API
 
 **Storage**:
 - Project-local filesystem only for MVP.

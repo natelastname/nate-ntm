@@ -11,7 +11,7 @@ The goal is to:
   - Resume a previous swarm
   - Inspect a single agent in detail
 
-The transport is assumed to be **JSON-RPC-style** over a local TCP socket, but the shapes below can be adapted to an equivalent request/response protocol if needed.
+The transport is assumed to be a **JSON-RPC-style protocol over a localhost WebSocket** (for example, `ws://127.0.0.1:<port>`), but the shapes below can be adapted to an equivalent bidirectional request/response protocol if needed.
 
 > NOTE: All examples below use JSON for clarity. Exact error codes and additional fields (e.g., pagination, filtering) can be refined during implementation without changing the core responsibilities.
 
@@ -57,6 +57,10 @@ The transport is assumed to be **JSON-RPC-style** over a local TCP socket, but t
 
 ## 2. Lifecycle Methods
 
+> **MVP lifecycle rule:**
+> - The daemon is started and given `create`/`resume` semantics by the **CLI** (for example, `nate-ntm runtime start --project /abs/path --mode create|resume`).
+> - The runtime control API assumes a running daemon and focuses on observation and controlled shutdown.
+
 ### 2.1 `runtime.get_status`
 
 Return high-level status of the Runtime and Swarm.
@@ -90,34 +94,7 @@ Return high-level status of the Runtime and Swarm.
 }
 ```
 
-### 2.2 `runtime.start_swarm`
-
-Start a new swarm (or resume if metadata already exists) for the current project directory.
-
-**Request:**
-
-```json
-{
-  "jsonrpc": "2.0",
-  "method": "runtime.start_swarm",
-  "params": {
-    "mode": "create" | "resume"
-  },
-  "id": 2
-}
-```
-
-**Result:**
-
-```json
-{
-  "swarm_id": "default",
-  "status": "RuntimeStatus",
-  "agent_counts": { /* same shape as runtime.get_status */ }
-}
-```
-
-### 2.3 `runtime.shutdown`
+### 2.2 `runtime.shutdown`
 
 Request a graceful shutdown of the Runtime and its swarm.
 
@@ -342,9 +319,9 @@ Recommended error code ranges (non-exhaustive):
 
 This contract is intentionally minimal and focused on:
 
-- Making it possible to **start, resume, and shut down** the swarm.
 - Allowing clients to **observe swarm and agent status**.
 - Enabling **detailed inspection and live event streaming** for individual agents.
+- Providing a controlled way to **shut down** the runtime daemon.
 
 Features explicitly **out of scope for the MVP** (but possible future extensions):
 
