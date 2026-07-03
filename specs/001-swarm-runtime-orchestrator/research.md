@@ -15,10 +15,10 @@ This document captures key technical decisions and rationale made during `/speck
 
 ## 2. Runtime Control API Transport
 
-- **Decision**: Expose a localhost-only, bidirectional control API using a JSON-RPC-style request/response protocol over a local TCP socket.
+- **Decision**: Expose a localhost-only, bidirectional control API using a JSON-RPC-style request/response protocol over a localhost WebSocket.
 - **Rationale**:
   - JSON-RPC is simple, widely understood, and maps naturally to CLI/TUI/web clients.
-  - Local TCP socket keeps the transport decoupled from stdio and from any particular HTTP framework while still being easy to work with.
+  - A localhost WebSocket keeps the transport decoupled from stdio and from any particular HTTP framework while still being easy to work with, and it aligns with the runtime API contract.
   - Restricting to `localhost` aligns with the MVP security/trust boundary and is consistent with the spec.
 - **Alternatives Considered**:
   - **HTTP/REST**: More tooling support, but tends to encourage heavier frameworks and more surface area than needed for a local control API.
