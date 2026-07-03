@@ -1,0 +1,18 @@
+{
+  "user_prompt_submit": [
+    {
+      "matcher": "*",
+      "hooks": [
+        {"command": ".openhands/hooks/speckit-dispatch.py before", "timeout": 60}
+      ]
+    }
+  ],
+  "stop": [
+    {
+      "matcher": "*",
+      "hooks": [
+        {"command": ".openhands/hooks/speckit-dispatch.py after", "timeout": 60}
+      ]
+    }
+  ]
+}
