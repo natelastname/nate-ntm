@@ -75,7 +75,7 @@ description: "Implementation tasks for Feature 001: nate_ntm Swarm Runtime Orche
 - [ ] T017 [US1] Implement scheduler logic in `src/nate_ntm/runtime/scheduler.py` for processing startup, subprocess, ACP, and Agent Mail events so that swarm-level and per-agent status remain accurate in `RuntimeState`.
 - [x] T018 [US1] Implement the `runtime.get_status` handler in `src/nate_ntm/api/server.py` and its runtime-facing implementation in `src/nate_ntm/runtime/daemon.py` to return `RuntimeStatus` and aggregate agent counts as specified in `specs/001-swarm-runtime-orchestrator/contracts/runtime-api.md`.
 - [x] T019 [US1] Implement the `swarm.get_overview` handler in `src/nate_ntm/api/server.py` and support function in `src/nate_ntm/runtime/daemon.py` to return per-agent summaries (ID, display name, status, `has_unread_mail`, `last_error`) consistent with the contract.
-- [ ] T020 [P] [US1] Add integration tests for swarm startup and status reporting in `tests/integration/quickstart/test_start_and_status_us1.py`, covering SC-001 and the US1 acceptance scenarios.
+- [x] T020 [P] [US1] Add integration tests for swarm startup and status reporting in `tests/integration/quickstart/test_start_and_status_us1.py`, covering SC-001 and the US1 acceptance scenarios.
 - [x] T021 [P] [US1] Add a CLI integration test in `tests/integration/quickstart/test_runtime_cli_us1.py` that runs `nate-ntm runtime start --project <tmp_project>` and verifies `runtime.get_status` returns `Running` with correct agent counts.
 
 ---

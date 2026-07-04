@@ -1,0 +1,205 @@
+"""Quickstart-style integration tests for US1 swarm startup and status.
+
+These tests correspond to T020 in ``tasks.md`` and exercise a thin
+end-to-end path from a project directory on disk through:
+
+* ``RuntimeConfig`` resolution for that project.
+* ``MetadataStore`` / ``SwarmMetadata`` / ``AgentMetadata`` persistence
+  under ``.nate_ntm/``.
+* ``RuntimeDaemon.resume`` startup semantics.
+* ``RuntimeApiServer`` handlers for ``runtime.get_status`` and
+  ``swarm.get_overview``.
+
+The goal is to cover the spirit of SC-001 and the US1 acceptance
+scenarios without requiring the full scheduler, Agent Mail, or ACP
+integrations yet. Agent lifecycle behavior is simulated by seeding
+``RuntimeState.agents`` directly; later tasks (T016/T017) will make
+these states the product of real subprocess and scheduler activity.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime
+from pathlib import Path
+from typing import Tuple
+
+from nate_ntm.api.server import RuntimeApiServer
+from nate_ntm.config.runtime_config import RuntimeConfig, load_runtime_config
+from nate_ntm.runtime.daemon import RuntimeDaemon
+from nate_ntm.runtime.metadata_store import AgentMetadata, MetadataStore, SwarmMetadata
+from nate_ntm.runtime.state import AgentRuntimeState, AgentStatus, RuntimeStatus
+
+
+def _make_started_daemon_with_agents(
+    tmp_path: Path,
+) -> Tuple[RuntimeDaemon, RuntimeApiServer, RuntimeConfig]:
+    """Create a started RuntimeDaemon with persisted swarm/agent metadata.
+
+    This helper mirrors the "Given a valid project directory and
+    configured external services" setup from US1:
+
+    * A project directory exists on disk.
+    * Swarm and agent metadata are written under ``.nate_ntm/``.
+    * The runtime is started in ``resume`` mode, loading that metadata.
+    * In-memory agent runtime state reflects a mix of lifecycle states.
+    """
+
+    project = tmp_path / "project"
+    project.mkdir(parents=True, exist_ok=True)
+
+    config: RuntimeConfig = load_runtime_config(project_path=project)
+    store = MetadataStore(config=config)
+
+    now = datetime(2026, 7, 3, 12, 0, 0)
+
+    # Define three agents with minimal persisted metadata. The runtime
+    # will use ``RuntimeState.agents`` for live status; these records
+    # ensure that swarm-level metadata is also present and consistent.
+    agent_running = AgentMetadata(
+        agent_id="nav-1",
+        display_name="Navigator 1",
+        last_known_status="Running",
+    )
+    agent_idle = AgentMetadata(
+        agent_id="nav-2",
+        display_name="Navigator 2",
+        last_known_status="Idle",
+    )
+    agent_failed = AgentMetadata(
+        agent_id="nav-3",
+        display_name="Navigator 3",
+        last_known_status="Failed",
+    )
+
+    swarm = SwarmMetadata(
+        swarm_id=config.swarm_id,
+        project_path=config.project_path,
+        agent_mail_project_id="mail-project-1",
+        created_at=now,
+        last_updated_at=now,
+        agents={
+            agent_running.agent_id: agent_running,
+            agent_idle.agent_id: agent_idle,
+            agent_failed.agent_id: agent_failed,
+        },
+    )
+
+    # Persist swarm and agent metadata to disk to exercise the
+    # MetadataStore layout and SwarmMetadata validation on resume.
+    store.save_swarm_metadata(swarm)
+    store.save_agent_metadata(agent_running)
+    store.save_agent_metadata(agent_idle)
+    store.save_agent_metadata(agent_failed)
+
+    # Construct a RuntimeDaemon in resume mode, which will re-load and
+    # validate the swarm metadata we just wrote.
+    daemon = RuntimeDaemon.resume(config)
+
+    # Seed in-memory runtime state to simulate scheduler/agent behavior.
+    daemon.state.agents = {
+        "nav-1": AgentRuntimeState(
+            agent_id="nav-1", status=AgentStatus.RUNNING
+        ),
+        "nav-2": AgentRuntimeState(
+            agent_id="nav-2", status=AgentStatus.IDLE
+        ),
+        "nav-3": AgentRuntimeState(
+            agent_id="nav-3",
+            status=AgentStatus.FAILED,
+            last_error="boom",
+        ),
+    }
+
+    # Drive the high-level runtime lifecycle into ``Running``.
+    daemon.start()
+
+    server = RuntimeApiServer(daemon=daemon)
+    return daemon, server, config
+
+
+def test_start_and_status_us1_runtime_get_status_reports_running_and_counts(
+    tmp_path: Path,
+) -> None:
+    """SC-001: runtime.get_status reports Running with accurate counts.
+
+    From a standing start with valid configuration, this exercises a
+    create-once-then-resume path where the runtime loads swarm metadata
+    for a project and, once started, exposes aggregate agent counts via
+    ``runtime.get_status``.
+    """
+
+    daemon, server, config = _make_started_daemon_with_agents(tmp_path)
+
+    # Sanity-check daemon lifecycle state.
+    assert daemon.state.status is RuntimeStatus.RUNNING
+
+    payload = server.get_runtime_status()
+
+    assert payload["status"] == RuntimeStatus.RUNNING.value
+    assert payload["project_path"] == str(config.project_path)
+    assert payload["swarm_id"] == config.swarm_id
+
+    counts = payload["agent_counts"]
+    assert counts == {
+        "total": 3,
+        "starting": 0,
+        "idle": 1,
+        "running": 1,
+        "waiting": 0,
+        "failed": 1,
+    }
+
+
+def test_start_and_status_us1_swarm_overview_returns_agent_summaries(
+    tmp_path: Path,
+) -> None:
+    """US1: swarm.get_overview returns per-agent summaries and counts.
+
+    This complements the previous test by validating that
+    ``swarm.get_overview`` exposes:
+
+    * Swarm-level identifiers and runtime status.
+    * Aggregate agent counts consistent with ``runtime.get_status``.
+    * Per-agent summaries that join persisted metadata (ID/display
+      name) with live runtime status and last error.
+    """
+
+    daemon, server, config = _make_started_daemon_with_agents(tmp_path)
+
+    overview = server.get_swarm_overview()
+
+    assert overview["swarm_id"] == config.swarm_id
+    assert overview["project_path"] == str(config.project_path)
+    assert overview["runtime_status"] == RuntimeStatus.RUNNING.value
+
+    # Agent counts should mirror those from runtime.get_status.
+    counts = overview["agent_counts"]
+    assert counts == {
+        "total": 3,
+        "starting": 0,
+        "idle": 1,
+        "running": 1,
+        "waiting": 0,
+        "failed": 1,
+    }
+
+    agents = {a["agent_id"]: a for a in overview["agents"]}
+    assert set(agents.keys()) == {"nav-1", "nav-2", "nav-3"}
+
+    a1 = agents["nav-1"]
+    assert a1["display_name"] == "Navigator 1"
+    assert a1["status"] == AgentStatus.RUNNING.value
+    assert a1["has_unread_mail"] is False
+    assert a1["last_error"] is None
+
+    a2 = agents["nav-2"]
+    assert a2["display_name"] == "Navigator 2"
+    assert a2["status"] == AgentStatus.IDLE.value
+    assert a2["has_unread_mail"] is False
+    assert a2["last_error"] is None
+
+    a3 = agents["nav-3"]
+    assert a3["display_name"] == "Navigator 3"
+    assert a3["status"] == AgentStatus.FAILED.value
+    assert a3["has_unread_mail"] is False
+    assert a3["last_error"] == "boom"
