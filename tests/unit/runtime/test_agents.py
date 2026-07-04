@@ -151,3 +151,67 @@ def test_ensure_agents_registered_preserves_existing_runtime_entries(tmp_path) -
 
     assert "a2" in state.agents
     assert state.agents["a2"].status is AgentStatus.STARTING
+
+
+def test_launch_all_agents_transitions_starting_to_idle_and_sets_subprocess(tmp_path) -> None:
+    project = tmp_path / "project"
+    config = _make_config(project)
+    state = _make_runtime_state(config)
+
+    a1 = AgentMetadata(agent_id="a1", display_name="Agent One")
+    a2 = AgentMetadata(agent_id="a2", display_name="Agent Two")
+    swarm = _make_swarm_metadata(config, agents={"a1": a1, "a2": a2})
+
+    supervisor = AgentSupervisor(config=config, state=state, swarm_metadata=swarm)
+
+    # Initially there should be no runtime entries.
+    assert state.agents == {}
+
+    supervisor.launch_all_agents()
+
+    # All configured agents should now have runtime state entries.
+    assert set(state.agents.keys()) == {"a1", "a2"}
+
+    # New agents should be marked Idle with a subprocess handle and event stream.
+    for runtime_state in state.agents.values():
+        assert runtime_state.status is AgentStatus.IDLE
+        assert runtime_state.subprocess_handle is not None
+        assert isinstance(runtime_state.event_stream, AgentEventStream)
+
+
+
+def test_launch_all_agents_is_idempotent_and_preserves_non_starting_status(tmp_path) -> None:
+    project = tmp_path / "project"
+    config = _make_config(project)
+    state = _make_runtime_state(config)
+
+    a1 = AgentMetadata(agent_id="a1", display_name="Agent One")
+    a2 = AgentMetadata(agent_id="a2", display_name="Agent Two")
+    swarm = _make_swarm_metadata(config, agents={"a1": a1, "a2": a2})
+
+    supervisor = AgentSupervisor(config=config, state=state, swarm_metadata=swarm)
+
+    supervisor.launch_all_agents()
+
+    # Capture subprocess handles from the first launch.
+    first_handles = {
+        agent_id: runtime_state.subprocess_handle
+        for agent_id, runtime_state in state.agents.items()
+    }
+
+    # Simulate scheduler or runtime changing one agent's status away from STARTING.
+    state.agents["a1"].status = AgentStatus.RUNNING
+
+    supervisor.launch_all_agents()
+
+    # Subprocess handles should be stable across calls (idempotent behavior).
+    second_handles = {
+        agent_id: runtime_state.subprocess_handle
+        for agent_id, runtime_state in state.agents.items()
+    }
+    assert second_handles == first_handles
+
+    # Non-STARTING statuses should be preserved.
+    assert state.agents["a1"].status is AgentStatus.RUNNING
+    assert state.agents["a2"].status is AgentStatus.IDLE
+

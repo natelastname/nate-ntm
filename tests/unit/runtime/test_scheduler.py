@@ -40,7 +40,7 @@ def _make_swarm_metadata(
     )
 
 
-def test_scheduler_start_registers_agents_via_supervisor(tmp_path) -> None:
+def test_scheduler_start_registers_and_launches_agents_via_supervisor(tmp_path) -> None:
     project = tmp_path / "project"
     config = _make_config(project)
     state = _make_runtime_state(config)
@@ -66,7 +66,8 @@ def test_scheduler_start_registers_agents_via_supervisor(tmp_path) -> None:
 
     # And the runtime state should contain entries for the configured agents.
     assert set(state.agents.keys()) == {"a1"}
-    assert state.agents["a1"].status is AgentStatus.STARTING
+    assert state.agents["a1"].status is AgentStatus.IDLE
+    assert state.agents["a1"].subprocess_handle is not None
 
 
 def test_scheduler_start_is_idempotent(tmp_path) -> None:
@@ -154,6 +155,7 @@ def test_scheduler_respects_preseeded_runtime_state(tmp_path) -> None:
     assert state.agents["a1"] is preexisting
     assert state.agents["a1"].status is AgentStatus.RUNNING
 
-    # And the second agent should have been added.
+    # And the second agent should have been added and launched.
     assert "a2" in state.agents
-    assert state.agents["a2"].status is AgentStatus.STARTING
+    assert state.agents["a2"].status is AgentStatus.IDLE
+    assert state.agents["a2"].subprocess_handle is not None

@@ -203,3 +203,84 @@ def test_start_and_status_us1_swarm_overview_returns_agent_summaries(
     assert a3["status"] == AgentStatus.FAILED.value
     assert a3["has_unread_mail"] is False
     assert a3["last_error"] == "boom"
+
+
+
+def test_scheduler_launches_agents_from_swarm_metadata(tmp_path: Path) -> None:
+    """US1 dev-mode: scheduler launches agents based on SwarmMetadata.
+
+    This test exercises the path where agent runtime state is derived from
+    persisted swarm metadata via RuntimeDaemon.resume() and the
+    RuntimeScheduler/AgentSupervisor wiring, rather than being manually
+    seeded in tests. It validates that, in dev-mode, configured agents are
+    treated as launched (Idle) once the runtime has started.
+    """
+
+    project = tmp_path / "project"
+    project.mkdir(parents=True, exist_ok=True)
+
+    config: RuntimeConfig = load_runtime_config(project_path=project)
+    store = MetadataStore(config=config)
+
+    now = datetime(2026, 7, 3, 12, 0, 0)
+
+    a1 = AgentMetadata(agent_id="nav-1", display_name="Navigator 1")
+    a2 = AgentMetadata(agent_id="nav-2", display_name="Navigator 2")
+
+    swarm = SwarmMetadata(
+        swarm_id=config.swarm_id,
+        project_path=config.project_path,
+        agent_mail_project_id="mail-project-1",
+        created_at=now,
+        last_updated_at=now,
+        agents={
+            a1.agent_id: a1,
+            a2.agent_id: a2,
+        },
+    )
+
+    # Persist swarm and agent metadata to mirror the create-then-resume
+    # layout. RuntimeDaemon.resume() will load the swarm metadata and
+    # construct RuntimeState/scheduler wiring.
+    store.save_swarm_metadata(swarm)
+    store.save_agent_metadata(a1)
+    store.save_agent_metadata(a2)
+
+    daemon = RuntimeDaemon.resume(config)
+
+    # Do not manually seed daemon.state.agents; instead rely on
+    # RuntimeScheduler.start() → AgentSupervisor.launch_all_agents() to
+    # derive runtime state from metadata and dev-mode "launch" behavior.
+    assert daemon.state.agents == {}
+
+    daemon.start()
+
+    assert daemon.state.status is RuntimeStatus.RUNNING
+
+    # After startup, runtime state should contain entries for the
+    # configured agents, marked as Idle to represent dev-mode launched
+    # subprocesses.
+    assert set(daemon.state.agents.keys()) == {"nav-1", "nav-2"}
+
+    for runtime_state in daemon.state.agents.values():
+        assert runtime_state.status is AgentStatus.IDLE
+        assert runtime_state.subprocess_handle is not None
+
+    # The public runtime.get_status API should reflect these counts.
+    server = RuntimeApiServer(daemon=daemon)
+    payload = server.get_runtime_status()
+
+    assert payload["status"] == RuntimeStatus.RUNNING.value
+    assert payload["project_path"] == str(config.project_path)
+    assert payload["swarm_id"] == config.swarm_id
+
+    counts = payload["agent_counts"]
+    assert counts == {
+        "total": 2,
+        "starting": 0,
+        "idle": 2,
+        "running": 0,
+        "waiting": 0,
+        "failed": 0,
+    }
+

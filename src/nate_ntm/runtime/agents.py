@@ -112,21 +112,46 @@ class AgentSupervisor:
     # iterate on the scheduler and adapter implementations.
 
     def launch_all_agents(self) -> None:
-        """Launch all configured agents (stub for US1).
+        """Launch all configured agents (dev-mode implementation for US1).
 
-        In the full implementation, this will:
+        This helper does **not** start real subprocesses yet. Instead it
+        provides a deterministic, in-memory approximation of a launched
+        agent suitable for unit and integration tests:
 
-        * Inspect each :class:`AgentMetadata.launch_config`.
-        * Start a subprocess per agent.
-        * Populate ``AgentRuntimeState.subprocess_handle`` and initial
-          ACP connection state.
+        * Ensures that :class:`RuntimeState.agents` contains entries for
+          all configured agents (via :meth:`ensure_agents_registered`).
+        * For each agent currently in ``Starting`` state without a
+          ``subprocess_handle``, attaches a lightweight placeholder
+          object and transitions the status to ``Idle``.
 
-        For now, we limit ourselves to ensuring that runtime state
-        entries exist; subprocess management is deferred to a later
-        revision of T016.
+        Existing runtime entries with a non-``Starting`` status are left
+        unchanged so that tests (and future scheduler logic) can seed
+        richer lifecycle behavior before calling this method.
         """
 
+        # Capture the set of agents that already had runtime state prior
+        # to this call so that we can distinguish newly registered agents
+        # from entries that were pre-seeded by tests or the scheduler.
+        existing_ids = set(self.state.agents.keys())
+
+        # Ensure that every configured agent has a runtime state entry; this
+        # is idempotent and preserves any pre-seeded entries.
         self.ensure_agents_registered()
+
+        # Simulate successful subprocess launch for any *newly* registered
+        # agents that are still in the initial ``Starting`` state by:
+        #
+        # * Attaching a simple opaque object as ``subprocess_handle``.
+        # * Marking the agent as ``Idle`` to represent a ready-but-not-
+        #   currently-running subprocess.
+        for agent_id, runtime_state in self.state.agents.items():
+            if (
+                agent_id not in existing_ids
+                and runtime_state.status is AgentStatus.STARTING
+                and runtime_state.subprocess_handle is None
+            ):
+                runtime_state.subprocess_handle = object()
+                runtime_state.status = AgentStatus.IDLE
 
     # Additional lifecycle hooks (e.g. ``handle_subprocess_exit``) will
     # be introduced alongside concrete scheduler and ACP integrations.

@@ -47,18 +47,25 @@ class RuntimeScheduler:
     def start(self) -> None:
         """Initialize scheduler-managed state.
 
-        For US1 this simply ensures that all agents described in
-        :class:`SwarmMetadata` have corresponding entries in
-        :class:`RuntimeState.agents`. More sophisticated behavior (event
-        loop, timers, ACP/Agent Mail integration) will be layered on in
-        future work without changing this high-level entry point.
+        For US1 this wires configured agents into runtime state **and**
+        simulates an initial "launch" via :class:`AgentSupervisor`:
+
+        * All agents described in :class:`SwarmMetadata` gain
+          corresponding entries in :class:`RuntimeState.agents`.
+        * Newly registered agents are transitioned from ``Starting`` to
+          ``Idle`` with a lightweight placeholder subprocess handle.
+
+        More sophisticated behavior (event loop, timers, ACP/Agent Mail
+        integration) will be layered on in future work without changing
+        this high-level entry point.
         """
 
         if self.running:
             return
 
-        # Ensure that runtime state reflects all configured agents.
-        self.agent_supervisor.ensure_agents_registered()
+        # Ensure that runtime state reflects configured agents and that
+        # newly added ones are treated as "launched" in dev-mode.
+        self.agent_supervisor.launch_all_agents()
 
         self.running = True
 
