@@ -293,6 +293,65 @@ def test_runtime_start_with_control_api_passes_agents_to_runner(monkeypatch, tmp
     assert called["mode"] is StartupMode.CREATE
     assert called["agent_count"] == 3
 
+
+
+
+def test_runtime_start_forwards_adapter_cli_flags_to_config_loader(monkeypatch, tmp_path: Path) -> None:
+    """Adapter-related CLI flags are forwarded to load_runtime_config.
+
+    This exercises the T100 wiring from the Typer command down to the
+    configuration loader without requiring a real runtime or metadata
+    store. The runner entrypoint is patched so that the test remains
+    side-effect-light.
+    """
+
+    project = _init_project_without_metadata(tmp_path)
+
+    called: dict[str, object] = {}
+
+    class DummyConfig:
+        pass
+
+    def fake_load_runtime_config(*, project_path, adapter_mode=None, agent_mail_adapter=None, acp_adapter=None, **kwargs):  # type: ignore[override]
+        called["project_path"] = project_path
+        called["adapter_mode"] = adapter_mode
+        called["agent_mail_adapter"] = agent_mail_adapter
+        called["acp_adapter"] = acp_adapter
+        return DummyConfig()
+
+    def fake_run_runtime_with_control_api(config, mode, *args, **kwargs):  # type: ignore[override]
+        called["config"] = config
+        called["mode"] = mode
+
+    monkeypatch.setattr("nate_ntm.cli.load_runtime_config", fake_load_runtime_config)
+    monkeypatch.setattr("nate_ntm.cli.run_runtime_with_control_api", fake_run_runtime_with_control_api)
+
+    result = runner.invoke(
+        app,
+        [
+            "runtime",
+            "start",
+            "--project",
+            str(project),
+            "--mode",
+            "create",
+            "--adapter-mode",
+            "fake",
+            "--agent-mail-adapter",
+            "fake-mail",
+            "--acp-adapter",
+            "fake-acp",
+            "--with-control-api",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert called["project_path"] == project
+    assert called["adapter_mode"] == "fake"
+    assert called["agent_mail_adapter"] == "fake-mail"
+    assert called["acp_adapter"] == "fake-acp"
+    assert isinstance(called["config"], DummyConfig)
+
 def test_runtime_start_default_mode_resume_is_applied(tmp_path: Path) -> None:
     project = _init_project_with_metadata(tmp_path)
 

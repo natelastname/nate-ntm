@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from nate_ntm.config.runtime_config import RuntimeConfig, load_runtime_config
+from nate_ntm.config.runtime_config import AdapterKind, RuntimeConfig, load_runtime_config
 
 
 def test_load_runtime_config_basic_defaults(tmp_path: Path) -> None:
@@ -35,6 +35,93 @@ def test_load_runtime_config_basic_defaults(tmp_path: Path) -> None:
     assert isinstance(config.control_api_port, int)
     assert 1024 < config.control_api_port < 65536
     assert config.swarm_id == "default"
+    assert config.adapter_mode is AdapterKind.FAKE
+    assert config.agent_mail_adapter is None
+    assert config.acp_adapter is None
+
+
+
+
+def test_load_runtime_config_adapter_mode_and_overrides_from_env(tmp_path: Path) -> None:
+    """Adapter selection fields can be driven from environment variables.
+
+    This exercises the T100 behavior where adapter mode and per-adapter
+    overrides are resolved from ``NATE_NTM_*`` environment variables when
+    explicit arguments are not provided.
+    """
+
+    project_dir = tmp_path / "project_env_adapters"
+    project_dir.mkdir()
+
+    env = {
+        "NATE_NTM_PROJECT_DIR": str(project_dir),
+        "NATE_NTM_ADAPTER_MODE": "real",
+        "NATE_NTM_AGENT_MAIL_ADAPTER": "fake",
+        "NATE_NTM_ACP_ADAPTER": "fake",
+    }
+
+    config = load_runtime_config(env=env)
+
+    # env-driven adapter selection should be normalized into AdapterKind values
+    assert config.adapter_mode is AdapterKind.REAL
+    assert config.agent_mail_adapter is AdapterKind.FAKE
+    assert config.acp_adapter is AdapterKind.FAKE
+
+
+
+def test_load_runtime_config_adapter_args_override_env(tmp_path: Path) -> None:
+    """Explicit adapter arguments override any environment variables.
+
+    This ensures that CLI- or caller-supplied adapter selection takes
+    precedence over ``NATE_NTM_*`` variables.
+    """
+
+    project_dir = tmp_path / "project_args_override"
+    project_dir.mkdir()
+
+    env = {
+        "NATE_NTM_PROJECT_DIR": str(project_dir),
+        "NATE_NTM_ADAPTER_MODE": "fake",
+        "NATE_NTM_AGENT_MAIL_ADAPTER": "fake",
+        "NATE_NTM_ACP_ADAPTER": "fake",
+    }
+
+    config = load_runtime_config(
+        env=env,
+        adapter_mode="real",
+        agent_mail_adapter="real",
+        acp_adapter="real",
+    )
+
+    assert config.adapter_mode is AdapterKind.REAL
+    assert config.agent_mail_adapter is AdapterKind.REAL
+    assert config.acp_adapter is AdapterKind.REAL
+
+
+
+def test_load_runtime_config_invalid_adapter_env_raises(tmp_path: Path) -> None:
+    """Invalid adapter kinds from environment raise ``ValueError``.
+
+    Error messages should identify the originating field so that
+    misconfiguration is easy to diagnose.
+    """
+
+    project_dir = tmp_path / "project_invalid_adapter_env"
+    project_dir.mkdir()
+
+    env = {
+        "NATE_NTM_PROJECT_DIR": str(project_dir),
+        "NATE_NTM_ADAPTER_MODE": "bogus",
+    }
+
+    with pytest.raises(ValueError) as excinfo:
+        load_runtime_config(env=env)
+
+    msg = str(excinfo.value)
+    # The helper annotates env-derived fields as ``env:<name>``.
+    assert "env:adapter_mode" in msg
+    assert "bogus" in msg
+
 
 
 def test_load_runtime_config_metadata_dir_validation(tmp_path: Path) -> None:

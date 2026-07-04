@@ -33,8 +33,9 @@ from pathlib import Path
 from typing import Optional
 
 from ..config.runtime_config import RuntimeConfig
-from .acp_client import BaseAcpClient, FakeAcpClient
-from .agent_mail_client import BaseAgentMailClient, FakeAgentMailClient
+from .acp_client import BaseAcpClient
+from .adapters import RuntimeAdapters, create_runtime_adapters
+from .agent_mail_client import BaseAgentMailClient
 from .agents import AgentSupervisor
 from .metadata_store import MetadataStore, SwarmMetadata
 from .scheduler import RuntimeScheduler
@@ -143,9 +144,11 @@ class RuntimeDaemon:
     # presence without needing to instantiate it manually.
     scheduler: RuntimeScheduler | None = None
 
-    # Runtime-owned integration clients. For the MVP we default these to
-    # the in-memory Fake* implementations; future work may allow more
-    # configurable adapters.
+    # Runtime-owned integration clients. These are typically constructed
+    # once per process (or logical runtime instance) and reused for the
+    # lifetime of the daemon. For the MVP and US1–US3 they default to
+    # in-memory "fake" adapters, with configuration hooks added in T100
+    # to support additional implementations in later phases.
     agent_mail_client: BaseAgentMailClient | None = None
     acp_client: BaseAcpClient | None = None
 
@@ -155,6 +158,7 @@ class RuntimeDaemon:
         config: RuntimeConfig,
         *,
         agent_count: int | None = None,
+        adapters: RuntimeAdapters | None = None,
     ) -> "RuntimeDaemon":
         """Construct a :class:`RuntimeDaemon` in `create` mode.
 
@@ -166,30 +170,30 @@ class RuntimeDaemon:
         ``Starting`` status.
 
         When ``agent_count`` is provided and greater than zero, a simple
-        set of fake agents is created using the runtime-owned
-        :class:`FakeAgentMailClient` and :class:`FakeAcpClient`. Their
-        Agent Mail identities and ACP conversation IDs are persisted in
-        both :class:`SwarmMetadata` and per-agent metadata files so that
+        set of agents is created using the runtime-owned Agent Mail and
+        ACP adapters supplied via ``adapters`` (for the MVP, the
+        in-memory fake implementations). Their Agent Mail identities and
+        ACP conversation IDs are persisted in both
+        :class:`SwarmMetadata` and per-agent metadata files so that
         later resume flows can reuse them.
         """
 
         check_startup_preconditions(config, StartupMode.CREATE)
         store = MetadataStore(config=config)
 
-        # For US1 we rely on the in-memory FakeAgentMailClient, which
-        # derives a deterministic project identifier from the
-        # RuntimeConfig. This ID is persisted in SwarmMetadata so that
-        # later resume flows (US2) can reuse the same Agent Mail
-        # project.
-        agent_mail_client: BaseAgentMailClient = FakeAgentMailClient(config=config)
+        if adapters is None:
+            adapters = create_runtime_adapters(config)
+
+        agent_mail_client: BaseAgentMailClient = adapters.agent_mail
         agent_mail_project_id = agent_mail_client.ensure_project()
 
-        # Construct an in-memory ACP client so that we can allocate
-        # per-agent conversation identifiers for newly created agents.
-        acp_client: BaseAcpClient = FakeAcpClient(config=config)
+        # Use the configured ACP adapter so that conversation identifiers
+        # are derived consistently with later resume flows.
+        acp_client: BaseAcpClient = adapters.acp
 
-        # Optionally create a small set of initial agents with fake
-        # Agent Mail identities and ACP conversations.
+        # Optionally create a small set of initial agents with Agent Mail
+        # identities and ACP conversations allocated through the selected
+        # adapters.
         agents: dict[str, "AgentMetadata"] = {}
         if agent_count is not None and agent_count > 0:
             from .metadata_store import AgentMetadata  # local import to avoid cycles
@@ -259,12 +263,23 @@ class RuntimeDaemon:
         )
 
     @classmethod
-    def resume(cls, config: RuntimeConfig) -> "RuntimeDaemon":
+    def resume(
+        cls,
+        config: RuntimeConfig,
+        *,
+        adapters: RuntimeAdapters | None = None,
+    ) -> "RuntimeDaemon":
         """Construct a :class:`RuntimeDaemon` in `resume` mode.
 
         This helper validates that swarm metadata exists and is
         consistent with the provided configuration, then initializes a
         fresh :class:`RuntimeState` in the `Starting` status.
+
+        The same adapter instances (or compatible equivalents) that were
+        used during :meth:`create` should be supplied via ``adapters`` so
+        that identifiers derived from the integration layer (for example,
+        Agent Mail project IDs and ACP conversation IDs) can be
+        revalidated against the persisted metadata.
         """
 
         check_startup_preconditions(config, StartupMode.RESUME)
@@ -273,13 +288,16 @@ class RuntimeDaemon:
 
         state = RuntimeState(config=config)
 
-        # Mirror the `create` path and construct in-memory Fake* clients so
+        # Mirror the `create` path and reuse the runtime-owned adapters so
         # that the daemon owns a consistent set of integration adapters
         # regardless of startup mode. For US2 we also enforce FR-009 by
-        # rebinding these clients against the persisted swarm/agent
+        # rebinding these adapters against the persisted swarm/agent
         # metadata and validating that identifiers are reused on resume.
-        agent_mail_client: BaseAgentMailClient = FakeAgentMailClient(config=config)
-        acp_client: BaseAcpClient = FakeAcpClient(config=config)
+        if adapters is None:
+            adapters = create_runtime_adapters(config)
+
+        agent_mail_client: BaseAgentMailClient = adapters.agent_mail
+        acp_client: BaseAcpClient = adapters.acp
 
         agent_supervisor = AgentSupervisor(
             config=config,

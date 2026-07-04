@@ -18,17 +18,39 @@ Key references:
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
-from typing import Mapping, Optional
+from typing import Mapping, Optional, Union
 
 import os
 
-__all__ = ["RuntimeConfig", "load_runtime_config"]
+__all__ = ["AdapterKind", "RuntimeConfig", "load_runtime_config"]
 
 
 _DEFAULT_CONTROL_HOST = "127.0.0.1"
 _DEFAULT_CONTROL_PORT = 8765
 _DEFAULT_SWARM_ID = "default"
+
+
+class AdapterKind(str, Enum):
+    """Adapter selection for runtime integrations.
+
+    The runtime supports multiple families of integration adapters (for
+    example, Agent Mail and ACP clients). ``AdapterKind`` provides a
+    small, explicit vocabulary for selecting which implementation to use
+    for a given run.
+
+    For T100 and the US1–US3 baseline the only fully implemented mode is
+    ``"fake"``, which uses in-memory, dev-mode adapters that do not
+    perform any external I/O. The ``"real"`` mode is reserved for
+    production-ready adapters that talk to actual services and will
+    raise a clear ``NotImplementedError`` until the corresponding Phase
+    6 tasks are completed.
+    """
+
+    FAKE = "fake"
+    REAL = "real"
+
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,6 +78,32 @@ class RuntimeConfig:
     """Logical identifier for the swarm within the project (e.g. ``"default"``)."""
 
 
+    adapter_mode: AdapterKind = AdapterKind.FAKE
+    """Default adapter selection for runtime integrations.
+
+    This field controls which concrete adapter implementations are used
+    for integration points such as Agent Mail and ACP. It provides a
+    coarse global default that can be overridden per adapter via
+    :attr:`agent_mail_adapter` and :attr:`acp_adapter`.
+    """
+
+    agent_mail_adapter: Optional[AdapterKind] = None
+    """Optional override for the Agent Mail adapter kind.
+
+    When ``None`` (the default), :attr:`adapter_mode` is used to select
+    the implementation. When set, this value takes precedence over the
+    global adapter mode.
+    """
+
+    acp_adapter: Optional[AdapterKind] = None
+    """Optional override for the ACP adapter kind.
+
+    When ``None`` (the default), :attr:`adapter_mode` is used to select
+    the implementation. When set, this value takes precedence over the
+    global adapter mode.
+    """
+
+
 def load_runtime_config(
     *,
     project_path: Optional[Path | str] = None,
@@ -63,6 +111,9 @@ def load_runtime_config(
     control_api_host: Optional[str] = None,
     control_api_port: Optional[int | str] = None,
     swarm_id: Optional[str] = None,
+    adapter_mode: Optional[Union[str, AdapterKind]] = None,
+    agent_mail_adapter: Optional[Union[str, AdapterKind]] = None,
+    acp_adapter: Optional[Union[str, AdapterKind]] = None,
     env: Optional[Mapping[str, str]] = None,
 ) -> RuntimeConfig:
     """Construct :class:`RuntimeConfig` from arguments and environment.
@@ -71,7 +122,8 @@ def load_runtime_config(
 
     * Explicit function argument (if provided).
     * Environment variable (if provided in ``env`` or ``os.environ``).
-    * Safe default (for host/port/swarm_id) or derived value (for paths).
+    * Safe default (for host/port/swarm_id/adapter_mode) or derived value
+      (for paths).
 
     Environment variable names:
 
@@ -80,6 +132,9 @@ def load_runtime_config(
     * ``NATE_NTM_CONTROL_HOST`` – control API host
     * ``NATE_NTM_CONTROL_PORT`` – control API port
     * ``NATE_NTM_SWARM_ID`` – swarm identifier
+    * ``NATE_NTM_ADAPTER_MODE`` – default adapter kind (e.g. ``"fake"``)
+    * ``NATE_NTM_AGENT_MAIL_ADAPTER`` – Agent Mail adapter override
+    * ``NATE_NTM_ACP_ADAPTER`` – ACP adapter override
     """
 
     env_mapping: Mapping[str, str]
@@ -95,6 +150,24 @@ def load_runtime_config(
     resolved_host = _resolve_control_host(control_api_host, env_mapping)
     resolved_port = _resolve_control_port(control_api_port, env_mapping)
     resolved_swarm_id = _resolve_swarm_id(swarm_id, env_mapping)
+    resolved_adapter_mode = _resolve_adapter_kind_option(
+        adapter_mode,
+        env_mapping.get("NATE_NTM_ADAPTER_MODE"),
+        field_name="adapter_mode",
+        default=AdapterKind.FAKE,
+    )
+    resolved_agent_mail_adapter = _resolve_adapter_kind_option(
+        agent_mail_adapter,
+        env_mapping.get("NATE_NTM_AGENT_MAIL_ADAPTER"),
+        field_name="agent_mail_adapter",
+        default=None,
+    )
+    resolved_acp_adapter = _resolve_adapter_kind_option(
+        acp_adapter,
+        env_mapping.get("NATE_NTM_ACP_ADAPTER"),
+        field_name="acp_adapter",
+        default=None,
+    )
 
     return RuntimeConfig(
         project_path=resolved_project_path,
@@ -102,7 +175,58 @@ def load_runtime_config(
         control_api_host=resolved_host,
         control_api_port=resolved_port,
         swarm_id=resolved_swarm_id,
+        adapter_mode=resolved_adapter_mode,
+        agent_mail_adapter=resolved_agent_mail_adapter,
+        acp_adapter=resolved_acp_adapter,
     )
+
+
+
+def _coerce_adapter_kind(raw: str, *, field_name: str) -> AdapterKind:
+    """Parse ``raw`` into an :class:`AdapterKind`.
+
+    This helper centralizes validation of adapter selection values from
+    function arguments or environment variables. It accepts the
+    lower-case string names of :class:`AdapterKind` members and raises a
+    :class:`ValueError` for anything else so that misconfiguration fails
+    fast and clearly.
+    """
+
+    normalized = raw.strip().lower()
+    if not normalized:
+        raise ValueError(f"{field_name} must not be empty when provided")
+
+    for kind in AdapterKind:
+        if kind.value == normalized:
+            return kind
+
+    valid = ", ".join(sorted(k.value for k in AdapterKind))
+    raise ValueError(f"Unsupported {field_name!s} {raw!r}; expected one of: {valid}")
+
+
+def _resolve_adapter_kind_option(
+    value: Optional[Union[str, AdapterKind]],
+    env_value: Optional[str],
+    *,
+    field_name: str,
+    default: Optional[AdapterKind],
+) -> Optional[AdapterKind]:
+    """Resolve an optional :class:`AdapterKind` from args/env/default.
+
+    ``value`` (an explicit function argument) wins over ``env_value``
+    (from the environment). If neither is provided, ``default`` is
+    returned as-is.
+    """
+
+    if isinstance(value, AdapterKind):
+        return value
+    if value is not None:
+        return _coerce_adapter_kind(str(value), field_name=field_name)
+
+    if env_value is not None:
+        return _coerce_adapter_kind(env_value, field_name=f"env:{field_name}")
+
+    return default
 
 
 def _resolve_project_path(

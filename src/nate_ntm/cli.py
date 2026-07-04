@@ -44,14 +44,27 @@ class CliStartupMode(str, Enum):
     RESUME = "resume"
 
 
-def _resolve_runtime_config(project: Path) -> RuntimeConfig:
+def _resolve_runtime_config(
+    project: Path,
+    *,
+    adapter_mode: Optional[str] = None,
+    agent_mail_adapter: Optional[str] = None,
+    acp_adapter: Optional[str] = None,
+) -> RuntimeConfig:
     """Resolve a RuntimeConfig from CLI options.
 
     For now we require an explicit `--project` path to keep behavior
-    simple and predictable.
+    simple and predictable. Adapter-related options are forwarded to
+    :func:`load_runtime_config`, which is responsible for validating and
+    normalizing them.
     """
 
-    return load_runtime_config(project_path=project)
+    return load_runtime_config(
+        project_path=project,
+        adapter_mode=adapter_mode,
+        agent_mail_adapter=agent_mail_adapter,
+        acp_adapter=acp_adapter,
+    )
 
 
 @runtime_app.command("start")
@@ -72,6 +85,30 @@ def runtime_start(
         help=(
             "Number of agents to create when starting in create mode. "
             "Must not be used with --mode=resume."
+        ),
+    ),
+    adapter_mode: Optional[str] = typer.Option(
+        None,
+        "--adapter-mode",
+        help=(
+            "Default adapter mode for runtime integrations (for this "
+            "release, typically 'fake')."
+        ),
+    ),
+    agent_mail_adapter: Optional[str] = typer.Option(
+        None,
+        "--agent-mail-adapter",
+        help=(
+            "Override adapter implementation for Agent Mail (e.g. 'fake'). "
+            "Defaults to the value of --adapter-mode when omitted."
+        ),
+    ),
+    acp_adapter: Optional[str] = typer.Option(
+        None,
+        "--acp-adapter",
+        help=(
+            "Override adapter implementation for ACP/OpenHands (e.g. 'fake'). "
+            "Defaults to the value of --adapter-mode when omitted."
         ),
     ),
     with_control_api: bool = typer.Option(
@@ -96,7 +133,12 @@ def runtime_start(
     smoke-testing daemon wiring.
     """
 
-    config = _resolve_runtime_config(project)
+    config = _resolve_runtime_config(
+        project,
+        adapter_mode=adapter_mode,
+        agent_mail_adapter=agent_mail_adapter,
+        acp_adapter=acp_adapter,
+    )
 
     # Map CLI startup mode onto the runtime's StartupMode enum.
     runtime_mode = (

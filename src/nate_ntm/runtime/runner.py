@@ -23,6 +23,7 @@ from typing import Optional
 from ..api.jsonrpc_ws import JsonRpcWebSocketServer
 from ..api.server import RuntimeApiServer
 from ..config.runtime_config import RuntimeConfig
+from .adapters import RuntimeAdapters, create_runtime_adapters
 from .daemon import RuntimeDaemon, StartupMode
 from .events import AgentEvent
 
@@ -73,6 +74,7 @@ def create_runtime_control_context(
     host: Optional[str] = None,
     port: Optional[int] = None,
     agent_count: int | None = None,
+    adapters: RuntimeAdapters | None = None,
 ) -> RuntimeControlContext:
     """Construct a :class:`RuntimeControlContext` for ``config`` and ``mode``.
 
@@ -88,10 +90,17 @@ def create_runtime_control_context(
     so under an event loop.
     """
 
+    if adapters is None:
+        adapters = create_runtime_adapters(config)
+
     if mode is StartupMode.CREATE:
-        daemon = RuntimeDaemon.create(config, agent_count=agent_count)
+        daemon = RuntimeDaemon.create(
+            config,
+            agent_count=agent_count,
+            adapters=adapters,
+        )
     elif mode is StartupMode.RESUME:
-        daemon = RuntimeDaemon.resume(config)
+        daemon = RuntimeDaemon.resume(config, adapters=adapters)
     else:  # pragma: no cover - defensive against future enum variants
         raise ValueError(f"Unsupported startup mode: {mode!r}")
 
@@ -192,6 +201,7 @@ async def run_runtime_with_control_api_async(
     port: Optional[int] = None,
     poll_interval: float = 0.1,
     agent_count: int | None = None,
+    adapters: RuntimeAdapters | None = None,
 ) -> None:
     """Async helper to run a runtime and its control API to completion.
 
@@ -208,6 +218,7 @@ async def run_runtime_with_control_api_async(
         host=host,
         port=port,
         agent_count=agent_count,
+        adapters=adapters,
     )
     await serve_runtime_control_api(ctx, poll_interval=poll_interval)
 
@@ -220,6 +231,7 @@ def run_runtime_with_control_api(
     port: Optional[int] = None,
     poll_interval: float = 0.1,
     agent_count: int | None = None,
+    adapters: RuntimeAdapters | None = None,
 ) -> None:
     """Run a runtime daemon and its WebSocket control API to completion.
 
@@ -237,5 +249,6 @@ def run_runtime_with_control_api(
             port=port,
             poll_interval=poll_interval,
             agent_count=agent_count,
+            adapters=adapters,
         )
     )
