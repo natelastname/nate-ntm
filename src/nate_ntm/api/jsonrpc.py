@@ -29,12 +29,14 @@ from __future__ import annotations
 from typing import Any, Dict, Mapping
 
 from .server import RuntimeApiServer
+from ..runtime.events import AgentEvent
 
 JSONRPC_VERSION = "2.0"
 
 __all__ = [
     "JSONRPC_VERSION",
     "dispatch_request",
+    "build_events_notify_messages",
 ]
 
 
@@ -234,3 +236,45 @@ def dispatch_request(
         )
 
     return _make_result(response_id, result)
+
+
+def build_events_notify_messages(
+    server: RuntimeApiServer,
+    event: AgentEvent,
+) -> list[Dict[str, Any]]:
+    """Build JSON-RPC ``events.notify`` messages for a single event.
+
+    This helper is a thin bridge between the in-process subscription
+    registry owned by :class:`RuntimeApiServer` and the JSON-RPC
+    notification shape defined in ``contracts/runtime-api.md``. It
+    applies subscription filters and returns one notification per
+    matching subscription::
+
+        [
+          {
+            "jsonrpc": "2.0",
+            "method": "events.notify",
+            "params": {
+              "subscription_id": "sub-001",
+              "event": { ... AgentEvent.to_dict() ... }
+            }
+          },
+          ...
+        ]
+
+    The actual WebSocket or transport layer is responsible for sending
+    these notifications to connected clients.
+    """
+
+    payload = server.build_agent_event_notifications(event)
+    notifications = []
+    for desc in payload.get("notifications", []):
+        notifications.append(
+            {
+                "jsonrpc": JSONRPC_VERSION,
+                "method": "events.notify",
+                "params": desc,
+            }
+        )
+
+    return notifications

@@ -13,6 +13,7 @@ authors = [
 ]
 dependencies = [
     "typer>=0.26.8",
+    "websockets>=12,<13",
 ]
 
 [project.scripts]

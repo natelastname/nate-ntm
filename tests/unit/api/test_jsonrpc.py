@@ -246,3 +246,53 @@ def test_invalid_jsonrpc_version_yields_error(tmp_path: Path) -> None:
     error = response["error"]
     assert error["code"] == 1000
     assert "Invalid jsonrpc version" in error["message"]
+
+
+def test_build_events_notify_messages_from_agent_event(tmp_path: Path) -> None:
+    """JSON-RPC notifications mirror events.notify contract for AgentEvent.
+
+    This covers the bridge from the in-process subscription registry to
+    JSON-RPC notification envelopes without requiring a real transport
+    layer.
+    """
+
+    daemon = _make_daemon(tmp_path)
+    server = RuntimeApiServer(daemon=daemon)
+
+    # Create two overlapping subscriptions: one for a specific agent and
+    # one wildcard subscription for all agents.
+    sub_specific = server.subscribe_events(agent_ids=["agent-1"], include_runtime=False)
+    sub_all = server.subscribe_events(agent_ids=None, include_runtime=False)
+
+    # Emit an event for agent-1; both subscriptions should match.
+    event = AgentEvent(
+        event_id="e1",
+        timestamp=datetime(2026, 7, 3, 12, 0, 0),
+        agent_id="agent-1",
+        source=AgentEventSource.RUNTIME,
+        type="TurnStarted",
+        payload={"info": "test"},
+    )
+
+    from nate_ntm.api.jsonrpc import build_events_notify_messages
+
+    messages = build_events_notify_messages(server, event)
+
+    # One notification per matching subscription.
+    assert len(messages) == 2
+    method_set = {msg["method"] for msg in messages}
+    assert method_set == {"events.notify"}
+
+    # Notifications must follow the JSON-RPC 2.0 notification shape and
+    # not include an ``id`` field.
+    for msg in messages:
+        assert msg["jsonrpc"] == JSONRPC_VERSION
+        assert "id" not in msg
+        params = msg["params"]
+        assert params["event"]["event_id"] == "e1"
+        assert params["event"]["agent_id"] == "agent-1"
+
+    sub_ids = {msg["params"]["subscription_id"] for msg in messages}
+    assert sub_specific["subscription_id"] in sub_ids
+    assert sub_all["subscription_id"] in sub_ids
+

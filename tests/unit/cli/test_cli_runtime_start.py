@@ -103,6 +103,51 @@ def test_runtime_start_create_without_metadata_succeeds_and_writes_swarm(tmp_pat
     assert swarm.project_path == config.project_path
     assert swarm.swarm_id == config.swarm_id
 
+
+
+def test_runtime_start_with_control_api_delegates_to_runner(monkeypatch, tmp_path: Path) -> None:
+    """When --with-control-api is set, CLI uses the runtime runner.
+
+    This ensures that the Typer command delegates to
+    :func:`run_runtime_with_control_api` with the correct startup mode
+    instead of directly constructing a :class:`RuntimeDaemon` and
+    performing the short start → shutdown cycle.
+    """
+
+    project = _init_project_without_metadata(tmp_path)
+
+    called: dict[str, object] = {}
+
+    def fake_run_runtime_with_control_api(config, mode, *args, **kwargs):  # type: ignore[override]
+        called["config"] = config
+        called["mode"] = mode
+
+    # Patch the runner entrypoint used by the CLI.
+    monkeypatch.setattr(
+        "nate_ntm.cli.run_runtime_with_control_api",
+        fake_run_runtime_with_control_api,
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "runtime",
+            "start",
+            "--project",
+            str(project),
+            "--mode",
+            "create",
+            "--with-control-api",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "config" in called and "mode" in called
+    # The CLI should have mapped the string mode onto StartupMode.CREATE.
+    from nate_ntm.runtime.daemon import StartupMode
+
+    assert called["mode"] is StartupMode.CREATE
+
 def test_runtime_start_default_mode_resume_is_applied(tmp_path: Path) -> None:
     project = _init_project_with_metadata(tmp_path)
 

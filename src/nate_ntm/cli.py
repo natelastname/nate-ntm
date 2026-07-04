@@ -14,10 +14,13 @@ from __future__ import annotations
 
 from enum import Enum
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, Optional
 
+import asyncio
+import json
 import typer
 
+from .api.client import JsonRpcWebSocketClient
 from .config.runtime_config import RuntimeConfig, load_runtime_config
 from .runtime.daemon import (
     MetadataAlreadyExistsError,
@@ -26,10 +29,14 @@ from .runtime.daemon import (
     StartupMode,
     check_startup_preconditions,
 )
+from .runtime.runner import run_runtime_with_control_api
 
 app = typer.Typer(help="nate_ntm command-line interface")
 runtime_app = typer.Typer(help="Runtime daemon commands")
+api_app = typer.Typer(help="Runtime control API commands")
+
 app.add_typer(runtime_app, name="runtime")
+app.add_typer(api_app, name="api")
 
 
 class CliStartupMode(str, Enum):
@@ -58,19 +65,43 @@ def runtime_start(
         "--mode",
         help="Startup mode: create a new swarm or resume an existing one.",
     ),
+    with_control_api: bool = typer.Option(
+        False,
+        "--with-control-api",
+        help=(
+            "Run a WebSocket JSON-RPC control API alongside the daemon and "
+            "block until a shutdown is requested via the runtime API."
+        ),
+    ),
 ) -> None:
     """Start the nate_ntm runtime daemon for a given project.
 
     In ``create`` mode this will create fresh swarm metadata under the
     project's metadata directory. In ``resume`` mode it will load
-    existing metadata. In both cases we only exercise high-level daemon
-    lifecycle transitions; the long-lived event loop and API server
-    wiring are added in later tasks.
+    existing metadata.
+
+    When ``--with-control-api`` is provided, this command also starts a
+    WebSocket JSON-RPC control API bound to the configured host/port and
+    blocks until a graceful shutdown is requested via the runtime API.
+    Without this flag, it exercises a short start → shutdown cycle for
+    smoke-testing daemon wiring.
     """
 
     config = _resolve_runtime_config(project)
 
+    # Map CLI startup mode onto the runtime's StartupMode enum.
+    runtime_mode = (
+        StartupMode.CREATE if mode is CliStartupMode.CREATE else StartupMode.RESUME
+    )
+
     try:
+        if with_control_api:
+            # Delegate to the higher-level runner, which will construct the
+            # daemon, start the scheduler, and serve the control API until a
+            # shutdown is requested.
+            run_runtime_with_control_api(config, runtime_mode)
+            return
+
         if mode is CliStartupMode.CREATE:
             daemon = RuntimeDaemon.create(config)
         else:
@@ -85,6 +116,87 @@ def runtime_start(
     daemon.start()
     daemon.request_shutdown()
     daemon.mark_stopped()
+
+
+
+@api_app.command("call")
+def api_call(
+    method: str = typer.Argument(
+        ..., help="JSON-RPC method name, e.g. runtime.get_status"
+    ),
+    param: list[str] = typer.Option(  # type: ignore[assignment]
+        [],
+        "--param",
+        "-P",
+        help=(
+            "Request parameter in key=value form. Values are interpreted as "
+            "JSON when possible (for example, --param max_events=10 or "
+            "--param agent_ids='[\"a1\", \"a2\"]')."
+        ),
+    ),
+    host: str = typer.Option(
+        "127.0.0.1",
+        "--host",
+        envvar="NATE_NTM_CONTROL_HOST",
+        help="Control API host (default: 127.0.0.1)",
+    ),
+    port: int = typer.Option(  # type: ignore[assignment]
+        8765,
+        "--port",
+        envvar="NATE_NTM_CONTROL_PORT",
+        help="Control API TCP port (default: 8765)",
+    ),
+) -> None:
+    """Invoke a runtime control API method via JSON-RPC over WebSocket.
+
+    This command is a thin wrapper over :class:`JsonRpcWebSocketClient` and
+    is primarily intended for quickstart-style inspection and debugging.
+    """
+
+    def _parse_params(pairs: list[str]) -> Dict[str, Any]:
+        params: Dict[str, Any] = {}
+        for item in pairs:
+            if "=" not in item:
+                raise typer.BadParameter(
+                    f"Invalid parameter {item!r}; expected key=value syntax."
+                )
+
+            key, raw = item.split("=", 1)
+            key = key.strip()
+            raw = raw.strip()
+
+            if not key:
+                raise typer.BadParameter("Parameter key must not be empty")
+
+            # Attempt to parse as JSON first so that callers can pass
+            # numbers, booleans, objects, and arrays without additional
+            # quoting. Fall back to the raw string if parsing fails.
+            try:
+                value = json.loads(raw)
+            except json.JSONDecodeError:
+                value = raw
+
+            params[key] = value
+
+        return params
+
+    params = _parse_params(param)
+
+    client = JsonRpcWebSocketClient(host=host, port=port)
+
+    try:
+        response = asyncio.run(client.call_async(method, params or {}))
+    except Exception as exc:  # pragma: no cover - defensive
+        typer.echo(f"Error calling runtime API: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    # Treat JSON-RPC ``error`` envelopes as non-zero exit codes.
+    if "error" in response:
+        typer.echo(json.dumps(response["error"], indent=2, sort_keys=True), err=True)
+        raise typer.Exit(code=1)
+
+    result = response.get("result")
+    typer.echo(json.dumps(result, indent=2, sort_keys=True))
 
 
 def cli() -> None:
