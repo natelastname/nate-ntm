@@ -1,13 +1,18 @@
 """Top-level :mod:`nate_ntm` package.
 
-The package root is intentionally lightweight; submodules such as
-:mod:`nate_ntm.cli` and :mod:`nate_ntm.util` should be imported directly by
-callers that need them. This avoids pulling in optional runtime
-dependencies during simple tasks like configuration or data-model tests.
+The package root is intentionally lightweight; most callers should import
+submodules (for example :mod:`nate_ntm.cli`) directly.
+
+During the early project bootstrap phase we also re-export the
+:mod:`nate_ntm.util` module to satisfy legacy tests in ``tests/test_util``.
+This can be revisited once those tests are replaced by spec-driven ones.
 """
+
+from . import util
 
 __all__ = [
     "__version__",
+    "util",
 ]
 
 __version__ = "0.1.0"

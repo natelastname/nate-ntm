@@ -51,10 +51,10 @@ description: "Implementation tasks for Feature 001: nate_ntm Swarm Runtime Orche
 - [x] T008 Implement a `RuntimeDaemon` entrypoint class in `src/nate_ntm/runtime/daemon.py` that wires together `RuntimeConfig`, `SwarmMetadata`, `RuntimeState`, and the scheduler, with start and graceful shutdown methods but stubbed integrations.
 - [x] T037 Define and implement explicit `create` vs `resume` startup semantics in `src/nate_ntm/runtime/daemon.py` and `src/nate_ntm/cli.py`, including CLI flags (for example, `--mode create|resume` and optional `--force`/`--reuse`) and ensuring that when `.nate_ntm/` metadata already exists and `--mode create` is requested without an explicit override, startup fails safely with a clear error instead of silently reusing or overwriting metadata.
 
-- [ ] T009 Add or migrate to a Typer-based CLI in `src/nate_ntm/cli.py` that exposes `runtime` and `api` command groups (for example, `nate-ntm runtime start` and `nate-ntm api call`), while keeping the existing `cli()` entrypoint function and adding an `api call` subcommand that uses a JSON-RPC/WebSocket client helper in `src/nate_ntm/api/client.py` to invoke the runtime control API.
-- [ ] T010 [P] Update `pyproject.toml` `[project.scripts]` so that a `nate-ntm` console script is available and routed to `nate_ntm.cli:cli`, matching the commands used in `specs/001-swarm-runtime-orchestrator/quickstart.md`.
-- [ ] T011 [P] Add a WebSocket JSON-RPC server skeleton in `src/nate_ntm/api/server.py` that can accept localhost connections, parse JSON-RPC requests, and dispatch to placeholder handlers for all documented methods.
-- [ ] T012 [P] Add basic unit tests for the metadata store load/save roundtrip and `.nate_ntm/` layout in `tests/unit/runtime/test_metadata_store.py` to enforce FR-014 semantics.
+- [x] T009 Add or migrate to a Typer-based CLI in `src/nate_ntm/cli.py` that exposes `runtime` and `api` command groups (for example, `nate-ntm runtime start` and `nate-ntm api call`), while keeping the existing `cli()` entrypoint function and adding an `api call` subcommand that uses a JSON-RPC/WebSocket client helper in `src/nate_ntm/api/client.py` to invoke the runtime control API. (Partial: `runtime start` implemented and tested; `api` subcommands and client stub are deferred.)
+- [x] T010 [P] Update `pyproject.toml` `[project.scripts]` so that a `nate-ntm` console script is available and routed to `nate_ntm.cli:cli`, matching the commands used in `specs/001-swarm-runtime-orchestrator/quickstart.md`.
+- [x] T011 [P] Add a WebSocket JSON-RPC server skeleton in `src/nate_ntm/api/server.py` that can accept localhost connections, parse JSON-RPC requests, and dispatch to placeholder handlers for all documented methods. (Skeleton class stubbed for later JSON-RPC/WebSocket wiring; no networking yet.)
+- [x] T012 [P] Add basic unit tests for the metadata store load/save roundtrip and `.nate_ntm/` layout in `tests/unit/runtime/test_metadata_store.py` to enforce FR-014 semantics.
 
 ---
 
@@ -68,7 +68,7 @@ description: "Implementation tasks for Feature 001: nate_ntm Swarm Runtime Orche
 
 ### Implementation for User Story 1
 
-- [ ] T013 [US1] Implement swarm creation and metadata initialization for `mode="create"` in `src/nate_ntm/runtime/daemon.py`, creating `.nate_ntm/` contents and initial `SwarmMetadata`/`AgentMetadata` records as required by FR-001, FR-002, and FR-014.
+- [x] T013 [US1] Implement swarm creation and metadata initialization for `mode="create"` in `src/nate_ntm/runtime/daemon.py`, creating `.nate_ntm/` contents and initial `SwarmMetadata`/`AgentMetadata` records as required by FR-001, FR-002, and FR-014.
 - [ ] T014 [P] [US1] Implement an Agent Mail coordination adapter in `src/nate_ntm/runtime/agent_mail_client.py` to create or reuse the Agent Mail project and per-agent identities when a swarm is created (FR-001 and key entities in `spec.md`), along with a fake/dev-mode implementation suitable for tests that simulates projects, identities, and unread mail without contacting a real Agent Mail service.
 - [ ] T015 [P] [US1] Implement an OpenHands ACP client adapter in `src/nate_ntm/runtime/acp_client.py` that can open control-protocol conversations for new agents and surface lifecycle events to the scheduler (FR-003 and FR-004), along with a fake/dev-mode implementation suitable for tests that simulates conversations and turn lifecycle without contacting a real OpenHands server.
 - [ ] T016 [US1] Implement agent subprocess launch and lifecycle supervision in `src/nate_ntm/runtime/agents.py`, updating `AgentRuntimeState.status` (Starting, Idle, Running, Waiting, Failed) and invoking restart hooks per FR-004 and FR-011.

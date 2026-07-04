@@ -89,6 +89,45 @@ def test_runtime_daemon_resume_constructs_state_from_metadata(tmp_path: Path) ->
     assert daemon.started_at is None
 
 
+
+def test_runtime_daemon_create_initializes_and_persists_swarm_metadata(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    config = _make_config(project)
+
+    store = MetadataStore(config=config)
+    swarm_path = store.metadata_dir / "swarm.json"
+    assert not swarm_path.exists()
+
+    daemon = RuntimeDaemon.create(config)
+
+    assert daemon.config is config
+    assert daemon.metadata_store.metadata_dir == config.metadata_dir
+    assert daemon.swarm_metadata.swarm_id == config.swarm_id
+    assert daemon.swarm_metadata.project_path == config.project_path
+    # Agent Mail project ID is intentionally left empty until T014 wires it.
+    assert daemon.swarm_metadata.agent_mail_project_id == ""
+
+    assert daemon.state.config is config
+    assert daemon.state.status is RuntimeStatus.STARTING
+    assert daemon.startup_mode is StartupMode.CREATE
+    assert daemon.started_at is None
+
+    # Metadata should have been persisted and be readable via MetadataStore.
+    assert swarm_path.is_file()
+    loaded = store.load_swarm_metadata()
+    assert loaded == daemon.swarm_metadata
+
+
+
+def test_runtime_daemon_create_raises_if_metadata_already_exists(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    config = _make_config(project)
+    _write_minimal_swarm_metadata(config)
+
+    with pytest.raises(MetadataAlreadyExistsError):
+        _ = RuntimeDaemon.create(config)
+
+
 def test_runtime_daemon_start_and_shutdown_transitions(tmp_path: Path) -> None:
     project = tmp_path / "project"
     config = _make_config(project)

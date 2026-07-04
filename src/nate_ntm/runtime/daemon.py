@@ -134,6 +134,47 @@ class RuntimeDaemon:
     """Timestamp when :meth:`start` was last called, if ever."""
 
     @classmethod
+    def create(cls, config: RuntimeConfig) -> "RuntimeDaemon":
+        """Construct a :class:`RuntimeDaemon` in `create` mode.
+
+        This helper validates that swarm metadata does *not* already
+        exist for the project, initializes a fresh :class:`SwarmMetadata`
+        record with no agents, persists it via :class:`MetadataStore`,
+        and returns a new :class:`RuntimeDaemon` with
+        :class:`RuntimeState` in the ``Starting`` status.
+
+        Later tasks (for example, T014/T015) will extend this flow to
+        create an Agent Mail project, initial agents, and ACP
+        conversations before the runtime is fully started.
+        """
+
+        check_startup_preconditions(config, StartupMode.CREATE)
+        store = MetadataStore(config=config)
+
+        now = datetime.utcnow()
+        swarm = SwarmMetadata(
+            swarm_id=config.swarm_id,
+            project_path=config.project_path,
+            agent_mail_project_id="",
+            created_at=now,
+            last_updated_at=now,
+        )
+
+        # Persist the newly created swarm metadata using atomic write
+        # semantics provided by the MetadataStore.
+        store.save_swarm_metadata(swarm)
+
+        state = RuntimeState(config=config)
+
+        return cls(
+            config=config,
+            metadata_store=store,
+            swarm_metadata=swarm,
+            state=state,
+            startup_mode=StartupMode.CREATE,
+        )
+
+    @classmethod
     def resume(cls, config: RuntimeConfig) -> "RuntimeDaemon":
         """Construct a :class:`RuntimeDaemon` in `resume` mode.
 
