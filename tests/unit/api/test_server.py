@@ -10,6 +10,8 @@ from __future__ import annotations
 from pathlib import Path
 from datetime import datetime
 
+import pytest
+
 from nate_ntm.config.runtime_config import load_runtime_config
 from nate_ntm.runtime.daemon import RuntimeDaemon
 from nate_ntm.runtime.events import AgentEvent, AgentEventSource, AgentEventStream
@@ -117,6 +119,39 @@ def test_runtime_api_server_binds_daemon(tmp_path: Path) -> None:
 
     # Stubbed start/stop should be callable without side effects.
     server.start()
+
+
+def test_runtime_api_server_shutdown_runtime_transitions_status_and_returns_payload(tmp_path: Path) -> None:
+    daemon = _make_daemon(tmp_path)
+
+    # Put the daemon into a running state so shutdown is permitted.
+    daemon.state.status = RuntimeStatus.RUNNING
+
+    server = RuntimeApiServer(daemon=daemon)
+
+    payload = server.shutdown_runtime(timeout_seconds=5)
+
+    assert payload == {
+        "accepted": True,
+        "status": RuntimeStatus.SHUTTING_DOWN.value,
+    }
+    assert daemon.state.shutdown_requested is True
+    assert daemon.state.status is RuntimeStatus.SHUTTING_DOWN
+
+
+def test_runtime_api_server_shutdown_runtime_rejects_when_not_running(tmp_path: Path) -> None:
+    daemon = _make_daemon(tmp_path)
+    # Default status is ``Starting`` for a fresh RuntimeState.
+    assert daemon.state.status is RuntimeStatus.STARTING
+
+    server = RuntimeApiServer(daemon=daemon)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        server.shutdown_runtime(timeout_seconds=5)
+
+    msg = str(excinfo.value)
+    assert "Starting" in msg
+
     server.stop()
 
 
@@ -202,3 +237,78 @@ def test_runtime_api_server_get_agent_detail_unknown_agent_raises(tmp_path: Path
         assert "missing-agent" in msg
     else:  # pragma: no cover - defensive
         raise AssertionError("Expected KeyError for unknown agent_id")
+
+
+def test_runtime_api_server_subscribe_events_creates_subscription(tmp_path: Path) -> None:
+    daemon = _make_daemon(tmp_path)
+    server = RuntimeApiServer(daemon=daemon)
+
+    result = server.subscribe_events(agent_ids=["a1", "a2"], include_runtime=True)
+
+    sub_id = result["subscription_id"]
+    assert sub_id.startswith("sub-")
+    assert sub_id in server._subscriptions  # type: ignore[attr-defined]
+
+    stored = server._subscriptions[sub_id]  # type: ignore[attr-defined]
+    assert stored["agent_ids"] == ("a1", "a2")
+    assert stored["include_runtime"] is True
+
+
+
+def test_runtime_api_server_unsubscribe_events_is_idempotent(tmp_path: Path) -> None:
+    daemon = _make_daemon(tmp_path)
+    server = RuntimeApiServer(daemon=daemon)
+
+    first = server.subscribe_events(agent_ids=["a1"], include_runtime=False)
+    sub_id = first["subscription_id"]
+    assert sub_id in server._subscriptions  # type: ignore[attr-defined]
+
+    # First unsubscribe removes the subscription and reports success.
+    result1 = server.unsubscribe_events(sub_id)
+    assert result1 == {"unsubscribed": True}
+    assert sub_id not in server._subscriptions  # type: ignore[attr-defined]
+
+    # Second unsubscribe for the same ID is a no-op but still reports success.
+    result2 = server.unsubscribe_events(sub_id)
+    assert result2 == {"unsubscribed": True}
+
+
+
+def test_runtime_api_server_build_agent_event_notifications_filters_by_agent_id(tmp_path: Path) -> None:
+    """Event routing honors per-subscription agent_id filters.
+
+    Subscriptions with an empty ``agent_ids`` list receive all events; those
+    with a non-empty list only receive events for matching agents.
+    """
+
+    daemon = _make_daemon(tmp_path)
+    server = RuntimeApiServer(daemon=daemon)
+
+    # Three subscriptions: global, one bound to a1, one bound to a2.
+    sub_all = server.subscribe_events(agent_ids=[], include_runtime=True)["subscription_id"]
+    sub_a1 = server.subscribe_events(agent_ids=["a1"], include_runtime=True)["subscription_id"]
+    sub_a2 = server.subscribe_events(agent_ids=["a2"], include_runtime=True)["subscription_id"]
+
+    event = AgentEvent(
+        event_id="e1",
+        timestamp=datetime(2026, 7, 3, 12, 0, 0),
+        agent_id="a1",
+        source=AgentEventSource.RUNTIME,
+        type="TestEvent",
+        payload={"k": "v"},
+    )
+
+    payload = server.build_agent_event_notifications(event)
+    notifications = payload["notifications"]
+
+    # We expect notifications for the global subscription and the a1-specific
+    # subscription, but not for the a2-specific one.
+    by_sub = {n["subscription_id"]: n for n in notifications}
+
+    assert set(by_sub.keys()) == {sub_all, sub_a1}
+
+    # Each notification should contain the serialized event payload.
+    for n in notifications:
+        assert n["event"]["event_id"] == "e1"
+        assert n["event"]["agent_id"] == "a1"
+

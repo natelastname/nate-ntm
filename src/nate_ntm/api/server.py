@@ -11,10 +11,12 @@ can be expanded in later tasks (for example T018 and T019).
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, Protocol
 
 from ..runtime.daemon import RuntimeDaemon
+from ..runtime.events import AgentEvent
+from ..runtime.state import RuntimeStatus
 
 __all__ = ["RuntimeApiServer", "SupportsRuntimeDaemon"]
 
@@ -43,10 +45,17 @@ class RuntimeApiServer:
     * Expose high-level `start`/`stop` methods and
       request/notification handlers.
 
-    For now, we only capture the association with a `RuntimeDaemon`.
+    For now, we only capture the association with a `RuntimeDaemon` and a
+    minimal in-memory subscription registry for event streaming.
     """
 
     daemon: RuntimeDaemon
+
+    # Internal subscription registry for ``events.subscribe``/``events.unsubscribe``.
+    _subscriptions: Dict[str, Dict[str, Any]] = field(
+        default_factory=dict, init=False, repr=False
+    )
+    _next_subscription_id: int = field(default=1, init=False, repr=False)
 
     def start(self) -> None:
         """Start accepting API connections (stub).
@@ -85,6 +94,119 @@ class RuntimeApiServer:
         """
 
         return self.daemon.get_swarm_overview()
+
+    def shutdown_runtime(self, timeout_seconds: int = 30) -> Dict[str, Any]:
+        """Request a graceful runtime shutdown for ``runtime.shutdown``.
+
+        This mirrors the high-level contract in
+        ``specs/001-swarm-runtime-orchestrator/contracts/runtime-api.md`` by
+        delegating to :meth:`RuntimeDaemon.request_shutdown` and returning a
+        small acknowledgement payload.
+
+        In the eventual JSON-RPC/WebSocket layer this result will be mapped
+        to a structured response object or error.
+        """
+
+        if self.daemon.state.status is not RuntimeStatus.RUNNING:
+            raise RuntimeError(
+                f"Cannot shutdown runtime from status "
+                f"{self.daemon.state.status.value!r}"
+            )
+
+        self.daemon.request_shutdown()
+
+        return {
+            "accepted": True,
+            "status": self.daemon.state.status.value,
+        }
+
+    def subscribe_events(
+        self,
+        *,
+        agent_ids: list[str] | None = None,
+        include_runtime: bool = True,
+    ) -> Dict[str, Any]:
+        """Register an event subscription for ``events.subscribe``.
+
+        This is a minimal, in-memory subscription registry suitable for the
+        MVP. The eventual WebSocket/JSON-RPC layer will call this method
+        when handling ``events.subscribe`` requests and map the returned
+        ``subscription_id`` onto a specific client connection.
+        """
+
+        if agent_ids is None:
+            agent_ids = []
+
+        subscription_id = f"sub-{self._next_subscription_id:03d}"
+        self._next_subscription_id += 1
+
+        # Store a small descriptor for future routing; concrete notification
+        # delivery is added alongside the WebSocket server.
+        self._subscriptions[subscription_id] = {
+            "agent_ids": tuple(agent_ids),
+            "include_runtime": bool(include_runtime),
+        }
+
+        return {"subscription_id": subscription_id}
+
+    def unsubscribe_events(self, subscription_id: str) -> Dict[str, Any]:
+        """Terminate a subscription for ``events.unsubscribe``.
+
+        This is intentionally idempotent: attempting to unsubscribe an
+        unknown ``subscription_id`` still returns ``{\"unsubscribed\": true}``.
+        """
+
+        self._subscriptions.pop(subscription_id, None)
+        return {"unsubscribed": True}
+
+    # ------------------------------------------------------------------
+    # Event routing helpers
+    # ------------------------------------------------------------------
+
+    def build_agent_event_notifications(self, event: AgentEvent) -> Dict[str, Any]:
+        """Build notification payloads for an :class:`AgentEvent`.
+
+        This is a small, in-process helper that applies the current
+        subscription filters to a single agent-scoped event and returns a
+        JSON-serializable structure mirroring the ``events.notify``
+        contract:
+
+        .. code-block:: json
+
+            {
+              "notifications": [
+                {
+                  "subscription_id": "sub-001",
+                  "event": { ... AgentEvent.to_dict() ... }
+                },
+                ...
+              ]
+            }
+
+        The actual WebSocket/JSON-RPC layer will take this payload and
+        fan it out to connected clients.
+        """
+
+        event_payload = event.to_dict()
+        notifications: list[Dict[str, Any]] = []
+
+        for subscription_id, desc in self._subscriptions.items():
+            agent_ids = desc.get("agent_ids") or ()
+
+            # Empty ``agent_ids`` means "all agents".
+            if agent_ids and event.agent_id not in agent_ids:
+                continue
+
+            notifications.append(
+                {
+                    "subscription_id": subscription_id,
+                    "event": event_payload,
+                }
+            )
+
+        return {"notifications": notifications}
+
+
 
     def get_agent_detail(self, agent_id: str, max_events: int = 100) -> Dict[str, Any]:
         """Return detailed information for a single agent.

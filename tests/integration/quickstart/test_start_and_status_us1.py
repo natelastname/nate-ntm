@@ -284,3 +284,124 @@ def test_scheduler_launches_agents_from_swarm_metadata(tmp_path: Path) -> None:
         "failed": 0,
     }
 
+
+
+def test_scheduler_failure_and_restart_are_reflected_in_runtime_api(tmp_path: Path) -> None:
+    """US1 dev-mode: failure/restart transitions surface via the runtime API.
+
+    This test builds on ``test_scheduler_launches_agents_from_swarm_metadata``
+    by exercising the simple failure/restart helpers on
+    :class:`RuntimeScheduler` and asserting that:
+
+    * ``runtime.get_status`` agent counts are updated.
+    * ``swarm.get_overview`` agent summaries reflect status/last_error.
+    * ``agent.get_detail`` returns the corresponding events.
+    """
+
+    project = tmp_path / "project"
+    project.mkdir(parents=True, exist_ok=True)
+
+    config: RuntimeConfig = load_runtime_config(project_path=project)
+    store = MetadataStore(config=config)
+
+    now = datetime(2026, 7, 3, 12, 0, 0)
+
+    agent = AgentMetadata(agent_id="nav-1", display_name="Navigator 1")
+
+    swarm = SwarmMetadata(
+        swarm_id=config.swarm_id,
+        project_path=config.project_path,
+        agent_mail_project_id="mail-project-1",
+        created_at=now,
+        last_updated_at=now,
+        agents={agent.agent_id: agent},
+    )
+
+    store.save_swarm_metadata(swarm)
+    store.save_agent_metadata(agent)
+
+    daemon = RuntimeDaemon.resume(config)
+    assert daemon.scheduler is not None
+
+    # Start the runtime; this will cause the scheduler to register and
+    # "launch" the configured agent in dev-mode.
+    daemon.start()
+    assert daemon.state.status is RuntimeStatus.RUNNING
+
+    assert set(daemon.state.agents.keys()) == {"nav-1"}
+    runtime_state = daemon.state.agents["nav-1"]
+    assert runtime_state.status is AgentStatus.IDLE
+
+    server = RuntimeApiServer(daemon=daemon)
+
+    # Baseline: agent detail should show Idle with no events.
+    detail_before = server.get_agent_detail(agent_id="nav-1", max_events=10)
+    agent_before = detail_before["agent"]
+    assert agent_before["status"] == AgentStatus.IDLE.value
+    assert agent_before["last_error"] is None
+    assert detail_before["events"] == []
+
+    # Simulate a failure via the scheduler.
+    daemon.scheduler.mark_agent_failed("nav-1", error="boom")
+
+    assert runtime_state.status is AgentStatus.FAILED
+    assert runtime_state.last_error == "boom"
+
+    status_after_fail = server.get_runtime_status()
+    counts_after_fail = status_after_fail["agent_counts"]
+    assert counts_after_fail == {
+        "total": 1,
+        "starting": 0,
+        "idle": 0,
+        "running": 0,
+        "waiting": 0,
+        "failed": 1,
+    }
+
+    overview_after_fail = server.get_swarm_overview()
+    agents_after_fail = {a["agent_id"]: a for a in overview_after_fail["agents"]}
+    a = agents_after_fail["nav-1"]
+    assert a["status"] == AgentStatus.FAILED.value
+    assert a["last_error"] == "boom"
+
+    detail_after_fail = server.get_agent_detail(agent_id="nav-1", max_events=10)
+    agent_after_fail = detail_after_fail["agent"]
+    assert agent_after_fail["status"] == AgentStatus.FAILED.value
+    assert agent_after_fail["last_error"] == "boom"
+
+    events_after_fail = detail_after_fail["events"]
+    assert any(e["type"] == "AgentFailed" for e in events_after_fail)
+
+    # Now request a restart via the scheduler.
+    daemon.scheduler.restart_agent("nav-1")
+
+    assert runtime_state.status is AgentStatus.IDLE
+    assert runtime_state.last_error is None
+
+    status_after_restart = server.get_runtime_status()
+    counts_after_restart = status_after_restart["agent_counts"]
+    assert counts_after_restart == {
+        "total": 1,
+        "starting": 0,
+        "idle": 1,
+        "running": 0,
+        "waiting": 0,
+        "failed": 0,
+    }
+
+    overview_after_restart = server.get_swarm_overview()
+    agents_after_restart = {a["agent_id"]: a for a in overview_after_restart["agents"]}
+    a2 = agents_after_restart["nav-1"]
+    assert a2["status"] == AgentStatus.IDLE.value
+    assert a2["last_error"] is None
+
+    detail_after_restart = server.get_agent_detail(agent_id="nav-1", max_events=10)
+    agent_after_restart = detail_after_restart["agent"]
+    assert agent_after_restart["status"] == AgentStatus.IDLE.value
+    assert agent_after_restart["last_error"] is None
+
+    events_after_restart = detail_after_restart["events"]
+    event_types = {e["type"] for e in events_after_restart}
+    assert "AgentFailed" in event_types
+    assert "AgentRestarted" in event_types
+
