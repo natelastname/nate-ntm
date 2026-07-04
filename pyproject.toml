@@ -31,6 +31,10 @@ profile = "black"
 src_paths = ["src", "tests"]
 
 [tool.pytest.ini_options]
+# Restrict test discovery to the main project test suite to avoid
+# running vendored reference tests (for example reference/mcp_agent_mail),
+# which have their own dependency graph and configuration.
+testpaths = ["tests"]
 filterwarnings = [
     "error",
     "ignore::DeprecationWarning",

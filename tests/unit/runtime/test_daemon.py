@@ -321,3 +321,46 @@ def test_runtime_daemon_get_swarm_overview_joins_metadata_and_runtime_state(tmp_
     assert orphan["has_unread_mail"] is False
     assert orphan["last_error"] is None
 
+
+
+def test_runtime_daemon_create_owns_in_memory_integration_clients(tmp_path: Path) -> None:
+    """RuntimeDaemon.create should construct in-memory Agent Mail and ACP clients.
+
+    This reinforces the architectural rule that the runtime owns core
+    integrations (Agent Mail and ACP) for the lifetime of the process.
+    """
+
+    project = tmp_path / "project"
+    config = _make_config(project)
+
+    daemon = RuntimeDaemon.create(config)
+
+    # Agent Mail and ACP adapters should both be present and use the
+    # in-memory fake implementations for US1.
+    assert isinstance(daemon.agent_mail_client, FakeAgentMailClient)
+    from nate_ntm.runtime.acp_client import FakeAcpClient
+
+    assert isinstance(daemon.acp_client, FakeAcpClient)
+
+
+
+def test_runtime_daemon_resume_owns_in_memory_integration_clients(tmp_path: Path) -> None:
+    """RuntimeDaemon.resume should also own in-memory integration clients.
+
+    Even though full rebinding semantics (FR-009) are deferred to US2,
+    the daemon should still allocate runtime-owned Agent Mail and ACP
+    adapters in resume mode so that the scheduler and future control API
+    handlers have a stable surface.
+    """
+
+    project = tmp_path / "project"
+    config = _make_config(project)
+    _write_minimal_swarm_metadata(config)
+
+    daemon = RuntimeDaemon.resume(config)
+
+    assert isinstance(daemon.agent_mail_client, FakeAgentMailClient)
+    from nate_ntm.runtime.acp_client import FakeAcpClient
+
+    assert isinstance(daemon.acp_client, FakeAcpClient)
+
