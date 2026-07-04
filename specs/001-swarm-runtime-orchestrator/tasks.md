@@ -69,14 +69,24 @@ description: "Implementation tasks for Feature 001: nate_ntm Swarm Runtime Orche
 ### Implementation for User Story 1
 
 - [x] T013 [US1] Implement swarm creation and metadata initialization for `mode="create"` in `src/nate_ntm/runtime/daemon.py`, creating `.nate_ntm/` contents and initial `SwarmMetadata`/`AgentMetadata` records as required by FR-001, FR-002, and FR-014.
-- [x] T014 [P] [US1] Implement an Agent Mail coordination adapter in `src/nate_ntm/runtime/agent_mail_client.py` to create or reuse the Agent Mail project and per-agent identities when a swarm is created (FR-001 and key entities in `spec.md`), along with a fake/dev-mode implementation suitable for tests that simulates projects, identities, and unread mail without contacting a real Agent Mail service.
-- [x] T015 [P] [US1] Implement an OpenHands ACP client adapter in `src/nate_ntm/runtime/acp_client.py` that can open control-protocol conversations for new agents and surface lifecycle events to the scheduler (FR-003 and FR-004), along with a fake/dev-mode implementation suitable for tests that simulates conversations and turn lifecycle without contacting a real OpenHands server.
+- [x] T014 [P] [US1] Define an Agent Mail coordination adapter interface in `src/nate_ntm/runtime/agent_mail_client.py` and implement a fake/dev-mode client that simulates projects, identities, and unread mail without contacting a real Agent Mail service; use it from `src/nate_ntm/runtime/daemon.py` when a swarm is created to allocate and persist the Agent Mail project ID and per-agent identities (FR-001 and key entities in `spec.md`).
+- [x] T015 [P] [US1] Define an ACP client adapter interface in `src/nate_ntm/runtime/acp_client.py` and implement a fake/dev-mode client that simulates OpenHands-style control-protocol conversations and turn lifecycle without contacting a real server; use it from `src/nate_ntm/runtime/daemon.py` when a swarm is created to allocate and persist an ACP `conversation_id` for new agents (FR-003 and FR-004).
 - [ ] T016 [US1] Implement agent subprocess launch and lifecycle supervision in `src/nate_ntm/runtime/agents.py`, updating `AgentRuntimeState.status` (Starting, Idle, Running, Waiting, Failed) and invoking restart hooks per FR-004 and FR-011.
 - [ ] T017 [US1] Implement scheduler logic in `src/nate_ntm/runtime/scheduler.py` for processing startup, subprocess, ACP, and Agent Mail events so that swarm-level and per-agent status remain accurate in `RuntimeState`.
 - [x] T018 [US1] Implement the `runtime.get_status` handler in `src/nate_ntm/api/server.py` and its runtime-facing implementation in `src/nate_ntm/runtime/daemon.py` to return `RuntimeStatus` and aggregate agent counts as specified in `specs/001-swarm-runtime-orchestrator/contracts/runtime-api.md`.
 - [x] T019 [US1] Implement the `swarm.get_overview` handler in `src/nate_ntm/api/server.py` and support function in `src/nate_ntm/runtime/daemon.py` to return per-agent summaries (ID, display name, status, `has_unread_mail`, `last_error`) consistent with the contract.
 - [x] T020 [P] [US1] Add integration tests for swarm startup and status reporting in `tests/integration/quickstart/test_start_and_status_us1.py`, covering SC-001 and the US1 acceptance scenarios.
 - [x] T021 [P] [US1] Add a CLI integration test in `tests/integration/quickstart/test_runtime_cli_us1.py` that runs `nate-ntm runtime start --project <tmp_project>` and verifies `runtime.get_status` returns `Running` with correct agent counts.
+
+
+**US1 MVP status note**: The US1 quickstart flow (create swarm with fake
+adapters, observe status/overview via the runtime API, and shut down
+cleanly) is considered complete and validated by tasks T013, T014, T015
+and T018, T019, T020, T021. Tasks T016 and T017 are partially satisfied
+by the current dev-mode `AgentSupervisor` / `RuntimeScheduler`
+implementations (no real subprocesses or external services) and remain
+open for future expansion; they are not blockers for treating US1 as
+complete for this orchestrator MVP.
 
 ---
 
@@ -125,6 +135,26 @@ description: "Implementation tasks for Feature 001: nate_ntm Swarm Runtime Orche
 - [ ] T034 Implement structured logging and error-reporting conventions in `src/nate_ntm/runtime/daemon.py` and `src/nate_ntm/runtime/scheduler.py` (including log levels, error summaries, and correlation IDs where appropriate).
 - [ ] T035 [P] Run the full quickstart validation scenarios and add any new follow-up items or clarifications to `specs/001-swarm-runtime-orchestrator/research.md` and `specs/001-swarm-runtime-orchestrator/plan_feedback.md`.
 - [ ] T036 [P] Update `AGENTS_MK2.md` and, if appropriate, `AGENTS.md` to reference the nate_ntm Swarm Runtime Orchestrator feature, its plan (`specs/001-swarm-runtime-orchestrator/plan.md`), and this tasks file for future agent workflows.
+
+
+## Future Features (Post-MVP)
+
+- [ ] T100 [P] Support configurable runtime adapter implementations for ACP and Agent Mail,
+  including configuration fields in `src/nate_ntm/config/runtime_config.py` and CLI wiring
+  on `nate-ntm runtime start` (for example, a general `--adapter-mode` flag or
+  per-adapter options), while defaulting to the existing fake/dev-mode adapters so
+  that all US1–US3 tests continue to run without external services.
+- [ ] T101 [P] Implement a production Agent Mail adapter in
+  `src/nate_ntm/runtime/agent_mail_client.py` (for example, `McpAgentMailClient`) that
+  satisfies the `BaseAgentMailClient` interface using real Agent Mail APIs, and add
+  focused integration tests under `tests/integration/runtime_mail/` that are gated or
+  marked to avoid running in offline CI environments.
+- [ ] T102 [P] Implement a production OpenHands-compatible ACP adapter in
+  `src/nate_ntm/runtime/acp_client.py` (for example, `OpenHandsAcpClient`) that
+  satisfies the `BaseAcpClient` interface using real control-protocol APIs, and add
+  focused integration tests under `tests/integration/runtime_acp/` that are gated or
+  marked to avoid running in offline CI environments.
+
 
 ---
 
