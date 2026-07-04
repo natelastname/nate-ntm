@@ -1,0 +1,153 @@
+"""Unit tests for AgentSupervisor (runtime/agents.py).
+
+These tests cover the initial T016 scaffolding for linking
+AgentMetadata to AgentRuntimeState and AgentEventStream without
+introducing real subprocess management.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime
+
+from nate_ntm.config.runtime_config import RuntimeConfig, load_runtime_config
+from nate_ntm.runtime.agents import AgentSupervisor
+from nate_ntm.runtime.events import AgentEventStream
+from nate_ntm.runtime.metadata_store import AgentMetadata, SwarmMetadata
+from nate_ntm.runtime.state import AgentRuntimeState, AgentStatus, RuntimeState
+
+
+def _make_runtime_state(config: RuntimeConfig) -> RuntimeState:
+    return RuntimeState(config=config)
+
+
+
+def _make_config(project_root) -> RuntimeConfig:
+    project_root.mkdir(parents=True, exist_ok=True)
+    return load_runtime_config(project_path=project_root)
+
+
+def _make_swarm_metadata(
+    config: RuntimeConfig, *, agents: dict[str, AgentMetadata] | None = None
+) -> SwarmMetadata:
+    now = datetime(2026, 7, 3, 12, 0, 0)
+    return SwarmMetadata(
+        swarm_id=config.swarm_id,
+        project_path=config.project_path,
+        agent_mail_project_id="",
+        created_at=now,
+        last_updated_at=now,
+        agents=agents or {},
+    )
+
+
+def test_iter_configured_agents_yields_metadata_objects(tmp_path) -> None:
+    project = tmp_path / "project"
+    config = _make_config(project)
+    state = _make_runtime_state(config)
+
+    # Attach two agents to the swarm metadata.
+    a1 = AgentMetadata(agent_id="a1", display_name="Agent One")
+    a2 = AgentMetadata(agent_id="a2", display_name="Agent Two")
+    swarm = _make_swarm_metadata(config, agents={"a1": a1, "a2": a2})
+
+    supervisor = AgentSupervisor(config=config, state=state, swarm_metadata=swarm)
+
+    agents = list(supervisor.iter_configured_agents())
+    assert agents == [a1, a2]
+
+
+def test_ensure_agent_runtime_state_creates_new_entry_with_event_stream(tmp_path) -> None:
+    project = tmp_path / "project"
+    config = _make_config(project)
+    state = _make_runtime_state(config)
+
+    metadata = AgentMetadata(agent_id="agent-1", display_name="Agent One")
+    swarm = _make_swarm_metadata(config, agents={metadata.agent_id: metadata})
+
+    supervisor = AgentSupervisor(config=config, state=state, swarm_metadata=swarm)
+
+    runtime_state = supervisor.ensure_agent_runtime_state(metadata)
+
+    # The runtime entry should be present and reference the same agent_id.
+    assert "agent-1" in state.agents
+    assert runtime_state is state.agents["agent-1"]
+    assert runtime_state.agent_id == "agent-1"
+
+    # Newly created entries should start in STARTING state for US1.
+    assert runtime_state.status is AgentStatus.STARTING
+
+    # And they should have an AgentEventStream bound to the same agent.
+    assert isinstance(runtime_state.event_stream, AgentEventStream)
+    assert runtime_state.event_stream.agent_id == "agent-1"
+
+
+def test_ensure_agent_runtime_state_returns_existing_entry_without_overwrite(tmp_path) -> None:
+    project = tmp_path / "project"
+    config = _make_config(project)
+    state = _make_runtime_state(config)
+
+    metadata = AgentMetadata(agent_id="agent-1", display_name="Agent One")
+    swarm = _make_swarm_metadata(config, agents={metadata.agent_id: metadata})
+
+    # Seed state with a pre-existing runtime entry using a different status.
+    preexisting = AgentRuntimeState(
+        agent_id="agent-1",
+        status=AgentStatus.RUNNING,
+        last_error="boom",
+    )
+    state.agents["agent-1"] = preexisting
+
+    supervisor = AgentSupervisor(config=config, state=state, swarm_metadata=swarm)
+
+    result = supervisor.ensure_agent_runtime_state(metadata)
+
+    # The same instance should be returned and kept in RUNNING state.
+    assert result is preexisting
+    assert result.status is AgentStatus.RUNNING
+    assert result.last_error == "boom"
+
+
+def test_ensure_agents_registered_populates_state_for_all_metadata(tmp_path) -> None:
+    project = tmp_path / "project"
+    config = _make_config(project)
+    state = _make_runtime_state(config)
+
+    a1 = AgentMetadata(agent_id="a1", display_name="Agent One")
+    a2 = AgentMetadata(agent_id="a2", display_name="Agent Two")
+    swarm = _make_swarm_metadata(config, agents={"a1": a1, "a2": a2})
+
+    supervisor = AgentSupervisor(config=config, state=state, swarm_metadata=swarm)
+
+    supervisor.ensure_agents_registered()
+
+    assert set(state.agents.keys()) == {"a1", "a2"}
+    assert state.agents["a1"].status is AgentStatus.STARTING
+    assert state.agents["a2"].status is AgentStatus.STARTING
+
+
+def test_ensure_agents_registered_preserves_existing_runtime_entries(tmp_path) -> None:
+    project = tmp_path / "project"
+    config = _make_config(project)
+    state = _make_runtime_state(config)
+
+    a1 = AgentMetadata(agent_id="a1", display_name="Agent One")
+    a2 = AgentMetadata(agent_id="a2", display_name="Agent Two")
+    swarm = _make_swarm_metadata(config, agents={"a1": a1, "a2": a2})
+
+    # Pre-seed runtime state for one of the agents.
+    preexisting = AgentRuntimeState(
+        agent_id="a1",
+        status=AgentStatus.RUNNING,
+    )
+    state.agents["a1"] = preexisting
+
+    supervisor = AgentSupervisor(config=config, state=state, swarm_metadata=swarm)
+
+    supervisor.ensure_agents_registered()
+
+    # `a1` should be preserved, and `a2` should be added.
+    assert state.agents["a1"] is preexisting
+    assert state.agents["a1"].status is AgentStatus.RUNNING
+
+    assert "a2" in state.agents
+    assert state.agents["a2"].status is AgentStatus.STARTING
