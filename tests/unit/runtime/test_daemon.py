@@ -25,8 +25,8 @@ from nate_ntm.runtime.daemon import (
     StartupMode,
     check_startup_preconditions,
 )
-from nate_ntm.runtime.metadata_store import MetadataStore, SwarmMetadata
-from nate_ntm.runtime.state import RuntimeStatus
+from nate_ntm.runtime.metadata_store import AgentMetadata, MetadataStore, SwarmMetadata
+from nate_ntm.runtime.state import AgentRuntimeState, AgentStatus, RuntimeStatus
 
 
 def _make_config(project_root: Path) -> RuntimeConfig:
@@ -168,3 +168,104 @@ def test_runtime_daemon_start_rejects_invalid_transition(tmp_path: Path) -> None
 
     with pytest.raises(RuntimeStartupError):
         daemon.start()
+
+
+def test_runtime_daemon_get_runtime_status_aggregates_agent_counts(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    config = _make_config(project)
+    _write_minimal_swarm_metadata(config)
+
+    daemon = RuntimeDaemon.resume(config)
+
+    # Seed runtime state with a mix of agent statuses.
+    daemon.state.agents = {
+        "a-start": AgentRuntimeState(agent_id="a-start", status=AgentStatus.STARTING),
+        "a-idle": AgentRuntimeState(agent_id="a-idle", status=AgentStatus.IDLE),
+        "a-run": AgentRuntimeState(agent_id="a-run", status=AgentStatus.RUNNING),
+        "a-fail": AgentRuntimeState(agent_id="a-fail", status=AgentStatus.FAILED),
+    }
+    daemon.state.status = RuntimeStatus.RUNNING
+
+    payload = daemon.get_runtime_status()
+
+    assert payload["status"] == RuntimeStatus.RUNNING.value
+    assert payload["project_path"] == str(config.project_path)
+    assert payload["swarm_id"] == config.swarm_id
+
+    counts = payload["agent_counts"]
+    assert counts == {
+        "total": 4,
+        "starting": 1,
+        "idle": 1,
+        "running": 1,
+        "waiting": 0,
+        "failed": 1,
+    }
+
+
+
+def test_runtime_daemon_get_swarm_overview_joins_metadata_and_runtime_state(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    config = _make_config(project)
+    _write_minimal_swarm_metadata(config)
+
+    daemon = RuntimeDaemon.resume(config)
+
+    # Attach agent metadata for two agents.
+    base_swarm = daemon.swarm_metadata
+    a1_meta = AgentMetadata(agent_id="a1", display_name="Agent One")
+    a2_meta = AgentMetadata(agent_id="a2", display_name="Agent Two")
+    daemon.swarm_metadata = SwarmMetadata(
+        swarm_id=base_swarm.swarm_id,
+        project_path=base_swarm.project_path,
+        agent_mail_project_id=base_swarm.agent_mail_project_id,
+        created_at=base_swarm.created_at,
+        last_updated_at=base_swarm.last_updated_at,
+        config_version=base_swarm.config_version,
+        agents={"a1": a1_meta, "a2": a2_meta},
+        runtime_options=base_swarm.runtime_options,
+    )
+
+    # Runtime state includes two configured agents plus one extra.
+    daemon.state.agents = {
+        "a1": AgentRuntimeState(agent_id="a1", status=AgentStatus.RUNNING),
+        "a2": AgentRuntimeState(
+            agent_id="a2", status=AgentStatus.FAILED, last_error="boom"
+        ),
+        "orphan": AgentRuntimeState(agent_id="orphan", status=AgentStatus.IDLE),
+    }
+    daemon.state.status = RuntimeStatus.RUNNING
+
+    overview = daemon.get_swarm_overview()
+
+    assert overview["swarm_id"] == config.swarm_id
+    assert overview["project_path"] == str(config.project_path)
+    assert overview["runtime_status"] == RuntimeStatus.RUNNING.value
+
+    counts = overview["agent_counts"]
+    assert counts["total"] == 3
+    assert counts["running"] == 1
+    assert counts["idle"] == 1
+    assert counts["failed"] == 1
+
+    agents_by_id = {a["agent_id"]: a for a in overview["agents"]}
+
+    a1 = agents_by_id["a1"]
+    assert a1["display_name"] == "Agent One"
+    assert a1["status"] == AgentStatus.RUNNING.value
+    assert a1["has_unread_mail"] is False
+    assert a1["last_error"] is None
+
+    a2 = agents_by_id["a2"]
+    assert a2["display_name"] == "Agent Two"
+    assert a2["status"] == AgentStatus.FAILED.value
+    assert a2["has_unread_mail"] is False
+    assert a2["last_error"] == "boom"
+
+    orphan = agents_by_id["orphan"]
+    # No metadata, so the display name should fall back to agent_id.
+    assert orphan["display_name"] == "orphan"
+    assert orphan["status"] == AgentStatus.IDLE.value
+    assert orphan["has_unread_mail"] is False
+    assert orphan["last_error"] is None
+

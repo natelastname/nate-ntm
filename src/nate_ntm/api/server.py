@@ -12,7 +12,7 @@ can be expanded in later tasks (for example T018 and T019).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, Protocol
+from typing import Any, Dict, Protocol
 
 from ..runtime.daemon import RuntimeDaemon
 
@@ -63,3 +63,25 @@ class RuntimeApiServer:
 
         # Stub: nothing to do yet.
         return
+
+    # Handlers -----------------------------------------------------------
+
+    def get_runtime_status(self) -> Dict[str, Any]:
+        """Return high-level runtime status for ``runtime.get_status``.
+
+        For the MVP this is a thin wrapper over the
+        :class:`RuntimeDaemon` introspection APIs. JSON-RPC wiring and
+        WebSocket transport are added in later tasks.
+        """
+
+        return self.daemon.get_runtime_status()
+
+    def get_swarm_overview(self) -> Dict[str, Any]:
+        """Return swarm overview data for ``swarm.get_overview``.
+
+        This mirrors the result shape defined in
+        ``contracts/runtime-api.md`` by delegating to the
+        :class:`RuntimeDaemon`.
+        """
+
+        return self.daemon.get_swarm_overview()

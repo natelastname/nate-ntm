@@ -34,7 +34,7 @@ from typing import Optional
 
 from ..config.runtime_config import RuntimeConfig
 from .metadata_store import MetadataStore, SwarmMetadata
-from .state import RuntimeState, RuntimeStatus
+from .state import AgentStatus, RuntimeState, RuntimeStatus
 
 __all__ = [
     "StartupMode",
@@ -246,3 +246,87 @@ class RuntimeDaemon:
         """
 
         self.state.status = RuntimeStatus.STOPPED
+
+    # Introspection ------------------------------------------------------
+
+    def _compute_agent_counts(self) -> dict[str, int]:
+        """Return aggregate agent counts by lifecycle status.
+
+        The shape of the returned mapping matches the ``agent_counts`` object
+        in ``contracts/runtime-api.md`` for ``runtime.get_status`` and
+        ``swarm.get_overview``.
+        """
+
+        counts_by_status = {status: 0 for status in AgentStatus}
+        for agent in self.state.agents.values():
+            counts_by_status[agent.status] += 1
+
+        total = sum(counts_by_status.values())
+        return {
+            "total": total,
+            "starting": counts_by_status[AgentStatus.STARTING],
+            "idle": counts_by_status[AgentStatus.IDLE],
+            "running": counts_by_status[AgentStatus.RUNNING],
+            "waiting": counts_by_status[AgentStatus.WAITING],
+            "failed": counts_by_status[AgentStatus.FAILED],
+        }
+
+    def get_runtime_status(self) -> dict[str, object]:
+        """Return a JSON-serializable snapshot for ``runtime.get_status``.
+
+        This mirrors the result shape defined in
+        ``specs/001-swarm-runtime-orchestrator/contracts/runtime-api.md``.
+        """
+
+        return {
+            "status": self.state.status.value,
+            "project_path": str(self.config.project_path),
+            "swarm_id": self.swarm_metadata.swarm_id,
+            "agent_counts": self._compute_agent_counts(),
+        }
+
+    def get_swarm_overview(self) -> dict[str, object]:
+        """Return a JSON-serializable snapshot for ``swarm.get_overview``."""
+
+        agent_counts = self._compute_agent_counts()
+
+        # Union of configured agents (metadata) and those currently present
+        # in runtime state; this is tolerant of partial initialization.
+        all_agent_ids = set(self.swarm_metadata.agents.keys()) | set(
+            self.state.agents.keys()
+        )
+
+        agents = []
+        for agent_id in sorted(all_agent_ids):
+            metadata = self.swarm_metadata.agents.get(agent_id)
+            runtime_state = self.state.agents.get(agent_id)
+
+            display_name = metadata.display_name if metadata is not None else agent_id
+            status = (
+                runtime_state.status.value
+                if runtime_state is not None
+                else AgentStatus.STARTING.value
+            )
+            last_error = runtime_state.last_error if runtime_state is not None else None
+
+            # ``has_unread_mail`` will be wired to Agent Mail state in
+            # later tasks (T014/T017). For now we conservatively default
+            # to ``False``.
+            agents.append(
+                {
+                    "agent_id": agent_id,
+                    "display_name": display_name,
+                    "status": status,
+                    "has_unread_mail": False,
+                    "last_error": last_error,
+                }
+            )
+
+        return {
+            "swarm_id": self.swarm_metadata.swarm_id,
+            "project_path": str(self.swarm_metadata.project_path),
+            "runtime_status": self.state.status.value,
+            "agent_counts": agent_counts,
+            "agents": agents,
+        }
+

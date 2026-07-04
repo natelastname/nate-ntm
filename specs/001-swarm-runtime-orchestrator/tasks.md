@@ -73,10 +73,10 @@ description: "Implementation tasks for Feature 001: nate_ntm Swarm Runtime Orche
 - [ ] T015 [P] [US1] Implement an OpenHands ACP client adapter in `src/nate_ntm/runtime/acp_client.py` that can open control-protocol conversations for new agents and surface lifecycle events to the scheduler (FR-003 and FR-004), along with a fake/dev-mode implementation suitable for tests that simulates conversations and turn lifecycle without contacting a real OpenHands server.
 - [ ] T016 [US1] Implement agent subprocess launch and lifecycle supervision in `src/nate_ntm/runtime/agents.py`, updating `AgentRuntimeState.status` (Starting, Idle, Running, Waiting, Failed) and invoking restart hooks per FR-004 and FR-011.
 - [ ] T017 [US1] Implement scheduler logic in `src/nate_ntm/runtime/scheduler.py` for processing startup, subprocess, ACP, and Agent Mail events so that swarm-level and per-agent status remain accurate in `RuntimeState`.
-- [ ] T018 [US1] Implement the `runtime.get_status` handler in `src/nate_ntm/api/server.py` and its runtime-facing implementation in `src/nate_ntm/runtime/daemon.py` to return `RuntimeStatus` and aggregate agent counts as specified in `specs/001-swarm-runtime-orchestrator/contracts/runtime-api.md`.
-- [ ] T019 [US1] Implement the `swarm.get_overview` handler in `src/nate_ntm/api/server.py` and support function in `src/nate_ntm/runtime/daemon.py` to return per-agent summaries (ID, display name, status, `has_unread_mail`, `last_error`) consistent with the contract.
+- [x] T018 [US1] Implement the `runtime.get_status` handler in `src/nate_ntm/api/server.py` and its runtime-facing implementation in `src/nate_ntm/runtime/daemon.py` to return `RuntimeStatus` and aggregate agent counts as specified in `specs/001-swarm-runtime-orchestrator/contracts/runtime-api.md`.
+- [x] T019 [US1] Implement the `swarm.get_overview` handler in `src/nate_ntm/api/server.py` and support function in `src/nate_ntm/runtime/daemon.py` to return per-agent summaries (ID, display name, status, `has_unread_mail`, `last_error`) consistent with the contract.
 - [ ] T020 [P] [US1] Add integration tests for swarm startup and status reporting in `tests/integration/quickstart/test_start_and_status_us1.py`, covering SC-001 and the US1 acceptance scenarios.
-- [ ] T021 [P] [US1] Add a CLI integration test in `tests/integration/quickstart/test_runtime_cli_us1.py` that runs `nate-ntm runtime start --project <tmp_project>` and verifies `runtime.get_status` returns `Running` with correct agent counts.
+- [x] T021 [P] [US1] Add a CLI integration test in `tests/integration/quickstart/test_runtime_cli_us1.py` that runs `nate-ntm runtime start --project <tmp_project>` and verifies `runtime.get_status` returns `Running` with correct agent counts.
 
 ---
 
