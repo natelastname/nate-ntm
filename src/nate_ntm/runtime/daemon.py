@@ -33,6 +33,8 @@ from pathlib import Path
 from typing import Optional
 
 from ..config.runtime_config import RuntimeConfig
+from .acp_client import BaseAcpClient, FakeAcpClient
+from .agent_mail_client import BaseAgentMailClient, FakeAgentMailClient
 from .agents import AgentSupervisor
 from .metadata_store import MetadataStore, SwarmMetadata
 from .scheduler import RuntimeScheduler
@@ -141,6 +143,12 @@ class RuntimeDaemon:
     # presence without needing to instantiate it manually.
     scheduler: RuntimeScheduler | None = None
 
+    # Runtime-owned integration clients. For the MVP we default these to
+    # the in-memory Fake* implementations; future work may allow more
+    # configurable adapters.
+    agent_mail_client: BaseAgentMailClient | None = None
+    acp_client: BaseAcpClient | None = None
+
     @classmethod
     def create(cls, config: RuntimeConfig) -> "RuntimeDaemon":
         """Construct a :class:`RuntimeDaemon` in `create` mode.
@@ -159,11 +167,19 @@ class RuntimeDaemon:
         check_startup_preconditions(config, StartupMode.CREATE)
         store = MetadataStore(config=config)
 
+        # For US1 we rely on the in-memory FakeAgentMailClient, which
+        # derives a deterministic project identifier from the
+        # RuntimeConfig. This ID is persisted in SwarmMetadata so that
+        # later resume flows (US2) can reuse the same Agent Mail
+        # project.
+        agent_mail_client: BaseAgentMailClient = FakeAgentMailClient(config=config)
+        agent_mail_project_id = agent_mail_client.ensure_project()
+
         now = datetime.utcnow()
         swarm = SwarmMetadata(
             swarm_id=config.swarm_id,
             project_path=config.project_path,
-            agent_mail_project_id="",
+            agent_mail_project_id=agent_mail_project_id,
             created_at=now,
             last_updated_at=now,
         )
@@ -189,6 +205,12 @@ class RuntimeDaemon:
             agent_supervisor=agent_supervisor,
         )
 
+        # For now we also construct a FakeAcpClient so that a single
+        # RuntimeDaemon instance owns all of the core integration
+        # adapters needed by the scheduler and future control API
+        # methods.
+        acp_client: BaseAcpClient = FakeAcpClient(config=config)
+
         return cls(
             config=config,
             metadata_store=store,
@@ -196,6 +218,8 @@ class RuntimeDaemon:
             state=state,
             startup_mode=StartupMode.CREATE,
             scheduler=scheduler,
+            agent_mail_client=agent_mail_client,
+            acp_client=acp_client,
         )
 
     @classmethod
@@ -225,6 +249,13 @@ class RuntimeDaemon:
             agent_supervisor=agent_supervisor,
         )
 
+        # For now we mirror the `create` path and construct in-memory
+        # Fake* clients so that the daemon owns a consistent set of
+        # integration adapters regardless of startup mode. Resume-specific
+        # rebinding semantics (FR-009) are implemented in later US2 tasks.
+        agent_mail_client: BaseAgentMailClient = FakeAgentMailClient(config=config)
+        acp_client: BaseAcpClient = FakeAcpClient(config=config)
+
         return cls(
             config=config,
             metadata_store=store,
@@ -232,6 +263,8 @@ class RuntimeDaemon:
             state=state,
             startup_mode=StartupMode.RESUME,
             scheduler=scheduler,
+            agent_mail_client=agent_mail_client,
+            acp_client=acp_client,
         )
 
     # Lifecycle ---------------------------------------------------------
@@ -326,7 +359,13 @@ class RuntimeDaemon:
         }
 
     def get_swarm_overview(self) -> dict[str, object]:
-        """Return a JSON-serializable snapshot for ``swarm.get_overview``."""
+        """Return a JSON-serializable snapshot for ``swarm.get_overview``.
+
+        In addition to joining persisted metadata with live runtime
+        status, this wires in unread mailbox summaries via the
+        :class:`BaseAgentMailClient` when available, as required by the
+        runtime API contract for User Story 1.
+        """
 
         agent_counts = self._compute_agent_counts()
 
@@ -336,8 +375,18 @@ class RuntimeDaemon:
             self.state.agents.keys()
         )
 
+        sorted_ids = sorted(all_agent_ids)
+
+        # Ask the Agent Mail client (if present) for unread-mail flags in
+        # a single batch. When no client is configured, we conservatively
+        # default to ``False`` for all agents.
+        if self.agent_mail_client is not None:
+            unread_flags = self.agent_mail_client.get_unread_mail_flags(sorted_ids)
+        else:  # pragma: no cover - exercised indirectly via API tests
+            unread_flags = {agent_id: False for agent_id in sorted_ids}
+
         agents = []
-        for agent_id in sorted(all_agent_ids):
+        for agent_id in sorted_ids:
             metadata = self.swarm_metadata.agents.get(agent_id)
             runtime_state = self.state.agents.get(agent_id)
 
@@ -348,16 +397,14 @@ class RuntimeDaemon:
                 else AgentStatus.STARTING.value
             )
             last_error = runtime_state.last_error if runtime_state is not None else None
+            has_unread_mail = bool(unread_flags.get(agent_id, False))
 
-            # ``has_unread_mail`` will be wired to Agent Mail state in
-            # later tasks (T014/T017). For now we conservatively default
-            # to ``False``.
             agents.append(
                 {
                     "agent_id": agent_id,
                     "display_name": display_name,
                     "status": status,
-                    "has_unread_mail": False,
+                    "has_unread_mail": has_unread_mail,
                     "last_error": last_error,
                 }
             )

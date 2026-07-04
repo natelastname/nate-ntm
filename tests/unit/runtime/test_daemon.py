@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from nate_ntm.config.runtime_config import RuntimeConfig, load_runtime_config
+from nate_ntm.runtime.agent_mail_client import FakeAgentMailClient
 from nate_ntm.runtime.daemon import (
     MetadataAlreadyExistsError,
     MetadataMissingError,
@@ -104,8 +105,11 @@ def test_runtime_daemon_create_initializes_and_persists_swarm_metadata(tmp_path:
     assert daemon.metadata_store.metadata_dir == config.metadata_dir
     assert daemon.swarm_metadata.swarm_id == config.swarm_id
     assert daemon.swarm_metadata.project_path == config.project_path
-    # Agent Mail project ID is intentionally left empty until T014 wires it.
-    assert daemon.swarm_metadata.agent_mail_project_id == ""
+
+    # Agent Mail project ID should be initialized via FakeAgentMailClient
+    # using the deterministic format from FakeAgentMailClient.ensure_project.
+    expected_project_id = f"fake-mail-project:{config.swarm_id}:{config.project_path}"
+    assert daemon.swarm_metadata.agent_mail_project_id == expected_project_id
 
     assert daemon.state.config is config
     assert daemon.state.status is RuntimeStatus.STARTING
@@ -201,6 +205,54 @@ def test_runtime_daemon_get_runtime_status_aggregates_agent_counts(tmp_path: Pat
         "waiting": 0,
         "failed": 1,
     }
+
+
+def test_runtime_daemon_swarm_overview_includes_unread_mail_flags(tmp_path: Path) -> None:
+    """swarm.get_overview should surface unread-mail flags via Agent Mail.
+
+    This exercises the integration between RuntimeDaemon and
+    FakeAgentMailClient for the ``has_unread_mail`` field.
+    """
+
+    project = tmp_path / "project"
+    config = _make_config(project)
+    _write_minimal_swarm_metadata(config)
+
+    daemon = RuntimeDaemon.resume(config)
+
+    # Seed metadata and runtime state for two agents.
+    base_swarm = daemon.swarm_metadata
+    a1_meta = AgentMetadata(agent_id="a1", display_name="Agent One")
+    a2_meta = AgentMetadata(agent_id="a2", display_name="Agent Two")
+    daemon.swarm_metadata = SwarmMetadata(
+        swarm_id=base_swarm.swarm_id,
+        project_path=base_swarm.project_path,
+        agent_mail_project_id=base_swarm.agent_mail_project_id,
+        created_at=base_swarm.created_at,
+        last_updated_at=base_swarm.last_updated_at,
+        config_version=base_swarm.config_version,
+        agents={"a1": a1_meta, "a2": a2_meta},
+        runtime_options=base_swarm.runtime_options,
+    )
+
+    daemon.state.agents = {
+        "a1": AgentRuntimeState(agent_id="a1", status=AgentStatus.RUNNING),
+        "a2": AgentRuntimeState(agent_id="a2", status=AgentStatus.IDLE),
+    }
+    daemon.state.status = RuntimeStatus.RUNNING
+
+    # The RuntimeDaemon.resume path should have constructed a
+    # FakeAgentMailClient by default.
+    assert isinstance(daemon.agent_mail_client, FakeAgentMailClient)
+
+    # Simulate unread mail for one of the agents.
+    daemon.agent_mail_client.set_unread_count_for_test("a2", 3)  # type: ignore[union-attr]
+
+    overview = daemon.get_swarm_overview()
+    agents_by_id = {a["agent_id"]: a for a in overview["agents"]}
+
+    assert agents_by_id["a1"]["has_unread_mail"] is False
+    assert agents_by_id["a2"]["has_unread_mail"] is True
 
 
 
