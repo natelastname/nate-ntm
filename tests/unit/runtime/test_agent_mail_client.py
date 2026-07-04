@@ -1,8 +1,9 @@
 """Unit tests for the Agent Mail coordination adapter (T014).
 
 These tests focus on the in-memory / dev-mode implementation used in
-unit and integration tests. The real adapter that talks to a running
-Agent Mail service will be layered on later.
+unit and integration tests. The production MCP-backed adapter that talks
+to a running Agent Mail service is covered by separate gated integration
+tests (see T101).
 """
 
 from __future__ import annotations

@@ -18,7 +18,9 @@ from typing import Any, Dict, Optional
 
 import asyncio
 import json
+
 import typer
+from dotenv import load_dotenv
 
 from .api.client import JsonRpcWebSocketClient
 from .config.runtime_config import RuntimeConfig, load_runtime_config
@@ -29,6 +31,13 @@ from .runtime.daemon import (
     StartupMode,
     check_startup_preconditions,
 )
+
+# Load a local .env file (if present) before Typer evaluates any
+# environment-backed options. This keeps CLI behavior aligned with the
+# precedence rules used by :func:`load_runtime_config` while still letting
+# real environment variables and explicit CLI arguments win.
+load_dotenv()
+
 from .runtime.runner import run_runtime_with_control_api
 
 app = typer.Typer(help="nate_ntm command-line interface")

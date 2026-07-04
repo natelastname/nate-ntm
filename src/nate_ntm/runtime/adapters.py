@@ -7,11 +7,12 @@ that the daemon and scheduler can depend on the abstract adapter
 interfaces without needing to know which concrete implementations are in
 use for a given run.
 
-For T100 and the US1–US3 baseline we only support the in-memory
-"fake" adapters used in dev-mode and tests. Requests for a "real"
-adapter kind will raise :class:`NotImplementedError` with a clear
-message until the corresponding Phase 6 tasks (production Agent Mail and
-ACP adapters) are implemented.
+For T100 and the US1–US3 baseline we primarily support the in-memory
+"fake" adapters used in dev-mode and tests. As Phase 6 tasks land, the
+``"real"`` adapter kind is being wired up to production-ready
+implementations. At this stage (T101/T102) both the Agent Mail and ACP
+adapters have real implementations available in addition to their fake
+counterparts.
 """
 
 from __future__ import annotations
@@ -19,8 +20,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ..config.runtime_config import AdapterKind, RuntimeConfig
-from .acp_client import BaseAcpClient, FakeAcpClient
-from .agent_mail_client import BaseAgentMailClient, FakeAgentMailClient
+from .acp_client import BaseAcpClient, FakeAcpClient, OpenHandsAcpClient
+from .agent_mail_client import BaseAgentMailClient, FakeAgentMailClient, McpAgentMailClient
 
 __all__ = ["RuntimeAdapters", "create_runtime_adapters"]
 
@@ -58,11 +59,10 @@ def create_runtime_adapters(config: RuntimeConfig) -> RuntimeAdapters:
     """Construct :class:`RuntimeAdapters` for ``config``.
 
     This helper inspects the adapter selection fields on ``config`` and
-    constructs the appropriate concrete adapter implementations. For this
-    T100 slice only the ``AdapterKind.FAKE`` branch is implemented for
-    both Agent Mail and ACP. Selecting ``AdapterKind.REAL`` for either
-    integration will raise :class:`NotImplementedError` with a clear
-    error message.
+    constructs the appropriate concrete adapter implementations. For the
+    T100/T101/T102 baseline the ``AdapterKind.FAKE`` branch is implemented
+    for both Agent Mail and ACP, and ``AdapterKind.REAL`` is implemented
+    for both integrations as well.
     """
 
     mail_kind = _select_adapter_kind(config.adapter_mode, config.agent_mail_adapter)
@@ -72,10 +72,7 @@ def create_runtime_adapters(config: RuntimeConfig) -> RuntimeAdapters:
     if mail_kind is AdapterKind.FAKE:
         agent_mail: BaseAgentMailClient = FakeAgentMailClient(config=config)
     elif mail_kind is AdapterKind.REAL:
-        raise NotImplementedError(
-            "AdapterKind.REAL for Agent Mail is not implemented yet; "
-            "use adapter_mode='fake' or --adapter-mode=fake for now.",
-        )
+        agent_mail = McpAgentMailClient(config=config)
     else:  # pragma: no cover - defensive
         raise ValueError(f"Unsupported Agent Mail adapter kind: {mail_kind!r}")
 
@@ -83,10 +80,7 @@ def create_runtime_adapters(config: RuntimeConfig) -> RuntimeAdapters:
     if acp_kind is AdapterKind.FAKE:
         acp: BaseAcpClient = FakeAcpClient(config=config)
     elif acp_kind is AdapterKind.REAL:
-        raise NotImplementedError(
-            "AdapterKind.REAL for ACP is not implemented yet; "
-            "use adapter_mode='fake' or --adapter-mode=fake for now.",
-        )
+        acp = OpenHandsAcpClient(config=config)
     else:  # pragma: no cover - defensive
         raise ValueError(f"Unsupported ACP adapter kind: {acp_kind!r}")
 

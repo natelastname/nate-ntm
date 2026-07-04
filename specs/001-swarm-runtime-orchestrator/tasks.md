@@ -127,7 +127,7 @@ complete for this orchestrator MVP.
 ---
 ## Phase 6: Production Integration
 
-- [ ] T100 [P] Support configurable runtime adapter implementations for ACP and Agent Mail,
+- [x] T100 [P] Support configurable runtime adapter implementations for ACP and Agent Mail,
   including configuration fields in `src/nate_ntm/config/runtime_config.py` and CLI wiring
   on `nate-ntm runtime start` (for example, a general `--adapter-mode` flag or
   per-adapter options), while defaulting to the existing fake/dev-mode adapters so

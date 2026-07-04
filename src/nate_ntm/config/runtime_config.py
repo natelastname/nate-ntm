@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Mapping, Optional, Union
 
 import os
+from dotenv import dotenv_values, find_dotenv
 
 __all__ = ["AdapterKind", "RuntimeConfig", "load_runtime_config"]
 
@@ -121,9 +122,19 @@ def load_runtime_config(
     Resolution order for each field:
 
     * Explicit function argument (if provided).
-    * Environment variable (if provided in ``env`` or ``os.environ``).
+    * Environment variable (from ``env`` when provided, otherwise from a
+      combination of a local ``.env`` file and ``os.environ``).
     * Safe default (for host/port/swarm_id/adapter_mode) or derived value
       (for paths).
+
+    When ``env`` is :data:`None`, a ``.env`` file in the current working
+    directory (or its parents) is loaded with :func:`python_dotenv.dotenv_values`
+    and then overlaid with the real process environment. This gives the
+    precedence order:
+
+    * explicit arguments
+    * real environment variables
+    * values from the ``.env`` file
 
     Environment variable names:
 
@@ -139,9 +150,20 @@ def load_runtime_config(
 
     env_mapping: Mapping[str, str]
     if env is None:
-        # Copy to a plain dict so later mutations to os.environ do not
-        # affect an already-computed configuration.
-        env_mapping = dict(os.environ)  # type: ignore[arg-type]
+        # Start with values from a local .env file (if present, discovered
+        # from the current working directory) and then overlay the real
+        # process environment so that ``os.environ`` wins over the file.
+        # This snapshot is then used for all subsequent resolution so later
+        # mutations to ``os.environ`` do not affect an already-computed
+        # configuration.
+        dotenv_path = find_dotenv(usecwd=True)
+        if dotenv_path:
+            file_env = {k: v for k, v in dotenv_values(dotenv_path).items() if v is not None}
+        else:
+            file_env = {}
+        merged: dict[str, str] = dict(file_env)
+        merged.update(os.environ)  # type: ignore[arg-type]
+        env_mapping = merged
     else:
         env_mapping = env
 

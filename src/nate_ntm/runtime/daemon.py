@@ -202,13 +202,16 @@ class RuntimeDaemon:
                 agent_id = f"agent-{index}"
                 display_name = f"Agent {index}"
 
-                agent_mail_identity = agent_mail_client.ensure_agent_identity(agent_id)
+                agent_mail_identity, agent_mail_credentials_ref = (
+                    agent_mail_client.ensure_agent_identity_with_credentials(agent_id)
+                )
                 conversation_id = acp_client.ensure_conversation(agent_id)
 
                 agents[agent_id] = AgentMetadata(
                     agent_id=agent_id,
                     display_name=display_name,
                     agent_mail_identity=agent_mail_identity,
+                    agent_mail_credentials_ref=agent_mail_credentials_ref or "",
                     conversation_id=conversation_id,
                 )
 
@@ -338,7 +341,9 @@ class RuntimeDaemon:
 
         for agent_id, meta in swarm.agents.items():
             if meta.agent_mail_identity:
-                identity = agent_mail_client.ensure_agent_identity(agent_id)
+                identity, _credentials = agent_mail_client.ensure_agent_identity_with_credentials(
+                    agent_id, meta.agent_mail_credentials_ref or None
+                )
                 if identity != meta.agent_mail_identity:
                     raise RuntimeStartupError(
                         "Agent Mail identity mismatch on resume for "

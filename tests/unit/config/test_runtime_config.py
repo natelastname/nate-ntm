@@ -215,3 +215,62 @@ def test_load_runtime_config_invalid_port_raises(tmp_path: Path, port_value: obj
     # Argument-based invalid port
     with pytest.raises(ValueError):
         load_runtime_config(project_path=project_dir, control_api_port=port_value)  # type: ignore[arg-type]
+
+
+
+def test_load_runtime_config_uses_dotenv_when_env_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """When ``env`` is None, values from a local .env file are used.
+
+    This exercises the optional python-dotenv-based loading path. The test
+    is skipped entirely when python-dotenv is not installed.
+    """
+
+    pytest.importorskip("dotenv")
+
+    project_dir = tmp_path / "project_from_dotenv"
+    project_dir.mkdir()
+
+    dotenv_file = tmp_path / ".env"
+    dotenv_file.write_text(
+        "\n".join(
+            [
+                "NATE_NTM_PROJECT_DIR=project_from_dotenv",
+                "NATE_NTM_SWARM_ID=from-dotenv",
+            ]
+        )
+    )
+
+    monkeypatch.chdir(tmp_path)
+
+    config = load_runtime_config()
+
+    assert config.project_path == project_dir.resolve()
+    assert config.swarm_id == "from-dotenv"
+
+
+
+def test_load_runtime_config_env_overrides_dotenv(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Real environment variables override values from .env when both are set."""
+
+    pytest.importorskip("dotenv")
+
+    project_dir = tmp_path / "project_from_dotenv"
+    project_dir.mkdir()
+
+    (tmp_path / ".env").write_text(
+        "\n".join(
+            [
+                "NATE_NTM_PROJECT_DIR=project_from_dotenv",
+                "NATE_NTM_SWARM_ID=from-dotenv",
+            ]
+        )
+    )
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NATE_NTM_SWARM_ID", "from-os-environ")
+
+    config = load_runtime_config()
+
+    assert config.project_path == project_dir.resolve()
+    assert config.swarm_id == "from-os-environ"
+
