@@ -72,6 +72,7 @@ def create_runtime_control_context(
     *,
     host: Optional[str] = None,
     port: Optional[int] = None,
+    agent_count: int | None = None,
 ) -> RuntimeControlContext:
     """Construct a :class:`RuntimeControlContext` for ``config`` and ``mode``.
 
@@ -88,7 +89,7 @@ def create_runtime_control_context(
     """
 
     if mode is StartupMode.CREATE:
-        daemon = RuntimeDaemon.create(config)
+        daemon = RuntimeDaemon.create(config, agent_count=agent_count)
     elif mode is StartupMode.RESUME:
         daemon = RuntimeDaemon.resume(config)
     else:  # pragma: no cover - defensive against future enum variants
@@ -190,6 +191,7 @@ async def run_runtime_with_control_api_async(
     host: Optional[str] = None,
     port: Optional[int] = None,
     poll_interval: float = 0.1,
+    agent_count: int | None = None,
 ) -> None:
     """Async helper to run a runtime and its control API to completion.
 
@@ -200,7 +202,13 @@ async def run_runtime_with_control_api_async(
     event loop.
     """
 
-    ctx = create_runtime_control_context(config, mode, host=host, port=port)
+    ctx = create_runtime_control_context(
+        config,
+        mode,
+        host=host,
+        port=port,
+        agent_count=agent_count,
+    )
     await serve_runtime_control_api(ctx, poll_interval=poll_interval)
 
 
@@ -211,6 +219,7 @@ def run_runtime_with_control_api(
     host: Optional[str] = None,
     port: Optional[int] = None,
     poll_interval: float = 0.1,
+    agent_count: int | None = None,
 ) -> None:
     """Run a runtime daemon and its WebSocket control API to completion.
 
@@ -227,5 +236,6 @@ def run_runtime_with_control_api(
             host=host,
             port=port,
             poll_interval=poll_interval,
+            agent_count=agent_count,
         )
     )

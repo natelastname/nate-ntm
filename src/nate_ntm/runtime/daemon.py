@@ -150,18 +150,27 @@ class RuntimeDaemon:
     acp_client: BaseAcpClient | None = None
 
     @classmethod
-    def create(cls, config: RuntimeConfig) -> "RuntimeDaemon":
+    def create(
+        cls,
+        config: RuntimeConfig,
+        *,
+        agent_count: int | None = None,
+    ) -> "RuntimeDaemon":
         """Construct a :class:`RuntimeDaemon` in `create` mode.
 
         This helper validates that swarm metadata does *not* already
         exist for the project, initializes a fresh :class:`SwarmMetadata`
-        record with no agents, persists it via :class:`MetadataStore`,
-        and returns a new :class:`RuntimeDaemon` with
-        :class:`RuntimeState` in the ``Starting`` status.
+        record (optionally with a small set of initial agents), persists
+        it via :class:`MetadataStore`, and returns a new
+        :class:`RuntimeDaemon` with :class:`RuntimeState` in the
+        ``Starting`` status.
 
-        Later tasks (for example, T014/T015) will extend this flow to
-        create an Agent Mail project, initial agents, and ACP
-        conversations before the runtime is fully started.
+        When ``agent_count`` is provided and greater than zero, a simple
+        set of fake agents is created using the runtime-owned
+        :class:`FakeAgentMailClient` and :class:`FakeAcpClient`. Their
+        Agent Mail identities and ACP conversation IDs are persisted in
+        both :class:`SwarmMetadata` and per-agent metadata files so that
+        later resume flows can reuse them.
         """
 
         check_startup_preconditions(config, StartupMode.CREATE)
@@ -175,6 +184,30 @@ class RuntimeDaemon:
         agent_mail_client: BaseAgentMailClient = FakeAgentMailClient(config=config)
         agent_mail_project_id = agent_mail_client.ensure_project()
 
+        # Construct an in-memory ACP client so that we can allocate
+        # per-agent conversation identifiers for newly created agents.
+        acp_client: BaseAcpClient = FakeAcpClient(config=config)
+
+        # Optionally create a small set of initial agents with fake
+        # Agent Mail identities and ACP conversations.
+        agents: dict[str, "AgentMetadata"] = {}
+        if agent_count is not None and agent_count > 0:
+            from .metadata_store import AgentMetadata  # local import to avoid cycles
+
+            for index in range(1, agent_count + 1):
+                agent_id = f"agent-{index}"
+                display_name = f"Agent {index}"
+
+                agent_mail_identity = agent_mail_client.ensure_agent_identity(agent_id)
+                conversation_id = acp_client.ensure_conversation(agent_id)
+
+                agents[agent_id] = AgentMetadata(
+                    agent_id=agent_id,
+                    display_name=display_name,
+                    agent_mail_identity=agent_mail_identity,
+                    conversation_id=conversation_id,
+                )
+
         now = datetime.utcnow()
         swarm = SwarmMetadata(
             swarm_id=config.swarm_id,
@@ -182,11 +215,19 @@ class RuntimeDaemon:
             agent_mail_project_id=agent_mail_project_id,
             created_at=now,
             last_updated_at=now,
+            agents=agents,
         )
 
         # Persist the newly created swarm metadata using atomic write
         # semantics provided by the MetadataStore.
         store.save_swarm_metadata(swarm)
+
+        # Persist per-agent metadata files when initial agents were
+        # created. This mirrors the layout used by resume-mode tests and
+        # ensures that Agent Mail identities and ACP conversation IDs are
+        # durable across restarts.
+        if agents:
+            store.save_all_agent_metadata(agents.values())
 
         state = RuntimeState(config=config)
 
@@ -204,12 +245,6 @@ class RuntimeDaemon:
             swarm_metadata=swarm,
             agent_supervisor=agent_supervisor,
         )
-
-        # For now we also construct a FakeAcpClient so that a single
-        # RuntimeDaemon instance owns all of the core integration
-        # adapters needed by the scheduler and future control API
-        # methods.
-        acp_client: BaseAcpClient = FakeAcpClient(config=config)
 
         return cls(
             config=config,

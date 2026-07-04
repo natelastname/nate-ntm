@@ -123,6 +123,31 @@ def test_runtime_daemon_create_initializes_and_persists_swarm_metadata(tmp_path:
 
 
 
+
+def test_runtime_daemon_create_with_agents_initializes_agent_metadata(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    config = _make_config(project)
+
+    store = MetadataStore(config=config)
+
+    daemon = RuntimeDaemon.create(config, agent_count=3)
+
+    # In-memory swarm metadata should include three agents with deterministic
+    # identifiers.
+    assert set(daemon.swarm_metadata.agents.keys()) == {"agent-1", "agent-2", "agent-3"}
+
+    # Swarm metadata and per-agent metadata should be persisted via
+    # MetadataStore so that a later resume can reuse the same identities.
+    swarm = store.load_swarm_metadata()
+    assert set(swarm.agents.keys()) == {"agent-1", "agent-2", "agent-3"}
+
+    for agent_id in ["agent-1", "agent-2", "agent-3"]:
+        meta = store.load_agent_metadata(agent_id)
+        assert meta.agent_id == agent_id
+        assert meta.agent_mail_identity == f"fake-mail-identity:{agent_id}"
+        assert meta.conversation_id == f"fake-conversation:{agent_id}"
+
+
 def test_runtime_daemon_create_raises_if_metadata_already_exists(tmp_path: Path) -> None:
     project = tmp_path / "project"
     config = _make_config(project)

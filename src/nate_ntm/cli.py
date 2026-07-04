@@ -65,6 +65,15 @@ def runtime_start(
         "--mode",
         help="Startup mode: create a new swarm or resume an existing one.",
     ),
+    agents: int | None = typer.Option(
+        None,
+        "--agents",
+        "-n",
+        help=(
+            "Number of agents to create when starting in create mode. "
+            "Must not be used with --mode=resume."
+        ),
+    ),
     with_control_api: bool = typer.Option(
         False,
         "--with-control-api",
@@ -94,16 +103,33 @@ def runtime_start(
         StartupMode.CREATE if mode is CliStartupMode.CREATE else StartupMode.RESUME
     )
 
+    # ``--agents`` is only meaningful when creating a new swarm. Reject it
+    # explicitly in resume mode so that users do not assume it will resize an
+    # existing swarm, and require a positive value when provided.
+    if agents is not None:
+        if mode is CliStartupMode.RESUME:
+            raise typer.BadParameter(
+                "--agents can only be used with --mode=create",  # type: ignore[arg-type]
+            )
+        if agents <= 0:
+            raise typer.BadParameter(
+                "--agents must be a positive integer when used with --mode=create",  # type: ignore[arg-type]
+            )
+
     try:
         if with_control_api:
             # Delegate to the higher-level runner, which will construct the
             # daemon, start the scheduler, and serve the control API until a
             # shutdown is requested.
-            run_runtime_with_control_api(config, runtime_mode)
+            run_runtime_with_control_api(
+                config,
+                runtime_mode,
+                agent_count=agents,
+            )
             return
 
         if mode is CliStartupMode.CREATE:
-            daemon = RuntimeDaemon.create(config)
+            daemon = RuntimeDaemon.create(config, agent_count=agents)
         else:
             daemon = RuntimeDaemon.resume(config)
     except (MetadataAlreadyExistsError, MetadataMissingError) as exc:

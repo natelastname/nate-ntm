@@ -22,24 +22,37 @@ It is **not** an implementation guide; it assumes the runtime and its CLI/API ar
 
 ## 2. Start a New Swarm
 
-### 2.1 Start the Runtime Daemon
+### 2.1 Start the Runtime Daemon (create mode)
 
-From the project root:
+From the project root, start the runtime in **create** mode and run the
+WebSocket control API in the foreground:
 
 ```bash
-nate-ntm runtime start --project /abs/path/to/your/project
+nate-ntm runtime start \
+  --project /abs/path/to/your/project \
+  --mode create \
+  --agents 2 \
+  --with-control-api
 ```
 
-Expected behavior:
+This command:
 
-- A single Runtime daemon process starts.
-- It creates or loads swarm metadata under `.nate_ntm/` in the project directory.
-- It initializes or reuses the corresponding coordination project in Agent Mail.
-- It launches the configured agents and begins polling Agent Mail.
+- Resolves a `RuntimeConfig` for the given project directory.
+- Creates fresh swarm metadata under `.nate_ntm/` in the project directory.
+- Initializes or reuses the corresponding coordination project in Agent Mail.
+- Creates two placeholder agents (`agent-1` and `agent-2`) with bound Agent
+  Mail identities and ACP conversations.
+- Starts a local WebSocket JSON-RPC control API bound to
+  `127.0.0.1:8765` (or the host/port configured in `RuntimeConfig`).
+- Blocks until a shutdown is requested via the runtime control API.
+
+Leave this command running in one terminal while you inspect the runtime from
+another.
 
 ### 2.2 Check Runtime Status via API
 
-Use a CLI helper or JSON-RPC client to query `runtime.get_status` (see `contracts/runtime-api.md`):
+In a second terminal, use the CLI helper to query `runtime.get_status` (see
+`contracts/runtime-api.md`):
 
 ```bash
 nate-ntm api call runtime.get_status
@@ -49,13 +62,15 @@ Expected outcome (high level):
 
 - Runtime status is `Running`.
 - Swarm ID and project path are correct.
-- Agent counts reflect the configured agents (e.g., some `Starting` then `Idle`/`Running`).
+- Agent counts reflect the configured agents (for the example above,
+  `total` should be `2`, with both agents typically `Idle` shortly after
+  startup).
 
 ## 3. Resume a Previous Swarm
 
 ### 3.1 Shut Down Gracefully
 
-From another terminal:
+From another terminal (while the runtime is still running):
 
 ```bash
 nate-ntm api call runtime.shutdown --param timeout_seconds=30
@@ -68,13 +83,17 @@ Expected outcome:
 
 ### 3.2 Restart in Resume Mode
 
-Start the Runtime again:
+Start the Runtime again in **resume** mode, reusing the existing swarm
+metadata and agents:
 
 ```bash
-nate-ntm runtime start --project /abs/path/to/your/project --mode resume
+nate-ntm runtime start \
+  --project /abs/path/to/your/project \
+  --mode resume \
+  --with-control-api
 ```
 
-Then query status:
+Then query status from another terminal as before:
 
 ```bash
 nate-ntm api call runtime.get_status

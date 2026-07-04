@@ -79,8 +79,8 @@ def test_runtime_cli_us1_quickstart_flow(monkeypatch: pytest.MonkeyPatch, tmp_pa
     #   `agent_counts` has meaningful, non-zero values.
     real_create = daemon_mod.RuntimeDaemon.create
 
-    def fake_create(fake_config: RuntimeConfig) -> RuntimeDaemon:
-        daemon = real_create(fake_config)
+    def fake_create(fake_config: RuntimeConfig, *args, **kwargs) -> RuntimeDaemon:  # type: ignore[override]
+        daemon = real_create(fake_config, *args, **kwargs)
 
         # Seed a small mixture of agent statuses to mirror
         # the ``agent_counts`` example in contracts/runtime-api.md.

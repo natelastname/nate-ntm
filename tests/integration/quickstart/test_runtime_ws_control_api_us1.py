@@ -150,3 +150,104 @@ def test_runtime_ws_control_api_us1_status_and_shutdown(tmp_path: Path) -> None:
         assert agent_state.status is AgentStatus.IDLE
 
     asyncio.run(main())
+
+
+
+def test_runtime_ws_control_api_us1_create_with_agents_status_and_overview(tmp_path: Path) -> None:
+    """US1.5: create-mode startup with a non-empty fake swarm.
+
+    This test mirrors a CLI-driven flow of starting the runtime in
+    ``create`` mode with a configured number of agents, but drives the
+    underlying runner helpers directly. It verifies that:
+
+    * ``runtime.get_status`` reports the expected agent counts for the
+      newly created swarm.
+    * ``swarm.get_overview`` lists the fake agents with ``Idle`` status.
+    * ``runtime.shutdown`` cleanly tears down the control API server.
+    """
+
+    async def main() -> None:
+        project = tmp_path / "project"
+        project.mkdir(parents=True, exist_ok=True)
+
+        config: RuntimeConfig = load_runtime_config(project_path=project)
+
+        ctx: RuntimeControlContext = create_runtime_control_context(
+            config,
+            StartupMode.CREATE,
+            host="127.0.0.1",
+            port=0,
+            agent_count=2,
+        )
+
+        serve_task = asyncio.create_task(serve_runtime_control_api(ctx))
+
+        async def _wait_for_server_port() -> int:
+            for _ in range(50):
+                port = ctx.ws_server.bound_port
+                if port != 0:
+                    return port
+                await asyncio.sleep(0.05)
+            raise AssertionError("WebSocket server did not bind to a port in time")
+
+        port = await _wait_for_server_port()
+
+        client = JsonRpcWebSocketClient(host="127.0.0.1", port=port, timeout=5.0)
+
+        async def _wait_for_running_status() -> dict[str, object]:
+            last_exc: Exception | None = None
+            for _ in range(50):
+                try:
+                    result = await client.call_for_result("runtime.get_status", {})
+                except OSError as exc:
+                    last_exc = exc
+                    await asyncio.sleep(0.1)
+                    continue
+                return result
+            raise AssertionError(f"runtime.get_status did not succeed: {last_exc!r}")
+
+        status = await _wait_for_running_status()
+
+        assert status["status"] == RuntimeStatus.RUNNING.value
+        assert status["project_path"] == str(config.project_path)
+        assert status["swarm_id"] == config.swarm_id
+
+        counts = status["agent_counts"]
+        assert counts == {
+            "total": 2,
+            "starting": 0,
+            "idle": 2,
+            "running": 0,
+            "waiting": 0,
+            "failed": 0,
+        }
+
+        overview = await client.call_for_result("swarm.get_overview", {})
+        agents = overview["agents"]
+        assert len(agents) == 2
+
+        agent_ids = sorted(a["agent_id"] for a in agents)
+        assert agent_ids == ["agent-1", "agent-2"]
+
+        for agent in agents:
+            assert agent["status"] == AgentStatus.IDLE.value
+            assert agent["last_error"] is None
+
+        # Request a graceful shutdown via the control API.
+        shutdown_result = await client.call_for_result(
+            "runtime.shutdown", {"timeout_seconds": 5}
+        )
+        assert shutdown_result["accepted"] is True
+        assert shutdown_result["status"] == RuntimeStatus.SHUTTING_DOWN.value
+
+        await asyncio.wait_for(serve_task, timeout=5.0)
+        assert ctx.daemon.state.status is RuntimeStatus.STOPPED
+
+        # The two fake agents should have been launched in dev-mode via the
+        # scheduler when the daemon started.
+        assert set(ctx.daemon.state.agents.keys()) == {"agent-1", "agent-2"}
+        for agent_state in ctx.daemon.state.agents.values():
+            assert agent_state.status is AgentStatus.IDLE
+
+    asyncio.run(main())
+
