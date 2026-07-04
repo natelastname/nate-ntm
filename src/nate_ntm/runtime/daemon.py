@@ -33,7 +33,9 @@ from pathlib import Path
 from typing import Optional
 
 from ..config.runtime_config import RuntimeConfig
+from .agents import AgentSupervisor
 from .metadata_store import MetadataStore, SwarmMetadata
+from .scheduler import RuntimeScheduler
 from .state import AgentStatus, RuntimeState, RuntimeStatus
 
 __all__ = [
@@ -133,6 +135,12 @@ class RuntimeDaemon:
     started_at: Optional[datetime] = None
     """Timestamp when :meth:`start` was last called, if ever."""
 
+    # Optional scheduler facade used to manage agent registration and,
+    # in later phases, event-loop driven behavior. This is constructed by
+    # :meth:`create` / :meth:`resume` so that tests can rely on its
+    # presence without needing to instantiate it manually.
+    scheduler: RuntimeScheduler | None = None
+
     @classmethod
     def create(cls, config: RuntimeConfig) -> "RuntimeDaemon":
         """Construct a :class:`RuntimeDaemon` in `create` mode.
@@ -166,12 +174,28 @@ class RuntimeDaemon:
 
         state = RuntimeState(config=config)
 
+        # Wire a minimal scheduler and agent supervisor so that future
+        # work (T016/T017) can build on this structure without changing
+        # the public ``RuntimeDaemon`` API.
+        agent_supervisor = AgentSupervisor(
+            config=config,
+            state=state,
+            swarm_metadata=swarm,
+        )
+        scheduler = RuntimeScheduler(
+            config=config,
+            state=state,
+            swarm_metadata=swarm,
+            agent_supervisor=agent_supervisor,
+        )
+
         return cls(
             config=config,
             metadata_store=store,
             swarm_metadata=swarm,
             state=state,
             startup_mode=StartupMode.CREATE,
+            scheduler=scheduler,
         )
 
     @classmethod
@@ -188,8 +212,18 @@ class RuntimeDaemon:
         swarm = store.load_swarm_metadata()
 
         state = RuntimeState(config=config)
-        # The scheduler and agent runtime states will be wired in by
-        # later tasks; for now we only track high-level runtime status.
+
+        agent_supervisor = AgentSupervisor(
+            config=config,
+            state=state,
+            swarm_metadata=swarm,
+        )
+        scheduler = RuntimeScheduler(
+            config=config,
+            state=state,
+            swarm_metadata=swarm,
+            agent_supervisor=agent_supervisor,
+        )
 
         return cls(
             config=config,
@@ -197,6 +231,7 @@ class RuntimeDaemon:
             swarm_metadata=swarm,
             state=state,
             startup_mode=StartupMode.RESUME,
+            scheduler=scheduler,
         )
 
     # Lifecycle ---------------------------------------------------------
@@ -217,6 +252,11 @@ class RuntimeDaemon:
             raise RuntimeStartupError(
                 f"Cannot start runtime from status {self.state.status!r}"
             )
+
+        # Allow the scheduler to perform any startup-time registration or
+        # initialization before we mark the runtime as fully running.
+        if self.scheduler is not None:
+            self.scheduler.start()
 
         self.state.status = RuntimeStatus.RUNNING
         self.started_at = datetime.utcnow()
