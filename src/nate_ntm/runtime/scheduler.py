@@ -19,6 +19,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import logging
+
 from ..config.runtime_config import RuntimeConfig
 from .agent_mail_client import BaseAgentMailClient
 from .agents import AgentSupervisor
@@ -26,6 +28,8 @@ from .metadata_store import SwarmMetadata
 from .state import RuntimeState
 
 __all__ = ["RuntimeScheduler"]
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -72,11 +76,27 @@ class RuntimeScheduler:
         """
 
         if self.running:
+            logger.debug(
+                "scheduler_start_idempotent",
+                extra={
+                    "swarm_id": self.swarm_metadata.swarm_id,
+                    "project_path": str(self.config.project_path),
+                },
+            )
             return
 
         # Ensure that runtime state reflects configured agents and that
         # newly added ones are treated as "launched" in dev-mode.
         self.agent_supervisor.launch_all_agents()
+
+        logger.info(
+            "scheduler_started",
+            extra={
+                "swarm_id": self.swarm_metadata.swarm_id,
+                "project_path": str(self.config.project_path),
+                "agent_count": len(self.state.agents),
+            },
+        )
 
         # After agents are registered/launched, consult Agent Mail (when
         # available) for unread messages and enqueue corresponding
@@ -95,6 +115,14 @@ class RuntimeScheduler:
                 if agent_id not in self.state.agents:
                     continue
                 self.agent_supervisor.record_unread_mail(agent_id)
+                logger.debug(
+                    "scheduler_unread_mail_enqueued",
+                    extra={
+                        "swarm_id": self.swarm_metadata.swarm_id,
+                        "project_path": str(self.config.project_path),
+                        "agent_id": agent_id,
+                    },
+                )
 
         self.running = True
 
@@ -106,7 +134,24 @@ class RuntimeScheduler:
         it is a simple flag used to mirror the eventual lifecycle.
         """
 
+        if not self.running:
+            logger.debug(
+                "scheduler_stop_idempotent",
+                extra={
+                    "swarm_id": self.swarm_metadata.swarm_id,
+                    "project_path": str(self.config.project_path),
+                },
+            )
+            return
+
         self.running = False
+        logger.info(
+            "scheduler_stopped",
+            extra={
+                "swarm_id": self.swarm_metadata.swarm_id,
+                "project_path": str(self.config.project_path),
+            },
+        )
 
     # ------------------------------------------------------------------
     # Simple lifecycle helpers
@@ -120,6 +165,15 @@ class RuntimeScheduler:
         whether to restart the agent.
         """
 
+        logger.warning(
+            "scheduler_agent_failed",
+            extra={
+                "swarm_id": self.swarm_metadata.swarm_id,
+                "project_path": str(self.config.project_path),
+                "agent_id": agent_id,
+                "error": error,
+            },
+        )
         self.agent_supervisor.mark_agent_failed(agent_id, error=error)
 
     def restart_agent(self, agent_id: str) -> None:
@@ -130,5 +184,13 @@ class RuntimeScheduler:
         handle and transitioning the agent back to ``Idle``.
         """
 
+        logger.info(
+            "scheduler_agent_restart_requested",
+            extra={
+                "swarm_id": self.swarm_metadata.swarm_id,
+                "project_path": str(self.config.project_path),
+                "agent_id": agent_id,
+            },
+        )
         self.agent_supervisor.restart_agent(agent_id)
 

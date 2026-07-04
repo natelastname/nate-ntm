@@ -1,15 +1,75 @@
-# nate_ntm
+# nate_ntm 
 
-TODO: description
+Swarm Runtime Orchestrator for coordinating coding agents (for example,
+OpenHands) around a single project directory. The runtime owns ACP
+connections, bridges Agent Mail coordination state, and exposes a local
+JSON-RPC/WebSocket control API used by CLI/TUI/web clients.
+
+This repository currently focuses on the MVP described in
+`specs/001-swarm-runtime-orchestrator/`.
+
+## Status
+
+- Feature branch: `001-swarm-runtime-orchestrator`
+- User stories US1–US3 implemented with fake/dev-mode adapters for Agent Mail
+  and ACP
+- Phase 6 production adapters (REAL Agent Mail and OpenHands ACP clients) are
+  present but still evolving; REAL adapter modes should be treated as
+  experimental and gated behind configuration
 
 ## Installation
 
-poetry install
-poetry run nate_ntm
+Requires **Python 3.12+** and either `uv` or `pip`.
+
+### Using uv (recommended for development)
+
+```bash
+# From the repository root
+uv sync
+
+# Run the test suite
+uv run pytest
+```
+
+### Using pip
+
+```bash
+pip install -e .
+```
+
+This installs the `nate-ntm` CLI entrypoint (from `pyproject.toml`).
 
 ## Usage
 
-TODO
+For end-to-end usage and validation scenarios, see:
+
+- `specs/001-swarm-runtime-orchestrator/quickstart.md`
+
+Example (local quickstart):
+
+```bash
+# Start a new swarm in create mode with 2 agents and the control API
+nate-ntm runtime start \
+  --project /abs/path/to/your/project \
+  --mode create \
+  --agents 2 \
+  --with-control-api
+
+# From another terminal, query runtime status via the control API
+nate-ntm api call runtime.get_status
+```
+
+By default the runtime uses in-memory "fake" adapters for Agent Mail and ACP so
+that US1–US3 can be exercised without external services. REAL adapters can be
+enabled via configuration flags and environment variables as they mature.
+
+## Development
+
+Key implementation docs for this feature live under:
+
+- `specs/001-swarm-runtime-orchestrator/plan.md`
+- `specs/001-swarm-runtime-orchestrator/spec.md`
+- `specs/001-swarm-runtime-orchestrator/tasks.md`
 
 ## License
 

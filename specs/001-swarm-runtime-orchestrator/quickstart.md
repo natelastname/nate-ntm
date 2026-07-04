@@ -6,7 +6,7 @@ It is **not** an implementation guide; it assumes the runtime and its CLI/API ar
 
 ## 1. Prerequisites
 
-- Python 3.11 installed and available on `PATH`.
+- Python 3.12+ installed and available on `PATH`.
 - The `nate_ntm` repository cloned locally.
 - Dependencies installed (example):
 
@@ -14,6 +14,8 @@ It is **not** an implementation guide; it assumes the runtime and its CLI/API ar
   cd /path/to/nate_ntm
   pip install -e .
   ```
+  This installs the `nate-ntm` CLI entrypoint.
+
 
 - Access to required external services (can be real or mocked for testing):
   - OpenHands agent server (for ACP/conversation handling).

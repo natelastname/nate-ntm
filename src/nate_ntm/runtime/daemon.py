@@ -32,6 +32,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional
 
+import logging
+
 from ..config.runtime_config import RuntimeConfig
 from .acp_client import BaseAcpClient
 from .adapters import RuntimeAdapters, create_runtime_adapters
@@ -49,6 +51,8 @@ __all__ = [
     "RuntimeDaemon",
     "check_startup_preconditions",
 ]
+
+logger = logging.getLogger(__name__)
 
 
 class StartupMode(str, Enum):
@@ -99,19 +103,48 @@ def check_startup_preconditions(config: RuntimeConfig, mode: StartupMode) -> Non
 
     swarm_path = _swarm_metadata_path(config)
 
+    logger.debug(
+        "check_startup_preconditions",
+        extra={
+            "mode": mode.value,
+            "swarm_metadata_path": str(swarm_path),
+        },
+    )
+
     if mode is StartupMode.CREATE:
         if swarm_path.exists():
+            logger.error(
+                "startup_precondition_metadata_already_exists",
+                extra={
+                    "mode": mode.value,
+                    "swarm_metadata_path": str(swarm_path),
+                },
+            )
             raise MetadataAlreadyExistsError(
                 f"Swarm metadata already exists at {swarm_path}; refusing to "
                 "start in create mode without an explicit override."
             )
     elif mode is StartupMode.RESUME:
         if not swarm_path.exists():
+            logger.error(
+                "startup_precondition_metadata_missing",
+                extra={
+                    "mode": mode.value,
+                    "swarm_metadata_path": str(swarm_path),
+                },
+            )
             raise MetadataMissingError(
                 f"Swarm metadata not found at {swarm_path}; cannot resume a "
                 "swarm that has not been created."
             )
     else:  # pragma: no cover - defensive against future Enum variants
+        logger.error(
+            "startup_precondition_unsupported_mode",
+            extra={
+                "mode": str(mode),
+                "swarm_metadata_path": str(swarm_path),
+            },
+        )
         raise RuntimeStartupError(f"Unsupported startup mode: {mode!r}")
 
 
@@ -179,6 +212,16 @@ class RuntimeDaemon:
         """
 
         check_startup_preconditions(config, StartupMode.CREATE)
+        logger.info(
+            "runtime_create",
+            extra={
+                "swarm_id": config.swarm_id,
+                "project_path": str(config.project_path),
+                "adapter_mode": getattr(getattr(config, "adapter_mode", None), "value", None),
+                "agent_count": agent_count,
+            },
+        )
+
         store = MetadataStore(config=config)
 
         if adapters is None:
@@ -286,6 +329,15 @@ class RuntimeDaemon:
         """
 
         check_startup_preconditions(config, StartupMode.RESUME)
+        logger.info(
+            "runtime_resume",
+            extra={
+                "swarm_id": config.swarm_id,
+                "project_path": str(config.project_path),
+                "adapter_mode": getattr(getattr(config, "adapter_mode", None), "value", None),
+            },
+        )
+
         store = MetadataStore(config=config)
         swarm = store.load_swarm_metadata()
 
@@ -333,6 +385,15 @@ class RuntimeDaemon:
         ):
             project_id = agent_mail_client.ensure_project()
             if project_id != swarm.agent_mail_project_id:
+                logger.error(
+                    "runtime_resume_agent_mail_project_mismatch",
+                    extra={
+                        "swarm_id": swarm.swarm_id,
+                        "project_path": str(swarm.project_path),
+                        "expected_project_id": swarm.agent_mail_project_id,
+                        "actual_project_id": project_id,
+                    },
+                )
                 raise RuntimeStartupError(
                     "Agent Mail project ID mismatch on resume: "
                     f"adapter returned {project_id!r}, "
@@ -345,6 +406,16 @@ class RuntimeDaemon:
                     agent_id, meta.agent_mail_credentials_ref or None
                 )
                 if identity != meta.agent_mail_identity:
+                    logger.error(
+                        "runtime_resume_agent_mail_identity_mismatch",
+                        extra={
+                            "swarm_id": swarm.swarm_id,
+                            "project_path": str(swarm.project_path),
+                            "agent_id": agent_id,
+                            "expected_identity": meta.agent_mail_identity,
+                            "actual_identity": identity,
+                        },
+                    )
                     raise RuntimeStartupError(
                         "Agent Mail identity mismatch on resume for "
                         f"agent {agent_id!r}: adapter returned {identity!r}, "
@@ -354,6 +425,16 @@ class RuntimeDaemon:
             if meta.conversation_id:
                 conv_id = acp_client.ensure_conversation(agent_id)
                 if conv_id != meta.conversation_id:
+                    logger.error(
+                        "runtime_resume_acp_conversation_mismatch",
+                        extra={
+                            "swarm_id": swarm.swarm_id,
+                            "project_path": str(swarm.project_path),
+                            "agent_id": agent_id,
+                            "expected_conversation_id": meta.conversation_id,
+                            "actual_conversation_id": conv_id,
+                        },
+                    )
                     raise RuntimeStartupError(
                         "ACP conversation ID mismatch on resume for "
                         f"agent {agent_id!r}: adapter returned {conv_id!r}, "
@@ -385,7 +466,23 @@ class RuntimeDaemon:
             # We allow idempotent `start()` when already running but
             # reject obviously invalid transitions.
             if self.state.status is RuntimeStatus.RUNNING:
+                logger.debug(
+                    "runtime_start_idempotent",
+                    extra={
+                        "swarm_id": self.swarm_metadata.swarm_id,
+                        "project_path": str(self.config.project_path),
+                    },
+                )
                 return
+
+            logger.error(
+                "runtime_start_invalid_state",
+                extra={
+                    "swarm_id": self.swarm_metadata.swarm_id,
+                    "project_path": str(self.config.project_path),
+                    "status": self.state.status.value,
+                },
+            )
             raise RuntimeStartupError(
                 f"Cannot start runtime from status {self.state.status!r}"
             )
@@ -398,6 +495,14 @@ class RuntimeDaemon:
         self.state.status = RuntimeStatus.RUNNING
         self.started_at = datetime.utcnow()
 
+        logger.info(
+            "runtime_started",
+            extra={
+                "swarm_id": self.swarm_metadata.swarm_id,
+                "project_path": str(self.config.project_path),
+            },
+        )
+
     def request_shutdown(self) -> None:
         """Request a graceful shutdown.
 
@@ -408,12 +513,29 @@ class RuntimeDaemon:
 
         if self.state.status in {RuntimeStatus.STOPPED, RuntimeStatus.FAILED}:
             # Nothing to do; treat as idempotent.
+            logger.debug(
+                "runtime_shutdown_ignored",
+                extra={
+                    "swarm_id": self.swarm_metadata.swarm_id,
+                    "project_path": str(self.config.project_path),
+                    "status": self.state.status.value,
+                },
+            )
             return
 
         self.state.shutdown_requested = True
 
         if self.state.status is RuntimeStatus.RUNNING:
             self.state.status = RuntimeStatus.SHUTTING_DOWN
+
+        logger.info(
+            "runtime_shutdown_requested",
+            extra={
+                "swarm_id": self.swarm_metadata.swarm_id,
+                "project_path": str(self.config.project_path),
+                "status": self.state.status.value,
+            },
+        )
 
     def mark_stopped(self) -> None:
         """Mark the runtime as fully stopped.
@@ -423,6 +545,13 @@ class RuntimeDaemon:
         """
 
         self.state.status = RuntimeStatus.STOPPED
+        logger.info(
+            "runtime_stopped",
+            extra={
+                "swarm_id": self.swarm_metadata.swarm_id,
+                "project_path": str(self.config.project_path),
+            },
+        )
 
     # Introspection ------------------------------------------------------
 
