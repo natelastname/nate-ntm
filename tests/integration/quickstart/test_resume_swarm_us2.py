@@ -22,9 +22,14 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Dict, Tuple
 
+import pytest
+
 from nate_ntm.api.server import RuntimeApiServer
-from nate_ntm.config.runtime_config import RuntimeConfig, load_runtime_config
-from nate_ntm.runtime.daemon import RuntimeDaemon
+from nate_ntm.config.runtime_config import AdapterKind, RuntimeConfig, load_runtime_config
+from nate_ntm.runtime.acp_client import NateOhaAcpClient
+from nate_ntm.runtime.adapters import create_runtime_adapters
+from nate_ntm.runtime.agent_mail_client import FakeAgentMailClient
+from nate_ntm.runtime.daemon import RuntimeDaemon, RuntimeStartupError
 from nate_ntm.runtime.state import RuntimeStatus
 
 
@@ -54,6 +59,45 @@ def _create_swarm_with_agents(tmp_path: Path, agent_count: int) -> Tuple[Runtime
         identities[agent_id] = (meta.agent_mail_identity, meta.conversation_id)
 
     # Drive a clean, in-process shutdown to mirror the quickstart flow.
+    daemon.request_shutdown()
+    daemon.mark_stopped()
+
+    return config, identities
+
+
+
+
+def _create_swarm_with_agents_real_acp(tmp_path: Path, agent_count: int) -> Tuple[RuntimeConfig, Dict[str, Tuple[str, str]]]:
+    """Create a swarm using NateOhaAcpClient (REAL ACP) for US2 tests.
+
+    This helper mirrors :func:`_create_swarm_with_agents` but configures the
+    runtime to use ``AdapterKind.REAL`` for ACP so that conversation
+    identifiers are allocated via :class:`NateOhaAcpClient` while Agent Mail
+    continues to use the in-memory fake adapter.
+    """
+
+    project = tmp_path / "project-real-acp"
+    project.mkdir(parents=True, exist_ok=True)
+
+    env = {
+        # Restrict REAL mode to the ACP adapter so Agent Mail remains fake
+        # and fully in-memory for offline CI.
+        "NATE_NTM_ACP_ADAPTER": AdapterKind.REAL.value,
+    }
+    config: RuntimeConfig = load_runtime_config(project_path=project, env=env)
+
+    daemon = RuntimeDaemon.create(config, agent_count=agent_count)
+    # Sanity-check that the expected adapters are in use.
+    assert isinstance(daemon.acp_client, NateOhaAcpClient)
+    assert isinstance(daemon.agent_mail_client, FakeAgentMailClient)
+
+    daemon.start()
+
+    swarm = daemon.swarm_metadata
+    identities: Dict[str, Tuple[str, str]] = {}
+    for agent_id, meta in swarm.agents.items():
+        identities[agent_id] = (meta.agent_mail_identity, meta.conversation_id)
+
     daemon.request_shutdown()
     daemon.mark_stopped()
 
@@ -105,3 +149,76 @@ def test_resume_swarm_us2_reuses_agent_identities_and_conversations(tmp_path: Pa
     assert overview["project_path"] == str(config.project_path)
     assert overview["runtime_status"] == RuntimeStatus.RUNNING.value
     assert len(overview["agents"]) == len(identities_before)
+
+
+def test_resume_swarm_us2_reuses_identities_and_conversations_with_real_acp(tmp_path: Path) -> None:
+    """US2: REAL ACP resume reuses identities and nate_OHA conversations.
+
+    This test mirrors the quickstart-style create 
+    shutdown 
+    resume flow but configures the runtime to use :class:`NateOhaAcpClient` for
+    ACP. It asserts that both Agent Mail identities and nate_OHA-backed
+    conversation identifiers are unchanged across resume.
+    """
+
+    config, identities_before = _create_swarm_with_agents_real_acp(tmp_path, agent_count=2)
+
+    # Act: resume the swarm from the same project metadata, using fresh
+    # runtime-owned adapters derived from the stored configuration.
+    daemon = RuntimeDaemon.resume(config)
+    daemon.start()
+
+    assert daemon.state.status is RuntimeStatus.RUNNING
+    assert isinstance(daemon.acp_client, NateOhaAcpClient)
+    assert isinstance(daemon.agent_mail_client, FakeAgentMailClient)
+
+    swarm_after = daemon.swarm_metadata
+    identities_after: Dict[str, Tuple[str, str]] = {}
+    for agent_id, meta in swarm_after.agents.items():
+        identities_after[agent_id] = (meta.agent_mail_identity, meta.conversation_id)
+
+    assert identities_after == identities_before
+
+
+
+def test_resume_swarm_us2_rejects_conversation_mismatch_with_real_acp(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """US2: REAL ACP resume fails fast on conversation ID mismatch.
+
+    This simulates a nate_OHA/OpenHands-side conversation drift by patching the
+    REAL ACP adapter to return a different conversation identifier on resume.
+    The runtime must detect the mismatch and raise :class:`RuntimeStartupError`
+    with a clear diagnostic.
+    """
+
+    config, identities_before = _create_swarm_with_agents_real_acp(tmp_path, agent_count=1)
+    assert len(identities_before) == 1
+
+    (agent_id, (_agent_mail_identity, conversation_id)) = next(iter(identities_before.items()))
+    assert conversation_id
+
+    # Build fresh adapters for resume and patch the ACP client so that
+    # ``ensure_conversation`` returns a deliberately mismatched ID.
+    adapters = create_runtime_adapters(config)
+    assert isinstance(adapters.acp, NateOhaAcpClient)
+    assert isinstance(adapters.agent_mail, FakeAgentMailClient)
+
+    original_ensure = adapters.acp.ensure_conversation
+
+    def mismatched_ensure_conversation(seen_agent_id: str) -> str:
+        assert seen_agent_id == agent_id
+        # Call through so any internal caching or side effects still occur,
+        # then deliberately return a different identifier.
+        _ = original_ensure(seen_agent_id)
+        return f"mismatched-conversation:{seen_agent_id}"
+
+    monkeypatch.setattr(adapters.acp, "ensure_conversation", mismatched_ensure_conversation)
+
+    with pytest.raises(RuntimeStartupError) as excinfo:
+        RuntimeDaemon.resume(config, adapters=adapters)
+
+    message = str(excinfo.value)
+    assert "ACP conversation ID mismatch on resume" in message
+    assert agent_id in message
+

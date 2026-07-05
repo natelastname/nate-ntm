@@ -163,10 +163,12 @@ For this feature, no new project scaffolding or package layout changes are requi
     - Any mismatch between the adapter-derived ID and the persisted `conversation_id` is logged and raised as a `RuntimeStartupError`, mirroring the existing error structure for ACP mismatches.
   - This preserves conversation continuity guarantees for nate_OHA-backed agents (FR-005, FR-012).
 
-- [ ] T222 [P] [US2] Extend resume integration tests for nate_OHA-backed swarms.
-  - In `tests/integration/quickstart/test_resume_swarm_us2.py` (and, if helpful, `tests/integration/quickstart/test_resume_error_paths_us2.py`), add or extend scenarios that run the runtime with `AdapterKind.REAL` for ACP using `NateOhaAcpClient` (with nate_OHA interactions stubbed or gated as needed). Validate that:
-    - After shutdown and resume, each agent’s `agent_mail_identity` and `conversation_id` are unchanged.
-    - Resume-time validation rejects mismatched identities or conversation IDs with clear errors.
+- [x] T222 [P] [US2] Extend resume integration tests for nate_OHA-backed swarms.
+  - In `tests/integration/quickstart/test_resume_swarm_us2.py`, extend the US2 quickstart-style resume scenarios to run the runtime with `AdapterKind.REAL` for ACP using `NateOhaAcpClient` (with nate_OHA interactions stubbed or gated as needed). New tests cover:
+    - A happy-path create 
+      shutdown 
+      resume flow (`test_resume_swarm_us2_reuses_identities_and_conversations_with_real_acp`) that verifies each agent’s `agent_mail_identity` and `conversation_id` are unchanged when resuming a nate_OHA-backed swarm with fresh adapters.
+    - An error-path resume scenario (`test_resume_swarm_us2_rejects_conversation_mismatch_with_real_acp`) that patches the REAL ACP adapter to return a mismatched conversation ID on resume and asserts that `RuntimeDaemon.resume` fails with a clear `RuntimeStartupError` message containing `"ACP conversation ID mismatch on resume"` and the affected `agent_id`.
 
 - [x] T223 [P] [US2] Persist last-known nate_OHA status into `AgentMetadata`.
   - In `RuntimeDaemon.get_agent_detail` (`src/nate_ntm/runtime/daemon.py`), when no live `AgentRuntimeState` exists, consult the runtime-owned ACP adapter via `get_status(agent_id)` and map adapter-level states (for example, `"running"`, `"terminated"`, `"failed"`, `"idle"`) into the existing snapshot strings (`"Running"`, `"Idle"`, `"Failed"`), updating `AgentMetadata.last_known_status` via `MetadataStore.save_agent_metadata` and the in-memory `SwarmMetadata`.
