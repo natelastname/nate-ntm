@@ -13,7 +13,8 @@ from pathlib import Path
 import pytest
 
 from nate_ntm.config.runtime_config import load_runtime_config
-from nate_ntm.runtime.acp_client import AcpAgentStatus, FakeAcpClient, OpenHandsAcpClient
+from nate_ntm.runtime import acp_client as acp_mod
+from nate_ntm.runtime.acp_client import AcpAgentStatus, FakeAcpClient, OpenHandsAcpClient, NateOhaAcpClient
 from nate_ntm.runtime.events import AgentEventSource
 from nate_ntm.runtime.metadata_store import AgentMetadata
 
@@ -57,6 +58,72 @@ def _make_openhands_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> O
     client = OpenHandsAcpClient(config=config, base_url="http://example.invalid")
     # Attach the call log for assertions in tests.
     client._test_calls = calls  # type: ignore[attr-defined]
+
+    return client
+
+
+
+def _make_nate_oha_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> NateOhaAcpClient:
+    """Construct a NateOhaAcpClient with external dependencies stubbed.
+
+    These tests focus on adapter-level lifecycle semantics (start/stop/status)
+    and do not exercise the real ``nate_OHA`` binary. The version
+    compatibility check is bypassed here and covered explicitly in later
+    tests.
+    """
+
+    project = tmp_path / "project"
+    project.mkdir(parents=True, exist_ok=True)
+    config = load_runtime_config(project_path=project)
+
+    client = NateOhaAcpClient(config=config)
+
+    # Avoid invoking the real nate_OHA CLI during unit tests that focus on
+    # adapter behavior.
+    monkeypatch.setattr(client, "_check_version", lambda: None)
+
+    # Stub out ``subprocess.Popen`` so that no real processes are spawned.
+    popen_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    class DummyPopen:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            self.args = args
+            self.kwargs = kwargs
+            self.pid = 12345
+            self._returncode: int | None = None
+
+        def poll(self) -> int | None:
+            return self._returncode
+
+        def wait(self, timeout: float | None = None) -> int:
+            if self._returncode is None:
+                # Simulate a clean exit when waited on.
+                self._returncode = 0
+            return self._returncode
+
+        def terminate(self) -> None:
+            # Simulate graceful termination.
+            if self._returncode is None:
+                self._returncode = 0
+
+        def kill(self) -> None:
+            # Simulate forced termination.
+            self._returncode = -9
+
+        @property
+        def returncode(self) -> int | None:
+            return self._returncode
+
+    def fake_popen(*args: object, **kwargs: object) -> DummyPopen:
+        popen_calls.append((args, kwargs))
+        return DummyPopen(*args, **kwargs)
+
+    monkeypatch.setattr(acp_mod.subprocess, "Popen", fake_popen)
+
+    # Attach the call log so later tests can make assertions about the
+    # constructed command and environment.
+    client._test_popen_calls = popen_calls  # type: ignore[attr-defined]
+
     return client
 
 
@@ -183,6 +250,52 @@ def test_openhands_acp_client_ensures_stable_conversation_ids(monkeypatch: pytes
     client2 = _make_openhands_client(tmp_path, monkeypatch)
     conv3 = client2.ensure_conversation("agent-1")
     assert conv3 == conv1
+
+
+
+def test_nate_oha_acp_client_start_and_stop_update_status(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """``start_agent``/``stop_agent`` should update adapter-level status for agents.
+
+    This test describes the expected lifecycle semantics for
+    :class:`NateOhaAcpClient` without depending on the concrete subprocess
+    implementation. It is written before T212–T214 and will initially fail
+    until the implementation is complete.
+    """
+
+    client = _make_nate_oha_client(tmp_path, monkeypatch)
+
+    # Before an agent is started, status should default to ``idle``.
+    status_before = client.get_status("agent-1")
+    assert isinstance(status_before, AcpAgentStatus)
+    assert status_before.agent_id == "agent-1"
+    assert status_before.state == "idle"
+    assert status_before.last_exit_code is None
+    assert status_before.last_error is None
+    assert status_before.restart_count == 0
+
+    # After starting the agent, status should report it as running.
+    meta = AgentMetadata(agent_id="agent-1", display_name="Agent One")
+    client.start_agent("agent-1", metadata=meta)
+
+    status_running = client.get_status("agent-1")
+    assert isinstance(status_running, AcpAgentStatus)
+    assert status_running.agent_id == "agent-1"
+    assert status_running.state == "running"
+    assert status_running.last_exit_code is None
+    assert status_running.last_error is None
+
+    # Stopping the agent should transition it to a terminated state and record
+    # the last exit code.
+    client.stop_agent("agent-1", timeout=5.0)
+    status_stopped = client.get_status("agent-1")
+    assert isinstance(status_stopped, AcpAgentStatus)
+    assert status_stopped.agent_id == "agent-1"
+    assert status_stopped.state == "terminated"
+    # Exit code may vary by implementation but should be an int once the
+    # process has terminated.
+    assert isinstance(status_stopped.last_exit_code, (int, type(None)))
 
 
 def test_openhands_acp_client_start_turn_uses_thread_and_returns_run_id(

@@ -18,7 +18,7 @@ from typer.testing import CliRunner
 from nate_ntm.cli import app
 
 
-runner = CliRunner()
+runner = CliRunner(mix_stderr=False)
 
 
 class _FakeClient:
