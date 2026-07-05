@@ -104,6 +104,35 @@ class RuntimeConfig:
     global adapter mode.
     """
 
+    agent_mail_project: Optional[str] = None
+    """Optional Agent Mail project identifier used for nate_OHA launches.
+
+    This is a swarm-level identifier used when launching nate_OHA with
+    Agent Mail integration enabled. It is resolved by
+    :func:`load_runtime_config` from, in order of precedence:
+
+    * the explicit ``agent_mail_project`` argument
+    * ``NATE_NTM_AGENT_MAIL_PROJECT``
+    * ``AGENT_MAIL_PROJECT``
+
+    When an agent has ``AgentMetadata.agent_mail_identity`` configured,
+    the nate_OHA ACP adapter requires this field to be non-empty and will
+    raise :class:`AcpClientError` if it is missing.
+    """
+
+    agent_mail_upstream_url: Optional[str] = None
+    """Optional Agent Mail upstream URL used for nate_OHA launches.
+
+    The URL of the upstream Agent Mail MCP endpoint that nate_OHA should
+    connect to when Agent Mail integration is enabled. It is resolved by
+    :func:`load_runtime_config` from, in order of precedence:
+
+    * the explicit ``agent_mail_upstream_url`` argument
+    * ``NATE_NTM_AGENT_MAIL_URL``
+    * ``AGENT_MAIL_UPSTREAM_URL``
+    * ``AGENT_MAIL_URL`` (legacy/compatibility alias)
+    """
+
 
 def load_runtime_config(
     *,
@@ -115,6 +144,8 @@ def load_runtime_config(
     adapter_mode: Optional[Union[str, AdapterKind]] = None,
     agent_mail_adapter: Optional[Union[str, AdapterKind]] = None,
     acp_adapter: Optional[Union[str, AdapterKind]] = None,
+    agent_mail_project: Optional[str] = None,
+    agent_mail_upstream_url: Optional[str] = None,
     env: Optional[Mapping[str, str]] = None,
 ) -> RuntimeConfig:
     """Construct :class:`RuntimeConfig` from arguments and environment.
@@ -146,6 +177,15 @@ def load_runtime_config(
     * ``NATE_NTM_ADAPTER_MODE`` – default adapter kind (e.g. ``"fake"``)
     * ``NATE_NTM_AGENT_MAIL_ADAPTER`` – Agent Mail adapter override
     * ``NATE_NTM_ACP_ADAPTER`` – ACP adapter override
+    * ``NATE_NTM_AGENT_MAIL_PROJECT`` – Agent Mail project identifier
+    * ``NATE_NTM_AGENT_MAIL_URL`` – Agent Mail upstream URL (MCP endpoint)
+
+    For compatibility with existing Agent Mail tooling, the loader also
+    honors the following when :class:`NateOhaAcpClient` is used:
+
+    * ``AGENT_MAIL_PROJECT`` – fallback source for the project identifier
+    * ``AGENT_MAIL_UPSTREAM_URL`` – fallback source for the upstream URL
+    * ``AGENT_MAIL_URL`` – legacy/short alias for the upstream URL
     """
 
     env_mapping: Mapping[str, str]
@@ -190,6 +230,10 @@ def load_runtime_config(
         field_name="acp_adapter",
         default=None,
     )
+    resolved_agent_mail_project = _resolve_agent_mail_project(agent_mail_project, env_mapping)
+    resolved_agent_mail_upstream = _resolve_agent_mail_upstream_url(
+        agent_mail_upstream_url, env_mapping
+    )
 
     return RuntimeConfig(
         project_path=resolved_project_path,
@@ -200,6 +244,8 @@ def load_runtime_config(
         adapter_mode=resolved_adapter_mode,
         agent_mail_adapter=resolved_agent_mail_adapter,
         acp_adapter=resolved_acp_adapter,
+        agent_mail_project=resolved_agent_mail_project,
+        agent_mail_upstream_url=resolved_agent_mail_upstream,
     )
 
 
@@ -362,3 +408,57 @@ def _resolve_control_port(port: Optional[int | str], env: Mapping[str, str]) -> 
 def _resolve_swarm_id(swarm_id: Optional[str], env: Mapping[str, str]) -> str:
     raw = swarm_id or env.get("NATE_NTM_SWARM_ID") or _DEFAULT_SWARM_ID
     return raw
+
+
+def _resolve_agent_mail_project(
+    project: Optional[str], env: Mapping[str, str]
+) -> Optional[str]:
+    """Resolve the Agent Mail project identifier from args/env.
+
+    The precedence order is:
+
+    * explicit ``agent_mail_project`` argument
+    * ``NATE_NTM_AGENT_MAIL_PROJECT`` environment variable
+    * ``AGENT_MAIL_PROJECT`` environment variable
+    """
+
+    if project is not None:
+        value = project.strip()
+        return value or None
+
+    raw = (
+        env.get("NATE_NTM_AGENT_MAIL_PROJECT")
+        or env.get("AGENT_MAIL_PROJECT")
+        or ""
+    )
+    value = raw.strip()
+    return value or None
+
+
+
+def _resolve_agent_mail_upstream_url(
+    url: Optional[str], env: Mapping[str, str]
+) -> Optional[str]:
+    """Resolve the Agent Mail upstream URL from args/env.
+
+    The precedence order is:
+
+    * explicit ``agent_mail_upstream_url`` argument
+    * ``NATE_NTM_AGENT_MAIL_URL`` environment variable
+    * ``AGENT_MAIL_UPSTREAM_URL`` environment variable
+    * ``AGENT_MAIL_URL`` environment variable (legacy alias)
+    """
+
+    if url is not None:
+        value = url.strip()
+        return value or None
+
+    raw = (
+        env.get("NATE_NTM_AGENT_MAIL_URL")
+        or env.get("AGENT_MAIL_UPSTREAM_URL")
+        or env.get("AGENT_MAIL_URL")
+        or ""
+    )
+    value = raw.strip()
+    return value or None
+

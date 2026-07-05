@@ -40,13 +40,13 @@ For this feature, no new project scaffolding or package layout changes are requi
 
 **⚠️ CRITICAL**: Complete these tasks before changing runtime behavior for ACP adapters.
 
-- [ ] T200 Reconcile nate_OHA process launch contract with `NATE_OHA_GUIDE.md`.
+- [x] T200 Reconcile nate_OHA process launch contract with `NATE_OHA_GUIDE.md`.
   - Cross-check `specs/002-nate-oha-acp-adapter/contracts/nate_oha_process_launch.md` and `specs/002-nate-oha-acp-adapter/data-model.md` against the current `NATE_OHA_GUIDE.md` and the actual `nate_OHA` CLI behavior (including executable name, subcommands, arguments, required environment variables, working directory, startup readiness, shutdown, and version/self-check semantics). Update the contracts and data-model docs so they are fully consistent with the guide. This task must be completed before any runtime code changes that depend on the launch contract.
 
-- [ ] T201 [P] [US1] Define `AcpAgentStatus` in the ACP adapter module.
+- [x] T201 [P] [US1] Define `AcpAgentStatus` in the ACP adapter module.
   - In `src/nate_ntm/runtime/acp_client.py`, introduce an `AcpAgentStatus` dataclass (or equivalent small structured type) that captures adapter-level status for a single agent (for example: lifecycle state, last exit code, last error summary, restart count / flags). Ensure it is importable by other runtime modules and will be suitable for mapping into `AgentRuntimeState` and the runtime API payloads.
 
-- [ ] T202 [P] [US1] Expand `BaseAcpClient` to the full interface contract.
+- [x] T202 [P] [US1] Expand `BaseAcpClient` to the full interface contract.
   - In `src/nate_ntm/runtime/acp_client.py`, expand `BaseAcpClient` from the thin conversation/turn helper into the runtime-facing ACP adapter contract described in `specs/002-nate-oha-acp-adapter/spec.md`:
     - Add abstract methods:
       - `start_agent(agent_id: str, *, metadata: AgentMetadata) -> None`.
@@ -57,7 +57,7 @@ For this feature, no new project scaffolding or package layout changes are requi
     - Update the class docstring to match the "Interface Contract: BaseAcpClient" section in `spec.md`, clarifying lifecycle ownership and event delivery responsibilities.
     - Import `AgentMetadata` from `src/nate_ntm/runtime/metadata_store.py` and `AgentEvent` from `src/nate_ntm/runtime/events.py` as needed.
 
-- [ ] T203 [P] [US1] Update `FakeAcpClient` to implement the expanded contract.
+- [x] T203 [P] [US1] Update `FakeAcpClient` to implement the expanded contract.
   - In `src/nate_ntm/runtime/acp_client.py`, update `FakeAcpClient` so it fully implements the new `BaseAcpClient` API while remaining in-memory and side-effect free:
     - Provide no-op or simple in-memory implementations of `start_agent` and `stop_agent` that track a minimal `NateOhaProcessRecord`-like status per agent (for example, a simple dictionary of `agent_id` → status enum/value).
     - Keep the existing `ensure_conversation` and `start_turn` semantics, updating `start_turn` to accept the optional `prompt` parameter and to invoke `on_event` (when configured) with a synthetic `AgentEvent` representing a completed fake turn.
@@ -77,18 +77,18 @@ For this feature, no new project scaffolding or package layout changes are requi
 
 ### Implementation for User Story 1
 
-- [ ] T210 [US1] Introduce `NateOhaProcessRecord` and `NateOhaAcpClient` skeleton.
+- [x] T210 [US1] Introduce `NateOhaProcessRecord` and `NateOhaAcpClient` skeleton.
   - In `src/nate_ntm/runtime/acp_client.py`, add an internal `NateOhaProcessRecord` (or similarly named) dataclass that matches the fields and invariants in `specs/002-nate-oha-acp-adapter/data-model.md` section 2.1 (e.g. `agent_id`, `pid`, `status`, `last_start_time`, `last_exit_code`, `last_error`, `restart_count`).
   - Introduce a new `NateOhaAcpClient` class that subclasses `BaseAcpClient`, owns a mapping of `agent_id` → `NateOhaProcessRecord`, and is documented (in the module docstring and class docstring) as the canonical production implementation of `BaseAcpClient` for the nate_ntm runtime.
 
-- [ ] T211 [US1] Implement nate_OHA version/compatibility self-check.
+- [x] T211 [US1] Implement nate_OHA version/compatibility self-check.
   - In `NateOhaAcpClient` (`src/nate_ntm/runtime/acp_client.py`), implement a version/compatibility check (for example, a private `_check_version()` helper) that runs the documented self-check command from `NATE_OHA_GUIDE.md` (such as `nate_OHA --version` or `nate_OHA acp --version`) and parses its output to ensure the installed nate_OHA meets the minimum supported version/interface.
   - Invoke this check before launching any nate_OHA subprocesses, and raise `AcpClientError` with a clear diagnostic if the version is incompatible, satisfying FR-013 and the compatibility requirements in `contracts/nate_oha_process_launch.md`.
 
-- [ ] T218a [P] [US1] Write initial failing unit tests for `NateOhaAcpClient` launch/status/stop.
+- [x] T218a [P] [US1] Write initial failing unit tests for `NateOhaAcpClient` launch/status/stop.
   - In `tests/unit/runtime/test_acp_client.py`, add tests that describe the expected behavior for `NateOhaAcpClient.start_agent`, `NateOhaAcpClient.get_status`, and `NateOhaAcpClient.stop_agent` based on the nate_OHA process launch contract. These tests should be written before implementing T212–T214 and may initially fail until the implementation is complete.
 
-- [ ] T212 [US1] Implement `start_agent` and the nate_OHA process launch contract.
+- [x] T212 [US1] Implement `start_agent` and the nate_OHA process launch contract.
   - Implement `NateOhaAcpClient.start_agent` in `src/nate_ntm/runtime/acp_client.py` to launch a dedicated `nate_OHA` ACP subprocess per agent using `subprocess.Popen` and the process launch contract in `specs/002-nate-oha-acp-adapter/contracts/nate_oha_process_launch.md`:
     - Resolve the executable and base arguments, ensuring that `--enable-agent-mail` is included when launching nate_OHA with Agent Mail enabled (for example: `nate_OHA acp --enable-agent-mail ...`), consistent with `NATE_OHA_GUIDE.md`.
     - Derive the working directory from `SwarmMetadata.project_path` and/or `AgentMetadata.launch_config`.
@@ -102,12 +102,12 @@ For this feature, no new project scaffolding or package layout changes are requi
     - On success, transition the `NateOhaProcessRecord.status` to "running", return normally from `start_agent`, update `AcpAgentStatus`, and emit a `nate_oha_process_ready` event via `on_event`.
     - On failure or timeout, update the process record (status "failed", `last_exit_code`, `last_error`), raise `AcpClientError`, and emit a `nate_oha_process_start_failed` event for downstream policy handling (FR-006).
 
-- [ ] T214 [US1] Implement `stop_agent` and `get_status` for nate_OHA processes.
+- [x] T214 [US1] Implement `stop_agent` and `get_status` for nate_OHA processes.
   - In `NateOhaAcpClient` (`src/nate_ntm/runtime/acp_client.py`), implement:
     - `stop_agent` to send a graceful termination signal to the nate_OHA process for the given agent, wait up to a configured timeout, then escalate to a hard kill on timeout, updating `NateOhaProcessRecord` and emitting appropriate events (`nate_oha_process_exited`, `nate_oha_process_crashed`) as described in `contracts/nate_oha_process_launch.md` section 5.
     - `get_status` to return an `AcpAgentStatus` derived from the current `NateOhaProcessRecord` for the agent (including lifecycle, exit codes, and last error), suitable for mapping into runtime API responses.
 
-- [ ] T215 [US1] Wire `NateOhaAcpClient` into adapter selection.
+- [x] T215 [US1] Wire `NateOhaAcpClient` into adapter selection.
   - In `src/nate_ntm/runtime/adapters.py`, update the ACP adapter selection so that:
     - The `AdapterKind.FAKE` branch continues to construct `FakeAcpClient(config=config)`.
     - The `AdapterKind.REAL` branch now constructs `NateOhaAcpClient(config=config)` instead of `OpenHandsAcpClient`.

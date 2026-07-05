@@ -827,13 +827,31 @@ class NateOhaAcpClient(BaseAcpClient):
 
         The base environment is inherited from the current process with a
         small set of nate_ntm-specific variables added for correlation.
-        When Agent Mail is enabled for an agent, this helper also enforces
-        that all required ``AGENT_MAIL_*`` variables are present and
-        non-empty, failing fast with :class:`AcpClientError` if
-        configuration is incomplete. This prevents launching nate_OHA in a
-        half-configured state.
+
+        When Agent Mail is enabled for an agent (that is, when
+        ``metadata.agent_mail_identity`` is non-empty), this helper derives
+        the required ``AGENT_MAIL_*`` variables from the runtime's
+        configuration and the :class:`AgentMetadata` for the agent rather
+        than reading them directly from :mod:`os.environ`. This ensures
+        that Agent Mail launch settings are explicit, testable, and tied to
+        the runtime/swarm configuration instead of ambient environment
+        state.
+
+        Configuration invariants:
+
+        * If no Agent Mail identity is configured for an agent, no
+          ``AGENT_MAIL_*`` variables are added and nate_OHA is launched
+          without Agent Mail integration.
+        * If an Agent Mail identity is configured but the runtime/swarm
+          Agent Mail configuration is incomplete or invalid, an
+          :class:`AcpClientError` is raised and **no subprocess is
+          launched**. This provides the required fail-fast behavior.
         """
 
+        # Start from the current process environment but treat it purely as
+        # a base for non-secret settings and unrelated variables. All
+        # required Agent Mail configuration is derived from
+        # :class:`RuntimeConfig` and :class:`AgentMetadata`.
         env: Dict[str, str] = dict(os.environ)
 
         # Runtime correlation variables used by nate_ntm and downstream
@@ -851,15 +869,15 @@ class NateOhaAcpClient(BaseAcpClient):
         if not metadata.agent_mail_identity:
             return env
 
-        # Agent Mail integration is enabled from this point on.
-        project = (
-            env.get("AGENT_MAIL_PROJECT")
-            or env.get("NATE_NTM_AGENT_MAIL_PROJECT")
-        )
+        # Agent Mail integration is enabled from this point on. All
+        # required configuration must be supplied via RuntimeConfig and
+        # AgentMetadata.
+        project = (self.config.agent_mail_project or "").strip()
         if not project:
             raise AcpClientError(
-                "Agent Mail project is not configured; set AGENT_MAIL_PROJECT "
-                "or NATE_NTM_AGENT_MAIL_PROJECT before launching nate_OHA."
+                "Agent Mail project is not configured; set RuntimeConfig.agent_mail_project "
+                "(for example via NATE_NTM_AGENT_MAIL_PROJECT or AGENT_MAIL_PROJECT) "
+                "before launching nate_OHA."
             )
         env["AGENT_MAIL_PROJECT"] = project
 
@@ -873,24 +891,18 @@ class NateOhaAcpClient(BaseAcpClient):
 
         token = metadata.agent_mail_credentials_ref.strip() if metadata.agent_mail_credentials_ref else ""
         if not token:
-            token = env.get("AGENT_MAIL_TOKEN", "").strip()
-        if not token:
             raise AcpClientError(
                 f"Agent Mail token/credentials_ref not configured for agent {agent_id!r}; "
-                "set AgentMetadata.agent_mail_credentials_ref or AGENT_MAIL_TOKEN."
+                "set AgentMetadata.agent_mail_credentials_ref before launching nate_OHA."
             )
         env["AGENT_MAIL_TOKEN"] = token
 
-        upstream = (
-            env.get("AGENT_MAIL_UPSTREAM_URL")
-            or env.get("NATE_NTM_AGENT_MAIL_URL")
-            or env.get("AGENT_MAIL_URL")
-            or ""
-        ).strip()
+        upstream = (self.config.agent_mail_upstream_url or "").strip()
         if not upstream:
             raise AcpClientError(
-                "Agent Mail upstream URL is not configured; set AGENT_MAIL_UPSTREAM_URL, "
-                "NATE_NTM_AGENT_MAIL_URL, or AGENT_MAIL_URL."
+                "Agent Mail upstream URL is not configured; set RuntimeConfig.agent_mail_upstream_url "
+                "(for example via NATE_NTM_AGENT_MAIL_URL or AGENT_MAIL_UPSTREAM_URL) "
+                "before launching nate_OHA."
             )
         env["AGENT_MAIL_UPSTREAM_URL"] = upstream
 

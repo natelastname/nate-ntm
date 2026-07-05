@@ -9,6 +9,7 @@ HTTP behavior is covered by gated integration tests.
 from __future__ import annotations
 
 from pathlib import Path
+import os
 
 import pytest
 
@@ -74,7 +75,13 @@ def _make_nate_oha_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Na
 
     project = tmp_path / "project"
     project.mkdir(parents=True, exist_ok=True)
-    config = load_runtime_config(project_path=project)
+
+    # For NateOhaAcpClient tests we take an explicit snapshot of the
+    # current process environment so that ``load_runtime_config`` does not
+    # consult the repository-level ``.env`` file. Individual tests control
+    # Agent Mail-related variables via ``monkeypatch``.
+    env_snapshot = dict(os.environ)
+    config = load_runtime_config(project_path=project, env=env_snapshot)
 
     client = NateOhaAcpClient(config=config)
 
@@ -305,18 +312,35 @@ def test_nate_oha_acp_client_builds_command_and_env_for_agent_mail(
     """start_agent constructs the expected command and Agent Mail env.
 
     This test focuses on the process-launch contract for nate_OHA when
-    Agent Mail is enabled. It verifies that the adapter builds the
-    ``nate_OHA acp --enable-agent-mail`` command line and populates both
-    the required ``AGENT_MAIL_*`` variables and the runtime correlation
-    ``NATE_NTM_*`` variables in the child environment.
+    Agent Mail is enabled. It verifies that the adapter:
+
+    * builds the ``nate_OHA acp --enable-agent-mail`` command line
+    * derives Agent Mail launch settings from :class:`RuntimeConfig` and
+      :class:`AgentMetadata`
+    * populates the required ``AGENT_MAIL_*`` variables and the runtime
+      correlation ``NATE_NTM_*`` variables in the child environment.
     """
 
-    # Configure the minimal Agent Mail settings expected by nate_OHA when
-    # Agent Mail integration is enabled.
+    # Ensure NATE_NTM-specific Agent Mail URL variables do not interfere
+    # with this test's expectations about how ``load_runtime_config``
+    # resolves ``agent_mail_upstream_url``.
+    monkeypatch.delenv("NATE_NTM_AGENT_MAIL_URL", raising=False)
+
+    # Configure minimal Agent Mail settings via environment so that
+    # :func:`load_runtime_config` populates ``RuntimeConfig.agent_mail_project``
+    # and ``RuntimeConfig.agent_mail_upstream_url``. ``NateOhaAcpClient``
+    # itself no longer reads these variables directly from :mod:`os.environ`;
+    # it relies solely on the resolved runtime config.
     monkeypatch.setenv("AGENT_MAIL_PROJECT", "test-project")
     monkeypatch.setenv("AGENT_MAIL_UPSTREAM_URL", "https://agent-mail.invalid/mcp")
 
     client = _make_nate_oha_client(tmp_path, monkeypatch)
+
+    # Sanity-check that the runtime config captured the Agent Mail launch
+    # settings; the ACP client uses these, not the ambient environment,
+    # when constructing the child process environment.
+    assert client.config.agent_mail_project == "test-project"
+    assert client.config.agent_mail_upstream_url == "https://agent-mail.invalid/mcp"
 
     meta = AgentMetadata(
         agent_id="agent-1",
@@ -345,10 +369,10 @@ def test_nate_oha_acp_client_builds_command_and_env_for_agent_mail(
     assert env["NATE_NTM_AGENT_ID"] == "agent-1"
 
     # Agent Mail variables: project, identity, token, and upstream URL
-    assert env["AGENT_MAIL_PROJECT"] == "test-project"
+    assert env["AGENT_MAIL_PROJECT"] == client.config.agent_mail_project
     assert env["AGENT_MAIL_AGENT"] == "agent-mail-identity"
     assert env["AGENT_MAIL_TOKEN"] == "secret-token-ref"
-    assert env["AGENT_MAIL_UPSTREAM_URL"] == "https://agent-mail.invalid/mcp"
+    assert env["AGENT_MAIL_UPSTREAM_URL"] == client.config.agent_mail_upstream_url
 
 
 def test_nate_oha_acp_client_fails_fast_when_agent_mail_project_missing(
@@ -357,11 +381,23 @@ def test_nate_oha_acp_client_fails_fast_when_agent_mail_project_missing(
     """Agent Mail identity set but project missing → fail before Popen.
 
     When ``AgentMetadata.agent_mail_identity`` is non-empty, the adapter
+    # Ensure NATE_NTM-specific Agent Mail URL variables do not interfere
+    # with this test's expectations about how ``load_runtime_config``
+    # resolves ``agent_mail_upstream_url``.
+    monkeypatch.delenv("NATE_NTM_AGENT_MAIL_URL", raising=False)
+
+
     must require a configured Agent Mail project. If neither
     ``AGENT_MAIL_PROJECT`` nor ``NATE_NTM_AGENT_MAIL_PROJECT`` is set,
     ``start_agent`` should raise :class:`AcpClientError` and avoid
     spawning a nate_OHA subprocess.
     """
+
+    # Ensure NATE_NTM-specific Agent Mail URL variables do not interfere
+    # with this test's expectations about how ``load_runtime_config``
+    # resolves ``agent_mail_upstream_url``.
+    monkeypatch.delenv("NATE_NTM_AGENT_MAIL_URL", raising=False)
+
 
     # Ensure no Agent Mail project is visible in the environment.
     monkeypatch.delenv("AGENT_MAIL_PROJECT", raising=False)
@@ -372,6 +408,12 @@ def test_nate_oha_acp_client_fails_fast_when_agent_mail_project_missing(
     monkeypatch.setenv("AGENT_MAIL_UPSTREAM_URL", "https://agent-mail.invalid/mcp")
 
     client = _make_nate_oha_client(tmp_path, monkeypatch)
+
+    # Sanity-check that the runtime config reflects the intended
+    # misconfiguration: project missing but upstream URL present.
+    assert client.config.agent_mail_project is None
+    assert client.config.agent_mail_upstream_url == "https://agent-mail.invalid/mcp"
+
 
     meta = AgentMetadata(
         agent_id="agent-1",
@@ -410,6 +452,12 @@ def test_nate_oha_acp_client_fails_fast_when_agent_mail_upstream_missing(
     monkeypatch.delenv("AGENT_MAIL_URL", raising=False)
 
     client = _make_nate_oha_client(tmp_path, monkeypatch)
+
+    # Sanity-check that the runtime config reflects the intended
+    # misconfiguration: project present but upstream URL missing.
+    assert client.config.agent_mail_project == "test-project"
+    assert client.config.agent_mail_upstream_url is None
+
 
     meta = AgentMetadata(
         agent_id="agent-1",
