@@ -298,6 +298,55 @@ def test_nate_oha_acp_client_start_and_stop_update_status(
     assert isinstance(status_stopped.last_exit_code, (int, type(None)))
 
 
+
+def test_nate_oha_acp_client_builds_command_and_env_for_agent_mail(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """start_agent constructs the expected command and Agent Mail env.
+
+    This test focuses on the process-launch contract for nate_OHA when
+    Agent Mail is enabled. It verifies that the adapter builds the
+    ``nate_OHA acp --enable-agent-mail`` command line and populates both
+    the required ``AGENT_MAIL_*`` variables and the runtime correlation
+    ``NATE_NTM_*`` variables in the child environment.
+    """
+
+    client = _make_nate_oha_client(tmp_path, monkeypatch)
+
+    meta = AgentMetadata(
+        agent_id="agent-1",
+        display_name="Agent One",
+        agent_mail_identity="agent-mail-identity",
+        agent_mail_credentials_ref="secret-token-ref",
+    )
+
+    client.start_agent("agent-1", metadata=meta)
+
+    popen_calls = getattr(client, "_test_popen_calls")
+    assert len(popen_calls) == 1
+    (args, kwargs) = popen_calls[0]
+
+    # The first positional argument is the command list.
+    cmd = args[0]
+    assert cmd == ["nate_OHA", "acp", "--enable-agent-mail"]
+
+    # The environment must include the Agent Mail and nate_ntm correlation
+    # variables required by the process-launch contract.
+    env = kwargs.get("env")
+    assert isinstance(env, dict)
+
+    assert env["NATE_NTM_PROJECT_PATH"] == str(client.config.project_path)
+    assert env["NATE_NTM_SWARM_ID"] == client.config.swarm_id
+    assert env["NATE_NTM_AGENT_ID"] == "agent-1"
+
+    # Agent Mail variables: project, identity, token, and upstream URL
+    # must all be present when Agent Mail is enabled.
+    assert "AGENT_MAIL_PROJECT" in env
+    assert env["AGENT_MAIL_AGENT"] == "agent-mail-identity"
+    assert env["AGENT_MAIL_TOKEN"] == "secret-token-ref"
+    assert "AGENT_MAIL_UPSTREAM_URL" in env
+
+
 def test_openhands_acp_client_start_turn_uses_thread_and_returns_run_id(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

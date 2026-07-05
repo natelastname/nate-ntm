@@ -834,6 +834,9 @@ class NateOhaAcpClient(BaseAcpClient):
         """
 
         env: Dict[str, str] = dict(os.environ)
+
+        # Runtime correlation variables used by nate_ntm and downstream
+        # tooling. These are non-secret and safe to set by default.
         env.setdefault("NATE_NTM_PROJECT_PATH", str(self.config.project_path))
         env.setdefault("NATE_NTM_SWARM_ID", self.config.swarm_id)
         env.setdefault("NATE_NTM_AGENT_ID", agent_id)
@@ -841,10 +844,25 @@ class NateOhaAcpClient(BaseAcpClient):
         if metadata.conversation_id:
             env.setdefault("NATE_NTM_AGENT_CONVERSATION_ID", metadata.conversation_id)
 
+        # Agent Mail integration variables. For now, the adapter derives what
+        # it can directly from AgentMetadata and RuntimeConfig while still
+        # allowing callers to override values via the ambient environment. A
+        # later task wires these to SwarmMetadata.agent_mail_project_id and
+        # deployment-specific Agent Mail configuration.
+        env.setdefault("AGENT_MAIL_PROJECT", self.config.swarm_id)
+
         if metadata.agent_mail_identity:
             env.setdefault("AGENT_MAIL_AGENT", metadata.agent_mail_identity)
         if metadata.agent_mail_credentials_ref:
             env.setdefault("AGENT_MAIL_TOKEN", metadata.agent_mail_credentials_ref)
+
+        # Prefer an explicit upstream URL if configured in the environment;
+        # otherwise, ensure the variable exists with an empty default so that
+        # tests can rely on its presence.
+        env.setdefault(
+            "AGENT_MAIL_UPSTREAM_URL",
+            os.environ.get("AGENT_MAIL_UPSTREAM_URL", ""),
+        )
 
         return env
 
