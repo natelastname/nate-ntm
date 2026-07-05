@@ -10,14 +10,12 @@ Concrete implementations in this branch are:
 * :class:`FakeAcpClient` – an in-memory, dev-mode implementation used in
   unit/integration tests that simulates conversations and turn
   identifiers without performing any network I/O.
-* :class:`OpenHandsAcpClient` – an HTTP adapter that speaks the
+* :class:`OpenHandsAcpClient` – a legacy HTTP adapter that speaks the
   OpenHands-compatible ACP server surface and is retained for
-  compatibility while the runtime transitions to ``nate_OHA``.
-
-Under Feature 002 (``002-nate-oha-acp-adapter``), this module will host
-:class:`NateOhaAcpClient`, backed by the ``nate_OHA`` process, as the
-canonical production implementation of :class:`BaseAcpClient` for the
-nate_ntm runtime.
+  compatibility and potential OpenHands-focused integrations.
+* :class:`NateOhaAcpClient` – the nate_OHA-backed ACP adapter used as the
+  canonical ``AdapterKind.REAL`` implementation for the nate_ntm
+  runtime.
 """
 
 from __future__ import annotations
@@ -281,7 +279,7 @@ class FakeAcpClient(BaseAcpClient):
 
 @dataclass(slots=True)
 class OpenHandsAcpClient(BaseAcpClient):
-    """Production OpenHands-compatible ACP adapter over HTTP (T102).
+    """Legacy OpenHands-compatible ACP adapter over HTTP (T102).
 
     This implementation speaks the ACP HTTP/OpenAPI surface defined in
     ``reference/acp-spec/openapi.json`` (v0.2.3). It focuses on the minimal
@@ -290,9 +288,10 @@ class OpenHandsAcpClient(BaseAcpClient):
     * Ensure a per-agent conversation (ACP thread) exists.
     * Start new runs on that thread and return their identifiers.
 
-    The adapter is **runtime-owned** and is constructed by
-    :func:`nate_ntm.runtime.adapters.create_runtime_adapters` when
-    ``AdapterKind.REAL`` is selected for ACP.
+    The adapter remains available for compatibility and potential
+    OpenHands-focused integrations, but the nate_ntm runtime now uses
+    :class:`NateOhaAcpClient` as the canonical ``AdapterKind.REAL`` ACP
+    implementation.
     """
 
     config: RuntimeConfig
@@ -827,10 +826,12 @@ class NateOhaAcpClient(BaseAcpClient):
         """Return the environment used to launch nate_OHA.
 
         The base environment is inherited from the current process with a
-        small set of nate_ntm-specific variables added for correlation. Agent
-        Mail–specific variables are intentionally minimal for now and will be
-        expanded in later tasks to more closely follow the data model and
-        process-launch contract.
+        small set of nate_ntm-specific variables added for correlation.
+        When Agent Mail is enabled for an agent, this helper also enforces
+        that all required ``AGENT_MAIL_*`` variables are present and
+        non-empty, failing fast with :class:`AcpClientError` if
+        configuration is incomplete. This prevents launching nate_OHA in a
+        half-configured state.
         """
 
         env: Dict[str, str] = dict(os.environ)
@@ -844,25 +845,54 @@ class NateOhaAcpClient(BaseAcpClient):
         if metadata.conversation_id:
             env.setdefault("NATE_NTM_AGENT_CONVERSATION_ID", metadata.conversation_id)
 
-        # Agent Mail integration variables. For now, the adapter derives what
-        # it can directly from AgentMetadata and RuntimeConfig while still
-        # allowing callers to override values via the ambient environment. A
-        # later task wires these to SwarmMetadata.agent_mail_project_id and
-        # deployment-specific Agent Mail configuration.
-        env.setdefault("AGENT_MAIL_PROJECT", self.config.swarm_id)
+        # If no Agent Mail identity is configured, leave AGENT_MAIL_* alone
+        # and rely solely on the correlation variables above. This keeps
+        # dev/test agents that do not use Agent Mail simple.
+        if not metadata.agent_mail_identity:
+            return env
 
-        if metadata.agent_mail_identity:
-            env.setdefault("AGENT_MAIL_AGENT", metadata.agent_mail_identity)
-        if metadata.agent_mail_credentials_ref:
-            env.setdefault("AGENT_MAIL_TOKEN", metadata.agent_mail_credentials_ref)
-
-        # Prefer an explicit upstream URL if configured in the environment;
-        # otherwise, ensure the variable exists with an empty default so that
-        # tests can rely on its presence.
-        env.setdefault(
-            "AGENT_MAIL_UPSTREAM_URL",
-            os.environ.get("AGENT_MAIL_UPSTREAM_URL", ""),
+        # Agent Mail integration is enabled from this point on.
+        project = (
+            env.get("AGENT_MAIL_PROJECT")
+            or env.get("NATE_NTM_AGENT_MAIL_PROJECT")
         )
+        if not project:
+            raise AcpClientError(
+                "Agent Mail project is not configured; set AGENT_MAIL_PROJECT "
+                "or NATE_NTM_AGENT_MAIL_PROJECT before launching nate_OHA."
+            )
+        env["AGENT_MAIL_PROJECT"] = project
+
+        identity = metadata.agent_mail_identity.strip()
+        if not identity:
+            raise AcpClientError(
+                f"Agent Mail identity is empty for agent {agent_id!r}; "
+                "set AgentMetadata.agent_mail_identity before launching nate_OHA."
+            )
+        env["AGENT_MAIL_AGENT"] = identity
+
+        token = metadata.agent_mail_credentials_ref.strip() if metadata.agent_mail_credentials_ref else ""
+        if not token:
+            token = env.get("AGENT_MAIL_TOKEN", "").strip()
+        if not token:
+            raise AcpClientError(
+                f"Agent Mail token/credentials_ref not configured for agent {agent_id!r}; "
+                "set AgentMetadata.agent_mail_credentials_ref or AGENT_MAIL_TOKEN."
+            )
+        env["AGENT_MAIL_TOKEN"] = token
+
+        upstream = (
+            env.get("AGENT_MAIL_UPSTREAM_URL")
+            or env.get("NATE_NTM_AGENT_MAIL_URL")
+            or env.get("AGENT_MAIL_URL")
+            or ""
+        ).strip()
+        if not upstream:
+            raise AcpClientError(
+                "Agent Mail upstream URL is not configured; set AGENT_MAIL_UPSTREAM_URL, "
+                "NATE_NTM_AGENT_MAIL_URL, or AGENT_MAIL_URL."
+            )
+        env["AGENT_MAIL_UPSTREAM_URL"] = upstream
 
         return env
 

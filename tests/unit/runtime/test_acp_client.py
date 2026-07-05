@@ -14,7 +14,7 @@ import pytest
 
 from nate_ntm.config.runtime_config import load_runtime_config
 from nate_ntm.runtime import acp_client as acp_mod
-from nate_ntm.runtime.acp_client import AcpAgentStatus, FakeAcpClient, OpenHandsAcpClient, NateOhaAcpClient
+from nate_ntm.runtime.acp_client import AcpClientError, AcpAgentStatus, FakeAcpClient, OpenHandsAcpClient, NateOhaAcpClient
 from nate_ntm.runtime.events import AgentEventSource
 from nate_ntm.runtime.metadata_store import AgentMetadata
 
@@ -311,6 +311,11 @@ def test_nate_oha_acp_client_builds_command_and_env_for_agent_mail(
     ``NATE_NTM_*`` variables in the child environment.
     """
 
+    # Configure the minimal Agent Mail settings expected by nate_OHA when
+    # Agent Mail integration is enabled.
+    monkeypatch.setenv("AGENT_MAIL_PROJECT", "test-project")
+    monkeypatch.setenv("AGENT_MAIL_UPSTREAM_URL", "https://agent-mail.invalid/mcp")
+
     client = _make_nate_oha_client(tmp_path, monkeypatch)
 
     meta = AgentMetadata(
@@ -340,11 +345,88 @@ def test_nate_oha_acp_client_builds_command_and_env_for_agent_mail(
     assert env["NATE_NTM_AGENT_ID"] == "agent-1"
 
     # Agent Mail variables: project, identity, token, and upstream URL
-    # must all be present when Agent Mail is enabled.
-    assert "AGENT_MAIL_PROJECT" in env
+    assert env["AGENT_MAIL_PROJECT"] == "test-project"
     assert env["AGENT_MAIL_AGENT"] == "agent-mail-identity"
     assert env["AGENT_MAIL_TOKEN"] == "secret-token-ref"
-    assert "AGENT_MAIL_UPSTREAM_URL" in env
+    assert env["AGENT_MAIL_UPSTREAM_URL"] == "https://agent-mail.invalid/mcp"
+
+
+def test_nate_oha_acp_client_fails_fast_when_agent_mail_project_missing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Agent Mail identity set but project missing → fail before Popen.
+
+    When ``AgentMetadata.agent_mail_identity`` is non-empty, the adapter
+    must require a configured Agent Mail project. If neither
+    ``AGENT_MAIL_PROJECT`` nor ``NATE_NTM_AGENT_MAIL_PROJECT`` is set,
+    ``start_agent`` should raise :class:`AcpClientError` and avoid
+    spawning a nate_OHA subprocess.
+    """
+
+    # Ensure no Agent Mail project is visible in the environment.
+    monkeypatch.delenv("AGENT_MAIL_PROJECT", raising=False)
+    monkeypatch.delenv("NATE_NTM_AGENT_MAIL_PROJECT", raising=False)
+
+    # Provide other required Agent Mail settings so that the missing
+    # project is the only failure reason.
+    monkeypatch.setenv("AGENT_MAIL_UPSTREAM_URL", "https://agent-mail.invalid/mcp")
+
+    client = _make_nate_oha_client(tmp_path, monkeypatch)
+
+    meta = AgentMetadata(
+        agent_id="agent-1",
+        display_name="Agent One",
+        agent_mail_identity="agent-mail-identity",
+        agent_mail_credentials_ref="secret-token-ref",
+    )
+
+    with pytest.raises(AcpClientError) as excinfo:
+        client.start_agent("agent-1", metadata=meta)
+
+    msg = str(excinfo.value)
+    assert "Agent Mail project is not configured" in msg
+
+    # The subprocess layer should not be invoked on configuration errors.
+    popen_calls = getattr(client, "_test_popen_calls")
+    assert popen_calls == []
+
+
+
+def test_nate_oha_acp_client_fails_fast_when_agent_mail_upstream_missing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Agent Mail identity set but upstream URL missing → fail before Popen.
+
+    This is the symmetric case to the missing-project test: with a
+    configured project and identity but no upstream URL, ``start_agent``
+    must raise :class:`AcpClientError` and never call ``subprocess.Popen``.
+    """
+
+    # Configure a project but deliberately omit all recognized upstream
+    # URL variables.
+    monkeypatch.setenv("AGENT_MAIL_PROJECT", "test-project")
+    monkeypatch.delenv("AGENT_MAIL_UPSTREAM_URL", raising=False)
+    monkeypatch.delenv("NATE_NTM_AGENT_MAIL_URL", raising=False)
+    monkeypatch.delenv("AGENT_MAIL_URL", raising=False)
+
+    client = _make_nate_oha_client(tmp_path, monkeypatch)
+
+    meta = AgentMetadata(
+        agent_id="agent-1",
+        display_name="Agent One",
+        agent_mail_identity="agent-mail-identity",
+        agent_mail_credentials_ref="secret-token-ref",
+    )
+
+    with pytest.raises(AcpClientError) as excinfo:
+        client.start_agent("agent-1", metadata=meta)
+
+    msg = str(excinfo.value)
+    assert "Agent Mail upstream URL is not configured" in msg
+
+    popen_calls = getattr(client, "_test_popen_calls")
+    assert popen_calls == []
+
 
 
 def test_openhands_acp_client_start_turn_uses_thread_and_returns_run_id(

@@ -20,7 +20,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ..config.runtime_config import AdapterKind, RuntimeConfig
-from .acp_client import BaseAcpClient, FakeAcpClient, OpenHandsAcpClient
+from .acp_client import (
+    BaseAcpClient,
+    FakeAcpClient,
+    NateOhaAcpClient,
+    OpenHandsAcpClient,
+)
 from .agent_mail_client import BaseAgentMailClient, FakeAgentMailClient, McpAgentMailClient
 
 __all__ = ["RuntimeAdapters", "create_runtime_adapters"]
@@ -80,7 +85,8 @@ def create_runtime_adapters(config: RuntimeConfig) -> RuntimeAdapters:
     if acp_kind is AdapterKind.FAKE:
         acp: BaseAcpClient = FakeAcpClient(config=config)
     elif acp_kind is AdapterKind.REAL:
-        acp = OpenHandsAcpClient(config=config)
+        # nate_OHA-backed ACP adapter is the canonical REAL implementation.
+        acp = NateOhaAcpClient(config=config)
     else:  # pragma: no cover - defensive
         raise ValueError(f"Unsupported ACP adapter kind: {acp_kind!r}")
 
