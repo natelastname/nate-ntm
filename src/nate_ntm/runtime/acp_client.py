@@ -20,7 +20,7 @@ Concrete implementations in this branch are:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any, Callable, Dict, Mapping, Optional, Literal
 
@@ -34,7 +34,7 @@ from urllib.request import Request, urlopen
 
 from ..config.runtime_config import RuntimeConfig
 from .events import AgentEvent, AgentEventSource
-from .metadata_store import AgentMetadata
+from .metadata_store import AgentMetadata, MetadataStore
 
 __all__ = [
     "AcpClientError",
@@ -559,23 +559,82 @@ class NateOhaAcpClient(BaseAcpClient):
     # adapter.
     _process_handles: Dict[str, subprocess.Popen] = field(default_factory=dict, init=False)
 
+    # Cache of per-agent conversation identifiers for this adapter instance.
+    _conversations: Dict[str, str] = field(default_factory=dict, init=False)
+
     # Cached result of the version/compatibility check (FR-013).
     _version_checked: bool = field(default=False, init=False)
     _detected_version: str | None = field(default=None, init=False)
 
+    # Namespace used to derive deterministic conversation IDs from runtime
+    # context (swarm_id + project path + agent_id).
+    _conversation_namespace = uuid.UUID("2ac0d2d3-76c5-4589-b000-4e50a0c759f9")
+
     # ------------------------------------------------------------------
-    # BaseAcpClient API (skeleton; implemented in T212–T214)
+    # BaseAcpClient API
     # ------------------------------------------------------------------
 
-    def ensure_conversation(self, agent_id: str) -> str:  # pragma: no cover - placeholder
+    def ensure_conversation(self, agent_id: str) -> str:
         """Ensure a control-protocol conversation exists for ``agent_id``.
 
-        The concrete nate_OHA/OpenHands conversation semantics are implemented
-        in subsequent tasks; for now this method is left unimplemented so that
-        tests can be written against the intended behavior.
+        For nate_OHA-backed agents the conversation identifier is a stable,
+        per-agent string derived from the runtime configuration (swarm_id,
+        project path) and ``agent_id``. This method is required to be:
+
+        * **Deterministic** – the same inputs always yield the same ID.
+        * **Idempotent** – repeated calls, even across processes, return the
+          same ID.
+        * **Metadata-aware** – when per-agent metadata already records a
+          non-empty ``conversation_id``, that value is reused and not
+          replaced.
         """
 
-        raise NotImplementedError("NateOhaAcpClient.ensure_conversation is not implemented yet")
+        # Fast path: reuse any ID cached in memory for this adapter instance.
+        cached = self._conversations.get(agent_id)
+        if cached:
+            return cached
+
+        store: MetadataStore | None = None
+        metadata: AgentMetadata | None = None
+
+        # Try to load existing per-agent metadata so that we can reuse or
+        # persist the conversation identifier in a durable way.
+        try:
+            store = MetadataStore(config=self.config)
+            metadata = store.load_agent_metadata(agent_id)
+        except FileNotFoundError:
+            # It is valid for metadata to be missing when ensure_conversation is
+            # called before an AgentMetadata record has been created.
+            store = None
+            metadata = None
+
+        if metadata is not None:
+            existing = (metadata.conversation_id or "").strip()
+            if existing:
+                self._conversations[agent_id] = existing
+                return existing
+
+        # Derive a stable, per-agent UUID based on the project path, swarm ID,
+        # and agent identifier. This mirrors the approach used by
+        # OpenHandsAcpClient while remaining independent of any remote ACP
+        # server.
+        project_path = str(self.config.project_path)
+        basis = f"{self.config.swarm_id}:{project_path}:{agent_id}"
+        conv_uuid = uuid.uuid5(self._conversation_namespace, basis)
+        conv_id = str(conv_uuid)
+
+        self._conversations[agent_id] = conv_id
+
+        # When metadata already exists but was missing a conversation_id,
+        # persist the allocated value so that future resume flows can rely on
+        # it. We deliberately do not create new AgentMetadata records here;
+        # that remains the responsibility of higher-level orchestration
+        # (RuntimeDaemon).
+        if metadata is not None and store is not None:
+            updated = replace(metadata, conversation_id=conv_id)
+            store.save_agent_metadata(updated)
+
+        return conv_id
 
     def start_agent(self, agent_id: str, *, metadata: AgentMetadata) -> None:
         """Launch the nate_OHA ACP process backing ``agent_id``.

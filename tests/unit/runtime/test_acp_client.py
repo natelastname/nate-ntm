@@ -16,8 +16,11 @@ import pytest
 from nate_ntm.config.runtime_config import load_runtime_config
 from nate_ntm.runtime import acp_client as acp_mod
 from nate_ntm.runtime.acp_client import AcpClientError, AcpAgentStatus, FakeAcpClient, OpenHandsAcpClient, NateOhaAcpClient
+from nate_ntm.runtime.adapters import RuntimeAdapters
+from nate_ntm.runtime.agent_mail_client import FakeAgentMailClient
+from nate_ntm.runtime.daemon import RuntimeDaemon
 from nate_ntm.runtime.events import AgentEventSource
-from nate_ntm.runtime.metadata_store import AgentMetadata
+from nate_ntm.runtime.metadata_store import AgentMetadata, MetadataStore
 
 
 def _make_fake_client(tmp_path: Path) -> FakeAcpClient:
@@ -303,6 +306,169 @@ def test_nate_oha_acp_client_start_and_stop_update_status(
     # Exit code may vary by implementation but should be an int once the
     # process has terminated.
     assert isinstance(status_stopped.last_exit_code, (int, type(None)))
+
+
+
+def test_nate_oha_acp_client_ensure_conversation_is_idempotent_and_deterministic(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """``ensure_conversation`` is stable per agent and across clients.
+
+    This covers the core T220 requirement that the nate_OHA-backed ACP
+    adapter derive deterministic, idempotent conversation identifiers for
+    agents, suitable for reuse on resume.
+    """
+
+    client1 = _make_nate_oha_client(tmp_path, monkeypatch)
+
+    a1_first = client1.ensure_conversation("agent-1")
+    a1_second = client1.ensure_conversation("agent-1")
+    a2_conv = client1.ensure_conversation("agent-2")
+
+    assert a1_first
+    assert a1_first == a1_second
+    assert a2_conv
+    assert a1_first != a2_conv
+
+    # A fresh client with the same configuration should derive the same
+    # identifier for a given agent.
+    client2 = _make_nate_oha_client(tmp_path, monkeypatch)
+    a1_third = client2.ensure_conversation("agent-1")
+    assert a1_third == a1_first
+
+
+
+def test_nate_oha_acp_client_ensure_conversation_reuses_existing_metadata_id(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Existing ``AgentMetadata.conversation_id`` values are reused.
+
+    When per-agent metadata already has a non-empty ``conversation_id``,
+    ``ensure_conversation`` must return that value instead of deriving a
+    new one so that conversation continuity is preserved.
+    """
+
+    client = _make_nate_oha_client(tmp_path, monkeypatch)
+    store = MetadataStore(config=client.config)
+
+    preexisting_id = "conv-preexisting-123"
+    meta = AgentMetadata(agent_id="nav-1", display_name="Navigator 1", conversation_id=preexisting_id)
+    store.save_agent_metadata(meta)
+
+    conv = client.ensure_conversation("nav-1")
+    assert conv == preexisting_id
+
+    # Metadata should still report the same ID.
+    reloaded = store.load_agent_metadata("nav-1")
+    assert reloaded.conversation_id == preexisting_id
+
+
+
+def test_nate_oha_acp_client_ensure_conversation_persists_allocated_id_when_missing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Missing ``conversation_id`` in metadata is filled and persisted.
+
+    When ``AgentMetadata`` exists but ``conversation_id`` is empty,
+    ``ensure_conversation`` must allocate a stable identifier and write it
+    back to the metadata store so later runs can reuse it.
+    """
+
+    client = _make_nate_oha_client(tmp_path, monkeypatch)
+    store = MetadataStore(config=client.config)
+
+    meta = AgentMetadata(agent_id="nav-1", display_name="Navigator 1")
+    store.save_agent_metadata(meta)
+
+    conv1 = client.ensure_conversation("nav-1")
+    assert conv1
+
+    reloaded1 = store.load_agent_metadata("nav-1")
+    assert reloaded1.conversation_id == conv1
+
+    # Idempotent: subsequent calls return the same ID and keep metadata in sync.
+    conv2 = client.ensure_conversation("nav-1")
+    assert conv2 == conv1
+
+    reloaded2 = store.load_agent_metadata("nav-1")
+    assert reloaded2.conversation_id == conv1
+
+
+
+def test_nate_oha_acp_client_start_agent_includes_conversation_id_env_when_present(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """``start_agent`` propagates ``conversation_id`` into the child env.
+
+    When metadata has a non-empty ``conversation_id``, the launch
+    environment must include ``NATE_NTM_AGENT_CONVERSATION_ID`` so that
+    nate_OHA/OpenHands can reconnect to the correct ACP conversation.
+    """
+
+    # Minimal Agent Mail configuration so environment construction succeeds.
+    monkeypatch.delenv("NATE_NTM_AGENT_MAIL_URL", raising=False)
+    monkeypatch.setenv("AGENT_MAIL_PROJECT", "test-project")
+    monkeypatch.setenv("AGENT_MAIL_UPSTREAM_URL", "https://agent-mail.invalid/mcp")
+
+    client = _make_nate_oha_client(tmp_path, monkeypatch)
+
+    meta = AgentMetadata(
+        agent_id="agent-1",
+        display_name="Agent One",
+        agent_mail_identity="agent-mail-identity",
+        agent_mail_credentials_ref="secret-token-ref",
+        conversation_id="conv-123",
+    )
+
+    client.start_agent("agent-1", metadata=meta)
+
+    popen_calls = getattr(client, "_test_popen_calls")
+    assert len(popen_calls) == 1
+    (args, kwargs) = popen_calls[0]
+
+    env = kwargs.get("env")
+    assert isinstance(env, dict)
+    assert env["NATE_NTM_AGENT_CONVERSATION_ID"] == "conv-123"
+
+
+
+def test_runtime_create_with_nate_oha_acp_persists_conversation_metadata(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """REAL-style runtime creation works with NateOhaAcpClient (T220).
+
+    This regression test exercises the create-path wiring used in US1/US2:
+
+    * ``RuntimeDaemon.create`` uses the ACP adapter's
+      ``ensure_conversation`` to allocate per-agent conversation IDs.
+    * With :class:`NateOhaAcpClient` as the ACP adapter, this should no
+      longer raise ``NotImplementedError`` and must result in persisted
+      metadata with a non-empty, stable ``conversation_id`` for each
+      created agent.
+    """
+
+    client = _make_nate_oha_client(tmp_path, monkeypatch)
+    config = client.config
+
+    # Use the in-memory FakeAgentMailClient to avoid any external I/O
+    # while still exercising the RuntimeDaemon.create path.
+    agent_mail = FakeAgentMailClient(config=config)
+    adapters = RuntimeAdapters(agent_mail=agent_mail, acp=client)
+
+    daemon = RuntimeDaemon.create(config, agent_count=1, adapters=adapters)
+
+    # Metadata should contain a single agent with a non-empty
+    # conversation identifier that matches the adapter's view.
+    store = daemon.metadata_store
+    all_meta = store.load_all_agent_metadata()
+    assert set(all_meta.keys()) == {"agent-1"}
+
+    meta = all_meta["agent-1"]
+    assert meta.conversation_id
+    assert daemon.swarm_metadata.agents["agent-1"].conversation_id == meta.conversation_id
+
+    conv_from_adapter = client.ensure_conversation("agent-1")
+    assert conv_from_adapter == meta.conversation_id
 
 
 
