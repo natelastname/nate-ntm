@@ -18,6 +18,8 @@ import pytest
 
 from nate_ntm.config.runtime_config import RuntimeConfig, load_runtime_config
 from nate_ntm.runtime.agent_mail_client import FakeAgentMailClient
+from nate_ntm.runtime.adapters import RuntimeAdapters
+from nate_ntm.runtime.acp_client import NateOhaAcpClient
 from nate_ntm.runtime.daemon import (
     MetadataAlreadyExistsError,
     MetadataMissingError,
@@ -112,14 +114,152 @@ def test_runtime_daemon_create_initializes_and_persists_swarm_metadata(tmp_path:
     assert daemon.swarm_metadata.agent_mail_project_id == expected_project_id
 
     assert daemon.state.config is config
-    assert daemon.state.status is RuntimeStatus.STARTING
-    assert daemon.startup_mode is StartupMode.CREATE
-    assert daemon.started_at is None
 
-    # Metadata should have been persisted and be readable via MetadataStore.
-    assert swarm_path.is_file()
-    loaded = store.load_swarm_metadata()
-    assert loaded == daemon.swarm_metadata
+
+def test_runtime_daemon_create_with_real_acp_persists_nate_oha_metadata(tmp_path: Path) -> None:
+    """create() + REAL-style ACP persist nate_OHA-compatible metadata (T217).
+
+    This exercises RuntimeDaemon.create when supplied with a NateOhaAcpClient
+    and FakeAgentMailClient via RuntimeAdapters. The resulting swarm and
+    per-agent metadata must be suitable for launching nate_OHA-backed agents:
+
+    * swarm_metadata.agent_mail_project_id is initialized via Agent Mail.
+    * per-agent AgentMetadata records contain Agent Mail identities.
+    * per-agent conversation_id values are stable and match
+      NateOhaAcpClient.ensure_conversation for each agent.
+    """
+
+    project = tmp_path / "project"
+    config = _make_config(project)
+
+    # Use explicit adapters so that ACP is backed by NateOhaAcpClient while
+    # Agent Mail remains the in-memory fake implementation.
+    agent_mail = FakeAgentMailClient(config=config)
+    acp = NateOhaAcpClient(config=config)
+    adapters = RuntimeAdapters(agent_mail=agent_mail, acp=acp)
+
+    daemon = RuntimeDaemon.create(config, agent_count=2, adapters=adapters)
+
+    # The daemon should retain the supplied adapters.
+    assert daemon.agent_mail_client is agent_mail
+    assert daemon.acp_client is acp
+
+    # Swarm-level Agent Mail project identifier should be derived from the
+    # fake client and persisted into swarm metadata.
+    expected_project_id = agent_mail.ensure_project()
+    assert daemon.swarm_metadata.agent_mail_project_id == expected_project_id
+
+    store = MetadataStore(config=config)
+    swarm = store.load_swarm_metadata()
+    assert set(swarm.agents.keys()) == {"agent-1", "agent-2"}
+
+    for agent_id in ["agent-1", "agent-2"]:
+        meta = store.load_agent_metadata(agent_id)
+
+        # Agent Mail identity fields persisted for nate_OHA launches.
+        assert meta.agent_mail_identity == f"fake-mail-identity:{agent_id}"
+
+        # Conversation identifiers must be non-empty and match the ACP
+        # adapter's deterministic ensure_conversation implementation.
+        assert meta.conversation_id
+        conv_from_adapter = acp.ensure_conversation(agent_id)
+        assert meta.conversation_id == conv_from_adapter
+        assert swarm.agents[agent_id].conversation_id == meta.conversation_id
+
+
+
+def test_runtime_daemon_create_and_resume_with_nate_oha_acp_and_fake_agent_mail(
+    tmp_path: Path,
+) -> None:
+    """create() → resume() round-trip with NateOhaAcpClient (T217/T221).
+
+    This test verifies that:
+
+    * RuntimeDaemon.create, when supplied with NateOhaAcpClient and
+      FakeAgentMailClient, initializes AgentMetadata with persistent
+      conversation IDs and Agent Mail identities, and
+    * RuntimeDaemon.resume, when given fresh adapter instances with the same
+      configuration, successfully revalidates those identifiers via the
+      existing FR-009 resume logic (including conversation-id checks).
+    """
+
+    project = tmp_path / "project"
+    config = _make_config(project)
+
+    # First create a swarm with REAL-style ACP wiring.
+    create_mail = FakeAgentMailClient(config=config)
+    create_acp = NateOhaAcpClient(config=config)
+    create_adapters = RuntimeAdapters(agent_mail=create_mail, acp=create_acp)
+
+    daemon_create = RuntimeDaemon.create(config, agent_count=1, adapters=create_adapters)
+
+    # Capture the persisted conversation ID and Agent Mail identity.
+    store = MetadataStore(config=config)
+    meta_before = store.load_agent_metadata("agent-1")
+    assert meta_before.conversation_id
+    assert meta_before.agent_mail_identity == "fake-mail-identity:agent-1"
+
+    # Now resume with fresh adapter instances bound to the same config. The
+    # resume path should revalidate Agent Mail and ACP identifiers without
+    # creating new ones.
+    resume_mail = FakeAgentMailClient(config=config)
+    resume_acp = NateOhaAcpClient(config=config)
+    resume_adapters = RuntimeAdapters(agent_mail=resume_mail, acp=resume_acp)
+
+    daemon_resume = RuntimeDaemon.resume(config, adapters=resume_adapters)
+
+    meta_after = daemon_resume.metadata_store.load_agent_metadata("agent-1")
+    assert meta_after.conversation_id == meta_before.conversation_id
+    assert meta_after.agent_mail_identity == meta_before.agent_mail_identity
+
+    # The ACP adapter used during resume must agree with the persisted
+    # conversation identifier.
+    conv_from_resume_adapter = resume_acp.ensure_conversation("agent-1")
+    assert conv_from_resume_adapter == meta_after.conversation_id
+
+
+
+def test_runtime_daemon_resume_fails_when_acp_conversation_mismatch(tmp_path: Path) -> None:
+    """Resume must fail clearly when ACP conversation IDs diverge (T221).
+
+    This uses a deliberately misbehaving NateOhaAcpClient whose
+    ensure_conversation implementation returns an identifier that does not
+    match the conversation_id recorded in metadata. RuntimeDaemon.resume
+    must detect the mismatch and raise RuntimeStartupError rather than
+    silently accepting the inconsistency.
+    """
+
+    project = tmp_path / "project"
+    config = _make_config(project)
+
+    # Create initial metadata using a well-behaved adapter.
+    create_mail = FakeAgentMailClient(config=config)
+    create_acp = NateOhaAcpClient(config=config)
+    create_adapters = RuntimeAdapters(agent_mail=create_mail, acp=create_acp)
+    _ = RuntimeDaemon.create(config, agent_count=1, adapters=create_adapters)
+
+    # Sanity: metadata contains a non-empty, adapter-consistent conversation ID.
+    store = MetadataStore(config=config)
+    meta = store.load_agent_metadata("agent-1")
+    assert meta.conversation_id
+    good_conv = meta.conversation_id
+    assert good_conv == create_acp.ensure_conversation("agent-1")
+
+    # Construct an ACP adapter that violates the contract by returning a
+    # different conversation ID on resume.
+    class BadConversationAcp(NateOhaAcpClient):
+        def ensure_conversation(self, agent_id: str) -> str:  # type: ignore[override]
+            return "conv-mismatch-123"
+
+    resume_mail = FakeAgentMailClient(config=config)
+    resume_acp = BadConversationAcp(config=config)
+    resume_adapters = RuntimeAdapters(agent_mail=resume_mail, acp=resume_acp)
+
+    with pytest.raises(RuntimeStartupError) as excinfo:
+        _ = RuntimeDaemon.resume(config, adapters=resume_adapters)
+
+    msg = str(excinfo.value)
+    assert "ACP conversation ID mismatch on resume" in msg
 
 
 

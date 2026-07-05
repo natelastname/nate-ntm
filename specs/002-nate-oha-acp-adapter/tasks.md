@@ -148,7 +148,7 @@ For this feature, no new project scaffolding or package layout changes are requi
 
 ### Implementation for User Story 2
 
-- [ ] T220 [US2] Persist and reuse conversation IDs through `NateOhaAcpClient`.
+- [x] T220 [US2] Persist and reuse conversation IDs through `NateOhaAcpClient`.
   - In `NateOhaAcpClient` (`src/nate_ntm/runtime/acp_client.py`), implement `ensure_conversation` (and any related helpers) so that for nate_OHA-backed agents:
     - If `AgentMetadata.conversation_id` is already set, the adapter reuses it and configures nate_OHA/OpenHands to reconnect to the existing conversation rather than creating a new one by default.
     - If `conversation_id` is empty on first launch, `ensure_conversation` MUST return and persist a conversation identifier that is either:
