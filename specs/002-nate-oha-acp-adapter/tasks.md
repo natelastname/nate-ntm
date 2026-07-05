@@ -168,9 +168,9 @@ For this feature, no new project scaffolding or package layout changes are requi
     - After shutdown and resume, each agent’s `agent_mail_identity` and `conversation_id` are unchanged.
     - Resume-time validation rejects mismatched identities or conversation IDs with clear errors.
 
-- [ ] T223 [P] [US2] Persist last-known nate_OHA status into `AgentMetadata`.
-  - Update `RuntimeDaemon` and/or `RuntimeScheduler` (`src/nate_ntm/runtime/daemon.py`, `src/nate_ntm/runtime/scheduler.py`) so that for nate_OHA-backed agents, significant lifecycle changes reported via `AcpAgentStatus` (for example, transitions to "Failed" or repeated crashes) are reflected in `AgentMetadata.last_known_status` and persisted via `MetadataStore.save_agent_metadata`.
-  - Ensure `RuntimeDaemon.get_agent_detail` continues to provide a meaningful status for agents even when no live `AgentRuntimeState` exists (for example, immediately after a crash or before the scheduler has started), aligning with US2 acceptance scenarios.
+- [x] T223 [P] [US2] Persist last-known nate_OHA status into `AgentMetadata`.
+  - In `RuntimeDaemon.get_agent_detail` (`src/nate_ntm/runtime/daemon.py`), when no live `AgentRuntimeState` exists, consult the runtime-owned ACP adapter via `get_status(agent_id)` and map adapter-level states (for example, `"running"`, `"terminated"`, `"failed"`, `"idle"`) into the existing snapshot strings (`"Running"`, `"Idle"`, `"Failed"`), updating `AgentMetadata.last_known_status` via `MetadataStore.save_agent_metadata` and the in-memory `SwarmMetadata`.
+  - When ACP status is unavailable or returns an unmapped/unknown state, fall back to the last persisted `last_known_status` without raising, so `agent.get_detail` continues to return a meaningful status for nate_OHA-backed agents immediately after a crash or before the scheduler has started, aligning with US2 acceptance scenarios.
 
 ---
 

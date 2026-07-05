@@ -20,7 +20,7 @@ import pytest
 from nate_ntm.config.runtime_config import RuntimeConfig, load_runtime_config
 from nate_ntm.runtime.agent_mail_client import FakeAgentMailClient
 from nate_ntm.runtime.adapters import RuntimeAdapters
-from nate_ntm.runtime.acp_client import NateOhaAcpClient
+from nate_ntm.runtime.acp_client import AcpAgentStatus, AcpClientError, NateOhaAcpClient
 from nate_ntm.runtime.events import AgentEventSource
 from nate_ntm.runtime.daemon import (
     MetadataAlreadyExistsError,
@@ -688,4 +688,176 @@ def test_runtime_daemon_acp_events_flow_into_supervisor_stream_with_nate_oha(
     assert recorded.source is AgentEventSource.ACP
     assert recorded.type == "nate_oha_process_started"
     assert recorded.payload["pid"] == 12345
+
+
+
+
+def test_runtime_daemon_agent_detail_persists_running_status_from_nate_oha_acp(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """get_agent_detail persists a Running status from NateOhaAcpClient (T223)."""
+
+    project = tmp_path / "project"
+    project.mkdir(parents=True, exist_ok=True)
+
+    # Take an explicit environment snapshot so the config loader does not
+    # consult repository-level .env files.
+    env_snapshot = dict(os.environ)
+    config = load_runtime_config(project_path=project, env=env_snapshot)
+
+    store = MetadataStore(config=config)
+    now = datetime(2026, 7, 3, 12, 0, 0)
+
+    meta = AgentMetadata(
+        agent_id="nav-1",
+        display_name="Navigator 1",
+        last_known_status="Idle",
+    )
+    swarm = SwarmMetadata(
+        swarm_id=config.swarm_id,
+        project_path=config.project_path,
+        agent_mail_project_id="mail-project-1",
+        created_at=now,
+        last_updated_at=now,
+        agents={"nav-1": meta},
+    )
+    store.save_swarm_metadata(swarm)
+    store.save_agent_metadata(meta)
+
+    # Construct a NateOhaAcpClient instance and stub ``get_status`` so it
+    # reports a running adapter-level state without touching a real process.
+    client = NateOhaAcpClient(config=config)
+
+    def fake_get_status(agent_id: str) -> AcpAgentStatus:
+        assert agent_id == "nav-1"
+        return AcpAgentStatus(agent_id=agent_id, state="running")
+
+    monkeypatch.setattr(client, "get_status", fake_get_status)
+
+    agent_mail = FakeAgentMailClient(config=config)
+    adapters = RuntimeAdapters(agent_mail=agent_mail, acp=client)
+
+    daemon = RuntimeDaemon.resume(config, adapters=adapters)
+
+    # Sanity: the scheduler has not yet registered a runtime state entry.
+    assert daemon.state.agents == {}
+
+    detail = daemon.get_agent_detail(agent_id="nav-1", max_events=10)
+    agent_payload = detail["agent"]
+    assert agent_payload["status"] == AgentStatus.RUNNING.value
+
+    reloaded_meta = store.load_agent_metadata("nav-1")
+    assert reloaded_meta.last_known_status == AgentStatus.RUNNING.value
+
+
+
+def test_runtime_daemon_agent_detail_persists_failed_status_from_nate_oha_acp(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """get_agent_detail persists a Failed status from NateOhaAcpClient (T223)."""
+
+    project = tmp_path / "project"
+    project.mkdir(parents=True, exist_ok=True)
+
+    env_snapshot = dict(os.environ)
+    config = load_runtime_config(project_path=project, env=env_snapshot)
+
+    store = MetadataStore(config=config)
+    now = datetime(2026, 7, 3, 12, 0, 0)
+
+    meta = AgentMetadata(
+        agent_id="nav-1",
+        display_name="Navigator 1",
+        last_known_status="Idle",
+    )
+    swarm = SwarmMetadata(
+        swarm_id=config.swarm_id,
+        project_path=config.project_path,
+        agent_mail_project_id="mail-project-1",
+        created_at=now,
+        last_updated_at=now,
+        agents={"nav-1": meta},
+    )
+    store.save_swarm_metadata(swarm)
+    store.save_agent_metadata(meta)
+
+    client = NateOhaAcpClient(config=config)
+
+    def fake_get_status(agent_id: str) -> AcpAgentStatus:
+        assert agent_id == "nav-1"
+        return AcpAgentStatus(agent_id=agent_id, state="failed")
+
+    monkeypatch.setattr(client, "get_status", fake_get_status)
+
+    agent_mail = FakeAgentMailClient(config=config)
+    adapters = RuntimeAdapters(agent_mail=agent_mail, acp=client)
+
+    daemon = RuntimeDaemon.resume(config, adapters=adapters)
+
+    assert daemon.state.agents == {}
+
+    detail = daemon.get_agent_detail(agent_id="nav-1", max_events=10)
+    agent_payload = detail["agent"]
+    assert agent_payload["status"] == AgentStatus.FAILED.value
+
+    reloaded_meta = store.load_agent_metadata("nav-1")
+    assert reloaded_meta.last_known_status == AgentStatus.FAILED.value
+
+
+
+def test_runtime_daemon_agent_detail_falls_back_to_last_known_status_when_acp_unavailable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """get_agent_detail uses persisted last_known_status when ACP status is unavailable."""
+
+    project = tmp_path / "project"
+    project.mkdir(parents=True, exist_ok=True)
+
+    env_snapshot = dict(os.environ)
+    config = load_runtime_config(project_path=project, env=env_snapshot)
+
+    store = MetadataStore(config=config)
+    now = datetime(2026, 7, 3, 12, 0, 0)
+
+    meta = AgentMetadata(
+        agent_id="nav-1",
+        display_name="Navigator 1",
+        last_known_status=AgentStatus.FAILED.value,
+    )
+    swarm = SwarmMetadata(
+        swarm_id=config.swarm_id,
+        project_path=config.project_path,
+        agent_mail_project_id="mail-project-1",
+        created_at=now,
+        last_updated_at=now,
+        agents={"nav-1": meta},
+    )
+    store.save_swarm_metadata(swarm)
+    store.save_agent_metadata(meta)
+
+    client = NateOhaAcpClient(config=config)
+
+    def failing_get_status(agent_id: str) -> AcpAgentStatus:  # pragma: no cover - behavior asserted below
+        raise AcpClientError("boom")
+
+    monkeypatch.setattr(client, "get_status", failing_get_status)
+
+    agent_mail = FakeAgentMailClient(config=config)
+    adapters = RuntimeAdapters(agent_mail=agent_mail, acp=client)
+
+    daemon = RuntimeDaemon.resume(config, adapters=adapters)
+
+    assert daemon.state.agents == {}
+
+    detail = daemon.get_agent_detail(agent_id="nav-1", max_events=10)
+    agent_payload = detail["agent"]
+    # When ACP status is unavailable, the daemon should fall back to the
+    # last persisted snapshot rather than failing.
+    assert agent_payload["status"] == AgentStatus.FAILED.value
+
+    reloaded_meta = store.load_agent_metadata("nav-1")
+    assert reloaded_meta.last_known_status == AgentStatus.FAILED.value
 

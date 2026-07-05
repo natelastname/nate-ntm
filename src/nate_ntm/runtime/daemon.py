@@ -26,7 +26,7 @@ and lifecycle state transitions.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
@@ -39,7 +39,7 @@ from .acp_client import BaseAcpClient
 from .adapters import RuntimeAdapters, create_runtime_adapters
 from .agent_mail_client import BaseAgentMailClient
 from .agents import AgentSupervisor
-from .metadata_store import MetadataStore, SwarmMetadata
+from .metadata_store import AgentMetadata, MetadataStore, SwarmMetadata
 from .scheduler import RuntimeScheduler
 from .state import AgentStatus, RuntimeState, RuntimeStatus
 
@@ -53,6 +53,37 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
+
+
+def _map_acp_state_to_last_known_status(acp_state: str) -> str | None:
+    """Map adapter-level ACP state to ``AgentMetadata.last_known_status``.
+
+    This keeps the persisted string representation aligned with
+    :class:`AgentStatus` while remaining tolerant of adapter-specific
+    vocabularies. Only stable, high-level states are mapped; transitional
+    or unknown values are ignored so they do not overwrite a more useful
+    snapshot.
+    """
+
+    state = (acp_state or "").strip().lower()
+    if not state:
+        return None
+
+    if state == "running":
+        return AgentStatus.RUNNING.value
+
+    # Treat terminated/idle adapter-level states as "Idle" from the
+    # runtime's point of view so that callers see a simple snapshot.
+    if state in {"terminated", "idle"}:
+        return AgentStatus.IDLE.value
+
+    if state == "failed":
+        return AgentStatus.FAILED.value
+
+    # For other values (for example, "starting", "stopping", "unknown"),
+    # fall back to any previously persisted status.
+    return None
+
 
 
 class StartupMode(str, Enum):
@@ -662,6 +693,60 @@ class RuntimeDaemon:
             "agents": agents,
         }
 
+
+    def _refresh_last_known_status_from_acp(
+        self, agent_id: str, metadata: AgentMetadata | None
+    ) -> AgentMetadata | None:
+        """Update ``AgentMetadata.last_known_status`` from the ACP adapter.
+
+        This consults the runtime-owned ACP client (when present) for a
+        lightweight adapter-level status, maps that to the persisted
+        ``last_known_status`` representation, and persists both the per-agent
+        metadata file and the in-memory swarm snapshot when a change is
+        observed.
+
+        The method is intentionally tolerant of adapter errors and unknown
+        states so that callers (for example, :meth:`get_agent_detail`) can
+        safely use it in fallback paths without affecting control flow.
+        """
+
+        acp_client = self.acp_client
+        if acp_client is None:
+            return metadata
+
+        try:
+            acp_status = acp_client.get_status(agent_id)
+        except Exception:
+            return metadata
+
+        new_status = _map_acp_state_to_last_known_status(getattr(acp_status, "state", ""))
+        if new_status is None:
+            return metadata
+
+        current_meta = metadata
+        if current_meta is None:
+            # When swarm metadata does not yet include an entry for this
+            # agent, fall back to the per-agent metadata file if it exists.
+            try:
+                current_meta = self.metadata_store.load_agent_metadata(agent_id)
+            except FileNotFoundError:
+                return metadata
+
+        if current_meta.last_known_status == new_status:
+            return current_meta
+
+        updated = replace(current_meta, last_known_status=new_status)
+        self.metadata_store.save_agent_metadata(updated)
+
+        # Update the in-memory swarm metadata snapshot so subsequent calls in
+        # this process see the refreshed status without reading from disk.
+        swarm = self.swarm_metadata
+        agents = dict(swarm.agents)
+        agents[agent_id] = updated
+        self.swarm_metadata = replace(swarm, agents=agents)
+
+        return updated
+
     def get_agent_detail(self, agent_id: str, max_events: int = 100) -> dict[str, object]:
         """Return a JSON-serializable snapshot for ``agent.get_detail``.
 
@@ -673,8 +758,26 @@ class RuntimeDaemon:
           in-memory :class:`~nate_ntm.runtime.events.AgentEventStream`.
         """
 
-        metadata = self.swarm_metadata.agents.get(agent_id)
         runtime_state = self.state.agents.get(agent_id)
+
+        # Start from the in-memory swarm snapshot and, when available, prefer
+        # the persisted per-agent metadata on disk so fields like
+        # ``last_known_status`` stay in sync with updates made after the
+        # daemon was constructed.
+        metadata = self.swarm_metadata.agents.get(agent_id)
+        if metadata is not None:
+            try:
+                stored_meta = self.metadata_store.load_agent_metadata(agent_id)
+            except FileNotFoundError:
+                pass
+            else:
+                metadata = stored_meta
+
+        # When no live runtime state exists (for example, before the scheduler
+        # has started or immediately after a crash), attempt to refresh the
+        # persisted last-known status from the ACP adapter.
+        if runtime_state is None:
+            metadata = self._refresh_last_known_status_from_acp(agent_id, metadata)
 
         if metadata is None and runtime_state is None:
             # Unknown agent identifier. At the JSON-RPC layer this will be
