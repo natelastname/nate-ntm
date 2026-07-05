@@ -49,6 +49,49 @@ This document consolidates the key design decisions and any clarifications requi
   - **Ad-hoc CLI/env usage defined only in code or comments**:
     - Rejected because it would make it harder to audit and evolve the interface and would increase the risk of drift between nate_OHA and `nate_ntm`.
 
-## Open Questions / Clarifications
+## Decision 5: Agent Mail project identifier source (T242)
 
-At this stage, no blockers remain that require additional research beyond the existing specification and `NATE_OHA_GUIDE.md`. If future changes introduce new technologies (e.g., alternative transport mechanisms or distributed nate_OHA deployments), they should be captured here as new decisions with updated rationale and alternatives.
+- **Decision**: Treat :attr:`RuntimeConfig.agent_mail_project` as the
+  canonical Agent Mail *project key* for a swarm and persist that same
+  value in :attr:`SwarmMetadata.agent_mail_project_id`. The REAL Agent
+  Mail adapter and the nate_OHA ACP adapter both use this key so that all
+  components agree on which Agent Mail project the swarm belongs to.
+- **Details**:
+  - ``load_runtime_config`` resolves ``agent_mail_project`` from, in order
+    of precedence: the explicit function argument, ``NATE_NTM_AGENT_MAIL_PROJECT``,
+    and ``AGENT_MAIL_PROJECT``. When unset, it falls back to the absolute
+    project path, keeping the US1/US2 quickstart behavior.
+  - :class:`McpAgentMailClient.ensure_project` now derives a single
+    ``project_key`` from ``RuntimeConfig.agent_mail_project`` (or the
+    fallback project path), passes it to the Agent Mail ``ensure_project``
+    tool for side effects/validation, and then returns **that same
+    ``project_key``** as the project identifier. The project key is reused
+    for ``register_agent`` / ``fetch_inbox`` calls so that all Agent Mail
+    operations are scoped consistently.
+  - :class:`RuntimeDaemon.create` stores the returned project key in
+    ``SwarmMetadata.agent_mail_project_id``. Downstream APIs and the
+    nate_OHA adapter treat this as the swarm's Agent Mail project ID.
+  - :class:`RuntimeDaemon.resume` enforces FR-009 for REAL adapters by
+    calling :meth:`McpAgentMailClient.ensure_project` and requiring that
+    the resulting project key exactly match the persisted
+    ``agent_mail_project_id``. If an operator changes
+    ``NATE_NTM_AGENT_MAIL_PROJECT`` (or the explicit ``agent_mail_project``
+    argument) between creates and resumes, startup fails with a clear
+    error instead of silently drifting to a different Agent Mail project.
+  - For the dev-mode :class:`FakeAgentMailClient`, the strict
+    project-id check on resume remains limited to swarms whose stored
+    ``agent_mail_project_id`` uses the fake-client naming scheme
+    (``"fake-mail-project:..."``). This keeps older tests and hand-crafted
+    "mail-project-1" metadata valid while still enforcing strong
+    invariants for create→resume flows that went through
+    :meth:`RuntimeDaemon.create`.
+  - :class:`NateOhaAcpClient` uses ``RuntimeConfig.agent_mail_project`` to
+    populate ``AGENT_MAIL_PROJECT`` for nate_OHA launches. Because that
+    value is now equal to ``SwarmMetadata.agent_mail_project_id`` for REAL
+    adapters, the process launch contract in
+    ``nate_oha_process_launch.md`` (``AGENT_MAIL_PROJECT =
+    SwarmMetadata.agent_mail_project_id``) holds by construction.
+
+If future changes introduce new technologies (e.g., alternative transport
+mechanisms or distributed nate_OHA deployments), they should be captured
+here as new decisions with updated rationale and alternatives.

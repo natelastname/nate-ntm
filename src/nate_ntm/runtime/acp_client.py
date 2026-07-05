@@ -871,9 +871,14 @@ class NateOhaAcpClient(BaseAcpClient):
 
         The exact set of flags is intentionally small for now and will be
         expanded as additional Feature 002 requirements are implemented.
+
+        The current nate_OHA CLI exposes the ACP entrypoint as the
+        top-level command (``nate_OHA [OPTIONS]``) rather than an
+        explicit ``acp`` subcommand. The adapter therefore launches the
+        bare executable and adds only the flags it needs.
         """
 
-        cmd = [self.executable, "acp"]
+        cmd = [self.executable]
 
         # Enable Agent Mail integration when an identity is configured.
         if metadata.agent_mail_identity:
@@ -918,6 +923,13 @@ class NateOhaAcpClient(BaseAcpClient):
         env.setdefault("NATE_NTM_PROJECT_PATH", str(self.config.project_path))
         env.setdefault("NATE_NTM_SWARM_ID", self.config.swarm_id)
         env.setdefault("NATE_NTM_AGENT_ID", agent_id)
+
+        # Default model selection for nate_OHA. The child environment must
+        # always have an explicit LLM model configured so that we do not
+        # rely on nate_OHA's internal default. Callers who need a different
+        # model may override this via the parent environment before
+        # constructing the runtime configuration.
+        env.setdefault("LLM_MODEL", "openai/gpt-4o")
 
         if metadata.conversation_id:
             env.setdefault("NATE_NTM_AGENT_CONVERSATION_ID", metadata.conversation_id)
@@ -993,16 +1005,21 @@ class NateOhaAcpClient(BaseAcpClient):
         """Verify that the installed ``nate_OHA`` meets minimum requirements.
 
         This helper runs a lightweight self-check command (by default
-        ``nate_OHA --version``) and parses its output to ensure that a
+        ``nate_OHA --help``) and parses its output to ensure that a
         supported version of nate_OHA is installed. If the check fails or an
         incompatible version is detected, :class:`AcpClientError` is raised
         with a clear diagnostic.
+
+        The use of ``--help`` rather than a dedicated ``--version`` flag
+        matches the current nate_OHA CLI, which prints its version in a
+        banner line (for example ``OpenHands SDK v1.28.1``) and exits
+        successfully.
         """
 
         if self._version_checked:
             return
 
-        cmd = [self.executable, "--version"]
+        cmd = [self.executable, "--help"]
         try:
             proc = subprocess.run(
                 cmd,
@@ -1031,15 +1048,30 @@ class NateOhaAcpClient(BaseAcpClient):
             )
 
         version_tuple = self._parse_semver(output)
-        if version_tuple is None:
-            raise AcpClientError(
-                "nate_OHA version check did not report a semantic version "
-                f"(output was: {output!r})"
-            )
 
         # Enforce a minimum version if configured via environment. This keeps
         # the runtime flexible while still satisfying FR-013.
         min_version_str = os.environ.get("NATE_OHA_MIN_VERSION", "").strip()
+
+        if version_tuple is None:
+            # If nate_OHA does not report a semantic version but exits
+            # successfully, treat the version as "unknown" unless a minimum
+            # version has been explicitly configured. This allows environments
+            # that suppress the banner (for example via
+            # ``OPENHANDS_SUPPRESS_BANNER=1``) to pass the compatibility check
+            # while still enforcing strict versioning when
+            # ``NATE_OHA_MIN_VERSION`` is set.
+            if min_version_str:
+                raise AcpClientError(
+                    "nate_OHA version check did not report a semantic version "
+                    f"and NATE_OHA_MIN_VERSION={min_version_str!r} is set; cannot "
+                    f"verify compatibility (output was: {output!r})."
+                )
+
+            self._version_checked = True
+            self._detected_version = None
+            return
+
         if min_version_str:
             min_tuple = self._parse_semver(min_version_str)
             if min_tuple is None:

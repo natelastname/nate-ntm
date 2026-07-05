@@ -258,7 +258,32 @@ Key points:
 - Keep flows clearly ordered: finish the delegated command first, then
   continue with the rest of the current `/speckit.*` command.
 
-### 3.3 `.specify/scripts/bash/*.sh` helpers
+
+---
+
+### 3.3 Feature-specific docs: nate_ntm runtime and nate_OHA ACP
+
+For work on the nate_ntm Swarm Runtime Orchestrator and its ACP adapters:
+
+- Feature 001 (`specs/001-swarm-runtime-orchestrator/`) defines the core
+  runtime, configuration model, and MVP quickstart.
+- Feature 002 (`specs/002-nate-oha-acp-adapter/`) defines the nate_OHA
+  production ACP adapter (`NateOhaAcpClient`) and its process-launch
+  contract.
+
+When you are editing runtime/adapter code or docs:
+
+- Treat `NateOhaAcpClient` as the canonical **production** ACP adapter for
+  REAL mode in this repository.
+- Consider `OpenHandsAcpClient` a legacy/compatibility path only.
+- Use the quickstarts under
+  `specs/001-swarm-runtime-orchestrator/quickstart.md` and
+  `specs/002-nate-oha-acp-adapter/quickstart.md` as the primary sources for
+  end-to-end validation flows.
+- For deeper details, consult each feature directory's `spec.md`, `plan.md`,
+  and `tasks.md` files.
+
+### 3.4 `.specify/scripts/bash/*.sh` helpers
 
 Several commands rely on shell helpers that emit JSON, notably:
 
@@ -281,7 +306,7 @@ General rules:
   fallback (usually: abort the command and tell the user what they need
   to run first, often `./speckit.specify`).
 
-### 3.4 Constitution precedence
+### 3.5 Constitution precedence
 
 `.specify/memory/constitution.md` defines **project‑wide non‑negotiable
 rules**. Templates (especially `speckit.plan`, `speckit.analyze`, and

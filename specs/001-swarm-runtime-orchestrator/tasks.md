@@ -138,11 +138,15 @@ quickstart flows.
   satisfies the `BaseAgentMailClient` interface using real Agent Mail APIs, and add
   focused integration tests under `tests/integration/runtime_mail/` that are gated or
   marked to avoid running in offline CI environments.
-- [ ] T102 [P] Implement a production OpenHands-compatible ACP adapter in
+- [ ] T102 [P] Implement a **legacy/compatibility** OpenHands-compatible ACP adapter in
   `src/nate_ntm/runtime/acp_client.py` (for example, `OpenHandsAcpClient`) that
   satisfies the `BaseAcpClient` interface using real control-protocol APIs, and add
   focused integration tests under `tests/integration/runtime_acp/` that are gated or
   marked to avoid running in offline CI environments.
+  - Note: For REAL ACP integration, the **canonical** production adapter is
+    `NateOhaAcpClient` provided by Feature 002 (`specs/002-nate-oha-acp-adapter/`).
+    T102 is optional and should not change the default adapter selection used by
+    `AdapterKind.REAL`.
 
 
 

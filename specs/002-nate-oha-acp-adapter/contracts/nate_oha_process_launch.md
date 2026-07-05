@@ -11,18 +11,18 @@ This document defines the process-level contract between the `nate_ntm` runtime 
   - The default expectation is that `nate_OHA` is installed as a console script on `PATH`.
   - Development environments **MAY** wrap the call in `uv run nate_OHA ...`, but this is an implementation detail; the contract is expressed in terms of the `nate_OHA` CLI.
 
-- **Subcommand and base arguments**
-  - For ACP runtime mode, the adapter **MUST** invoke the `acp` subcommand:
+- **Base invocation and flags**
+  - For ACP runtime mode, the adapter **MUST** invoke the root `nate_OHA` entrypoint (the current CLI does not define a separate `acp` subcommand):
     - Example baseline invocation (no Agent Mail):
 
       ```bash
-      nate_OHA acp
+      nate_OHA
       ```
 
   - For Agent Mail integration, the adapter **MUST** pass `--enable-agent-mail` when Agent Mail is configured for the agent (FR-003):
 
       ```bash
-      nate_OHA acp --enable-agent-mail [other-flags]
+      nate_OHA --enable-agent-mail [other-flags]
       ```
 
 - **Additional arguments (examples)**

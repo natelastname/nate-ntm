@@ -37,7 +37,7 @@ import logging
 from ..config.runtime_config import RuntimeConfig
 from .acp_client import BaseAcpClient
 from .adapters import RuntimeAdapters, create_runtime_adapters
-from .agent_mail_client import BaseAgentMailClient
+from .agent_mail_client import BaseAgentMailClient, FakeAgentMailClient, McpAgentMailClient
 from .agents import AgentSupervisor
 from .metadata_store import AgentMetadata, MetadataStore, SwarmMetadata
 from .scheduler import RuntimeScheduler
@@ -442,6 +442,34 @@ class RuntimeDaemon:
                     f"adapter returned {project_id!r}, "
                     f"metadata has {swarm.agent_mail_project_id!r}"
                 )
+
+        # For the production MCP-backed Agent Mail client we always enforce
+        # a strict project-id check on resume. The configured
+        # :attr:`RuntimeConfig.agent_mail_project` (or its default) is treated
+        # as the canonical project key; :class:`McpAgentMailClient.ensure_project`
+        # must therefore resolve to the same identifier that was recorded in
+        # :class:`SwarmMetadata.agent_mail_project_id` at create time. Any
+        # divergence indicates that the runtime is now pointed at a different
+        # Agent Mail project for this swarm and is treated as a hard startup
+        # error to protect FR-009.
+        if swarm.agent_mail_project_id and isinstance(agent_mail_client, McpAgentMailClient):
+            project_id = agent_mail_client.ensure_project()
+            if project_id != swarm.agent_mail_project_id:
+                logger.error(
+                    "runtime_resume_agent_mail_project_mismatch_real",
+                    extra={
+                        "swarm_id": swarm.swarm_id,
+                        "project_path": str(swarm.project_path),
+                        "expected_project_id": swarm.agent_mail_project_id,
+                        "actual_project_id": project_id,
+                    },
+                )
+                raise RuntimeStartupError(
+                    "Agent Mail project ID mismatch on resume for REAL adapter: "
+                    f"adapter returned {project_id!r}, "
+                    f"metadata has {swarm.agent_mail_project_id!r}"
+                )
+
 
         for agent_id, meta in swarm.agents.items():
             if meta.agent_mail_identity:

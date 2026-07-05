@@ -708,11 +708,12 @@ def test_nate_oha_acp_client_builds_command_and_env_for_agent_mail(
     This test focuses on the process-launch contract for nate_OHA when
     Agent Mail is enabled. It verifies that the adapter:
 
-    * builds the ``nate_OHA acp --enable-agent-mail`` command line
+    * builds the ``nate_OHA --enable-agent-mail`` command line
     * derives Agent Mail launch settings from :class:`RuntimeConfig` and
       :class:`AgentMetadata`
-    * populates the required ``AGENT_MAIL_*`` variables and the runtime
-      correlation ``NATE_NTM_*`` variables in the child environment.
+    * populates the required ``AGENT_MAIL_*`` variables, the runtime
+      correlation ``NATE_NTM_*`` variables, and the ``LLM_MODEL``
+      default in the child environment.
     """
 
     # Ensure NATE_NTM-specific Agent Mail URL variables do not interfere
@@ -751,16 +752,18 @@ def test_nate_oha_acp_client_builds_command_and_env_for_agent_mail(
 
     # The first positional argument is the command list.
     cmd = args[0]
-    assert cmd == ["nate_OHA", "acp", "--enable-agent-mail"]
+    assert cmd == ["nate_OHA", "--enable-agent-mail"]
 
     # The environment must include the Agent Mail and nate_ntm correlation
-    # variables required by the process-launch contract.
+    # variables required by the process-launch contract, as well as the
+    # default LLM model selection.
     env = kwargs.get("env")
     assert isinstance(env, dict)
 
     assert env["NATE_NTM_PROJECT_PATH"] == str(client.config.project_path)
     assert env["NATE_NTM_SWARM_ID"] == client.config.swarm_id
     assert env["NATE_NTM_AGENT_ID"] == "agent-1"
+    assert env["LLM_MODEL"] == "openai/gpt-4o"
 
     # Agent Mail variables: project, identity, token, and upstream URL
     assert env["AGENT_MAIL_PROJECT"] == client.config.agent_mail_project

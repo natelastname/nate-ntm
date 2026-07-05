@@ -292,32 +292,36 @@ class McpAgentMailClient(BaseAgentMailClient):
     def ensure_project(self) -> str:
         """Ensure an Agent Mail project exists for this runtime's project.
 
-        The human project key is the absolute project path used by the
-        runtime. The adapter caches the returned identifier so repeated
-        calls in the same process are cheap.
+        The project key is derived from :class:`RuntimeConfig` and treated
+        as the swarm's stable identifier for talking to Agent Mail. The
+        adapter caches the resulting identifier so repeated calls in the
+        same process are cheap.
         """
 
         if self._project_id is not None:
             return self._project_id
 
-        human_key = str(self.config.project_path)
-        arguments: Dict[str, Any] = {"human_key": human_key}
+        # Prefer an explicit Agent Mail project key when configured;
+        # otherwise fall back to the absolute project path. This keeps
+        # deployment-time configuration in :class:`RuntimeConfig` as the
+        # single source of truth while remaining backwards compatible with
+        # earlier quickstarts that used the project path directly.
+        project_key = (self.config.agent_mail_project or str(self.config.project_path)).strip()
 
-        result = self._call_tool(
+        # Call the Agent Mail ``ensure_project`` tool for its side effects
+        # (for example, creating the project or validating credentials),
+        # but treat the configured ``project_key`` as the canonical
+        # identifier within the runtime. The same key is reused for
+        # per-agent operations and persisted into swarm metadata.
+        _ = self._call_tool(
             name="ensure_project",
-            arguments=arguments,
+            arguments={"human_key": project_key},
             request_id="nate-ntm-ensure-project",
             request_name="Agent Mail ensure_project",
         )
 
-        if isinstance(result, Mapping):
-            slug = str(result.get("slug") or "").strip()
-            project_id = slug or str(result.get("id") or "").strip() or human_key
-        else:  # pragma: no cover - defensive
-            project_id = human_key
-
-        self._project_id = project_id
-        return project_id
+        self._project_id = project_key
+        return project_key
 
     def ensure_agent_identity(self, agent_id: str) -> str:
         """Ensure an Agent Mail identity exists for ``agent_id``.
@@ -347,9 +351,11 @@ class McpAgentMailClient(BaseAgentMailClient):
             token = cached_token or credentials_hint
             return cached_identity, token
 
-        # Always ensure the project exists before registering agents.
-        self.ensure_project()
-        project_key = str(self.config.project_path)
+        # Always ensure the project exists before registering agents and
+        # reuse the same project key that :meth:`ensure_project` returned so
+        # that all Agent Mail operations for this swarm are scoped
+        # consistently.
+        project_key = self.ensure_project()
 
         arguments: Dict[str, Any] = {
             "project_key": project_key,
@@ -396,9 +402,9 @@ class McpAgentMailClient(BaseAgentMailClient):
         if not ids:
             return {}
 
-        # Ensure the project exists; this is cheap when cached.
-        self.ensure_project()
-        project_key = str(self.config.project_path)
+        # Ensure the project exists; this is cheap when cached, and reuse
+        # the same project key that :meth:`ensure_project` returned.
+        project_key = self.ensure_project()
 
         flags: Dict[str, bool] = {}
         for agent_id in ids:

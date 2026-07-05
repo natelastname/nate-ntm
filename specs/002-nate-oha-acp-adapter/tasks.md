@@ -213,11 +213,11 @@ For this feature, no new project scaffolding or package layout changes are requi
 
 **Purpose**: Align documentation, cross-feature references, and manual validation with the implemented behavior.
 
-- [ ] T240 [P] Update quickstart and top-level docs for NateOhaAcpClient.
+- [x] T240 [P] Update quickstart and top-level docs for NateOhaAcpClient.
   - Review and update `specs/002-nate-oha-acp-adapter/quickstart.md` to match the implemented CLI flags, adapter selection defaults, and observed behavior of `NateOhaAcpClient` (including create → inspect → shutdown → resume flows).
   - Where appropriate, update `README.md` and `AGENTS_MK2.md` to reference nate_OHA as the production ACP runtime for nate_ntm and to point to this feature’s spec, plan, and tasks for operators who need deeper details.
 
-- [ ] T241 [P] Align Feature 001 tasks with the new production adapter.
+- [x] T241 [P] Align Feature 001 tasks with the new production adapter.
   - In `specs/001-swarm-runtime-orchestrator/tasks.md`, update the Phase 6 production integration tasks (particularly T102) to indicate that the canonical production ACP adapter is now `NateOhaAcpClient` implemented via Feature 002, and that `OpenHandsAcpClient` is no longer the default production option. Keep historical references for traceability, but make the current adapter choice unambiguous.
 
 - [ ] T242 [P] Run end-to-end validation and capture findings.

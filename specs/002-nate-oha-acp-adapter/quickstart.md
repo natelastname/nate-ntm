@@ -39,14 +39,17 @@ Before involving `nate_ntm`, verify that `nate_OHA` can start with Agent Mail en
 ```bash
 cd /path/to/nate_OHA/repo   # if running from source
 
-uv run nate_OHA acp --enable-agent-mail
+uv run nate_OHA --enable-agent-mail
 ```
 
 You should see the ACP server start without configuration errors. Exit the process before proceeding.
 
 ## 3. Create a swarm using NateOhaAcpClient
 
-Use the `nate-ntm` CLI to create a new swarm that uses **real** adapters for both Agent Mail and ACP. In this configuration, `AdapterKind.REAL` for ACP is implemented by `NateOhaAcpClient`.
+Use the `nate-ntm` CLI to create a new swarm that uses **real** adapters for both Agent Mail and ACP. In this configuration:
+
+- `AdapterKind.REAL` for **ACP** is implemented by `NateOhaAcpClient`, the nate_OHA production ACP adapter.
+- `AdapterKind.REAL` for **Agent Mail** is implemented by `McpAgentMailClient`, configured via `RuntimeConfig.agent_mail_project` and `RuntimeConfig.agent_mail_upstream_url` (resolved from `NATE_NTM_AGENT_MAIL_PROJECT` / `NATE_NTM_AGENT_MAIL_URL` with fallbacks to `AGENT_MAIL_PROJECT` / `AGENT_MAIL_UPSTREAM_URL` / `AGENT_MAIL_URL`).
 
 ```bash
 cd /path/to/nate_ntm/repo
@@ -63,7 +66,7 @@ Expected behavior:
 
 - Swarm metadata is created under `$PROJECT_ROOT/.nate_ntm/`.
 - The runtime daemon starts and runs until shut down via the control API.
-- A nate_OHA process is launched for the single agent, with Agent Mail enabled and configured via `AGENT_MAIL_*` env vars.
+- A nate_OHA process is launched for the single agent *only after* the runtime begins supervising agents (via `start_agent`), with Agent Mail enabled and configured from the `RuntimeConfig` fields described above.
 
 ## 4. Inspect runtime and agent state
 
@@ -138,6 +141,10 @@ In a separate terminal, use the JSON-RPC CLI to inspect runtime and agent state.
    - The runtime loads existing metadata from `$PROJECT_ROOT/.nate_ntm/`.
    - A nate_OHA process is relaunched for the agent.
    - The adapter reuses the same Agent Mail identity and the same persisted OpenHands conversation identifier.
+   - If the adapter would derive a different conversation ID than the one
+     stored in `AgentMetadata`, resume fails fast with `RuntimeStartupError`
+     and logs a mismatch to protect conversation continuity.
+
 
 3. **Re-inspect agent detail and metadata**:
 
@@ -171,5 +178,31 @@ To further validate event propagation from nate_OHA into the runtime event strea
 3. **Inspect event notifications** (once `events.notify` or equivalent wiring is implemented) and confirm that:
    - Turn completions and errors are surfaced as `AgentEvent` records.
    - Process lifecycle events (start, readiness, failures) are visible through the same APIs.
+
+
+## 7. Developer quick-check (offline-safe)
+
+If you do not have access to a real nate_OHA + Agent Mail environment yet,
+you can still validate the core NateOhaAcpClient behavior and its integration
+with the runtime using the existing unit and integration tests. From the repo
+root:
+
+```bash
+PYTHONPATH=src pytest tests/unit/runtime/test_acp_client.py -q
+PYTHONPATH=src pytest tests/unit/runtime/test_daemon.py -q
+PYTHONPATH=src pytest tests/integration/quickstart/test_resume_swarm_us2.py -q
+```
+
+These tests cover:
+
+- The NateOhaAcpClient adapter contract and conversation ID behavior
+  (including metadata-aware `ensure_conversation` semantics).
+- Metadata persistence and reuse of Agent Mail identities and conversation
+  IDs across shutdown/resume.
+- Event routing from adapters into the runtime (agent event stream, runtime
+  overview, and status APIs).
+- REAL-ACP resume behavior for nate_OHA-backed swarms, including enforcement
+  of conversation continuity and surfacing mismatches as `RuntimeStartupError`,
+  without requiring a real nate_OHA process or live Agent Mail server.
 
 This quickstart, together with `spec.md`, `data-model.md`, and `contracts/nate_oha_process_launch.md`, provides an end-to-end validation path for the NateOhaAcpClient integration.
