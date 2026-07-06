@@ -40,7 +40,11 @@
 
 *GATE: Must pass before Phase 0 research. Re-check after Phase 1 design.*
 
-[Gates determined based on constitution file]
+For each plan, confirm at minimum:
+
+- Dependency choices prefer mature libraries over custom code. Do not add "optional" dependencies; either depend on a library fully and declare it, or avoid it entirely.
+- The target runtime is a Linux environment similar to the development/CI host. Any non-Linux targets are explicitly called out and justified.
+- Any intentional deviations from the constitution are recorded in the "Complexity Tracking" table below.
 
 ## Project Structure
 

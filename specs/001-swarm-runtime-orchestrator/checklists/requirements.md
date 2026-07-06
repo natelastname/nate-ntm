@@ -83,18 +83,19 @@ future-work items.
     agent inspection and event streaming (US3).
 
 - [x] **FR-007** – Local bidirectional control API for inspection and actions
-  - Coverage: `RuntimeApiServer` and `JsonRpcWebSocketServer` implement the
-    contract in `contracts/runtime-api.md` for `runtime.get_status`,
-    `swarm.get_overview`, `agent.get_detail`, `events.subscribe`, and
-    `events.notify`. CLI support is provided via `nate_ntm.cli` (`api call`
-    subcommand). Exercised by quickstart integration tests under
-    `tests/integration/quickstart/`.
+  - Coverage: `RuntimeApiServer` implements the in-process contract in
+    `contracts/runtime-api.md` for `runtime.get_status`, `swarm.get_overview`,
+    `agent.get_detail`, `events.subscribe`, and `events.notify`. The unified
+    FastAPI/uvicorn control API (`POST /jsonrpc` plus `/events` WebSocket)
+    exposes this surface over the network. CLI support is provided via
+    `nate_ntm.cli` (`api call` subcommand). Exercised by quickstart
+    integration tests under `tests/integration/quickstart/`.
 
 - [ ] **FR-008** – Graceful shutdown and forced termination
   - Status: **Partially implemented**. `RuntimeDaemon.request_shutdown` and
     `mark_stopped` mirror the high-level `runtime.shutdown` semantics and
-    coordinate with the WebSocket server in `runtime.runner`, but real
-    subprocess cancellation and forced termination behavior are not yet
+    coordinate with the FastAPI/uvicorn control API in `runtime.runner`, but
+    real subprocess cancellation and forced termination behavior are not yet
     implemented.
 
 - [x] **FR-009** – Resume existing swarm with identity and conversation reuse
@@ -106,9 +107,10 @@ future-work items.
 
 - [x] **FR-010** – Surface scheduler/agent/mailbox events via control API
   - Coverage: `AgentSupervisor` publishes `AgentEvent` instances into
-    per-agent streams and, via the callback installed by `RuntimeControlContext`
-    in `runtime.runner`, forwards them to `JsonRpcWebSocketServer` for
-    `events.notify` notifications. US3 tests under
+    per-agent streams and, via the callback installed by
+    `RuntimeControlContext` in `runtime.runner`, forwards them to the
+    FastAPI app's `/events` WebSocket publisher (``app.state.publish_event``)
+    for `events.notify` notifications. US3 tests under
     `tests/integration/quickstart/test_runtime_ws_events_us3.py` validate
     this behavior.
 
@@ -126,8 +128,8 @@ future-work items.
 
 - [x] **FR-013** – Runtime control API binds to loopback by default
   - Coverage: `RuntimeConfig.control_api_host` defaults to `127.0.0.1` and is
-    used by `JsonRpcWebSocketServer` in `runtime.runner`. Quickstart and
-    tests assume a localhost-only control API.
+    used by the FastAPI/uvicorn control API in `runtime.runner`. Quickstart
+    and tests assume a localhost-only control API.
 
 - [x] **FR-014** – Project-local metadata as primary source of truth
   - Coverage: `RuntimeConfig` defaults `metadata_dir` to `.nate_ntm/` under

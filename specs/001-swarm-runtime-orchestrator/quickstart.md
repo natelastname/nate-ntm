@@ -44,8 +44,9 @@ This command:
 - Initializes or reuses the corresponding coordination project in Agent Mail.
 - Creates two placeholder agents (`agent-1` and `agent-2`) with bound Agent
   Mail identities and ACP conversations.
-- Starts a local WebSocket JSON-RPC control API bound to
-  `127.0.0.1:8765` (or the host/port configured in `RuntimeConfig`).
+- Starts a local FastAPI-based JSON-RPC control API (``POST /jsonrpc``)
+  plus an ``/events`` WebSocket endpoint bound to `127.0.0.1:8765` (or the
+  host/port configured in `RuntimeConfig`).
 - Blocks until a shutdown is requested via the runtime control API.
 
 Leave this command running in one terminal while you inspect the runtime from

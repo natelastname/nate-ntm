@@ -42,9 +42,9 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Set
 
 from fastapi import WebSocket, WebSocketDisconnect
 from fastapi_jsonrpc import API, BaseError, Entrypoint
-
 from pydantic import BaseModel, ValidationError
 
+from ..runtime.events import AgentEvent
 from .jsonrpc import JSONRPC_VERSION, build_events_notify_messages
 from .models import (
     AgentCounts,
@@ -56,7 +56,6 @@ from .models import (
     SwarmOverviewResult,
 )
 from .server import RuntimeApiServer
-from ..runtime.events import AgentEvent
 
 __all__ = ["create_runtime_api_app", "AgentNotFoundError", "RuntimeStateConflictError"]
 
@@ -273,7 +272,7 @@ def create_runtime_api_app(api_server: RuntimeApiServer) -> API:
 
         * Client connects to ``/events``.
         * Client sends a single JSON object indicating which
-          ``subscription_id``\(s) it is interested in.
+          ``subscription_id``(s) it is interested in.
         * Server records the mapping and then treats the connection as
           receive-only, delivering JSON-RPC ``events.notify``
           notifications whenever matching events occur.
