@@ -116,14 +116,95 @@ class JsonRpcWebSocketClient:
         return response.get("result")
 
 
+
+
+@dataclass(slots=True)
+class JsonRpcHttpClient:
+    """Minimal JSON-RPC 2.0 client over HTTP.
+
+    This client uses the standard library's :mod:`http.client` module
+    executed in a background thread via :func:`asyncio.to_thread` so it
+    can be safely invoked from within an asyncio event loop without
+    blocking it. It targets the unified ``POST /jsonrpc`` endpoint
+    exposed by :func:`nate_ntm.api.runtime_api.create_runtime_api_app`.
+    """
+
+    host: str = "127.0.0.1"
+    port: int = 8765
+    timeout: float | None = 10.0
+
+    async def call_async(
+        self,
+        method: str,
+        params: Mapping[str, Any] | None = None,
+        *,
+        request_id: int = 1,
+    ) -> Mapping[str, Any]:
+        """Perform a single JSON-RPC call and return the full response.
+
+        The returned mapping is the raw JSON-RPC envelope with either a
+        ``result`` or an ``error`` key. Callers that prefer exception-
+        based error handling can use :meth:`call_for_result` instead.
+        """
+
+        import http.client
+
+        def _do_request() -> Mapping[str, Any]:
+            conn = http.client.HTTPConnection(self.host, self.port, timeout=self.timeout)
+            try:
+                payload = {
+                    "jsonrpc": JSONRPC_VERSION,
+                    "method": method,
+                    "params": params or {},
+                    "id": request_id,
+                }
+                body = json.dumps(payload).encode("utf-8")
+                headers = {"Content-Type": "application/json"}
+                conn.request("POST", "/jsonrpc", body, headers)
+                resp = conn.getresponse()
+                raw = resp.read().decode("utf-8")
+            finally:
+                conn.close()
+
+            if resp.status != 200:
+                raise RuntimeError(f"HTTP {resp.status} {resp.reason}: {raw}")
+
+            return json.loads(raw)
+
+        return await asyncio.to_thread(_do_request)
+
+    async def call_for_result(
+        self,
+        method: str,
+        params: Mapping[str, Any] | None = None,
+        *,
+        request_id: int = 1,
+    ) -> Any:
+        """Perform a JSON-RPC call and return ``result`` or raise.
+
+        If the server returns an error envelope, this method raises
+        :class:`JsonRpcClientError` with the embedded error information.
+        """
+
+        response = await self.call_async(method, params, request_id=request_id)
+
+        if "error" in response:
+            error = response["error"] or {}
+            code = int(error.get("code", -1))
+            message = str(error.get("message", "Unknown error"))
+            data = error.get("data")
+            raise JsonRpcClientError(code=code, message=message, data=data)
+
+        return response.get("result")
+
 def call(method: str, params: Mapping[str, Any] | None = None, *, host: str = "127.0.0.1", port: int = 8765) -> Any:
     """Synchronous helper for one-off CLI-style JSON-RPC calls.
 
-    This is a thin wrapper around :class:`JsonRpcWebSocketClient` that
-    drives the underlying coroutine via :func:`asyncio.run`. It is
-    intended primarily for use in simple scripts; higher-level callers
-    are encouraged to use :class:`JsonRpcWebSocketClient` directly.
+    This is a thin wrapper around :class:`JsonRpcHttpClient` that drives
+    the underlying coroutine via :func:`asyncio.run`. It is intended
+    primarily for use in simple scripts; higher-level callers are
+    encouraged to use :class:`JsonRpcHttpClient` directly.
     """
 
-    client = JsonRpcWebSocketClient(host=host, port=port)
+    client = JsonRpcHttpClient(host=host, port=port)
     return asyncio.run(client.call_for_result(method, params or {}))

@@ -1,10 +1,11 @@
-"""Helpers for running a RuntimeDaemon with its WebSocket control API.
+"""Helpers for running a RuntimeDaemon with its FastAPI control API.
 
 This module provides small orchestration helpers that wire together
 
 * :class:`~nate_ntm.runtime.daemon.RuntimeDaemon`
 * :class:`~nate_ntm.api.server.RuntimeApiServer`
-* :class:`~nate_ntm.api.jsonrpc_ws.JsonRpcWebSocketServer`
+* A unified FastAPI/uvicorn control API app created by
+  :func:`nate_ntm.api.runtime_api.create_runtime_api_app`.
 
 into a single in-process runtime suitable for the MVP quickstart
 scenarios (US1).
@@ -17,10 +18,14 @@ async-capable building blocks for tests and future event-loop plumbing.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+import socket
+from dataclasses import dataclass, field
 from typing import Optional
 
-from ..api.jsonrpc_ws import JsonRpcWebSocketServer
+import uvicorn
+from fastapi_jsonrpc import API
+
+from ..api.runtime_api import create_runtime_api_app
 from ..api.server import RuntimeApiServer
 from ..config.runtime_config import RuntimeConfig
 from .adapters import RuntimeAdapters, create_runtime_adapters
@@ -55,16 +60,29 @@ class RuntimeControlContext:
     api_server:
         The :class:`RuntimeApiServer` bound to ``daemon``.
 
-    ws_server:
-        The :class:`JsonRpcWebSocketServer` exposing ``api_server`` over
-        a localhost-only WebSocket JSON-RPC interface.
+    app:
+        The unified FastAPI/JSON-RPC :class:`~fastapi_jsonrpc.API`
+        instance exposing the runtime control API.
+
+    host / port:
+        Desired bind host and port for the control API. ``port`` may be
+        ``0`` to request an ephemeral port; ``bound_port`` will be
+        populated with the actual value once the underlying uvicorn
+        server has started.
     """
 
     config: RuntimeConfig
     mode: StartupMode
     daemon: RuntimeDaemon
     api_server: RuntimeApiServer
-    ws_server: JsonRpcWebSocketServer
+    app: API
+    host: str
+    port: int
+    bound_port: int = 0
+
+    _uvicorn_server: uvicorn.Server | None = field(default=None, repr=False)
+    _server_task: asyncio.Task[None] | None = field(default=None, repr=False)
+    _sockets: list[socket.socket] | None = field(default=None, repr=False)
 
 
 def create_runtime_control_context(
@@ -82,10 +100,10 @@ def create_runtime_control_context(
 
     * Create or resume a :class:`RuntimeDaemon`.
     * Attach a :class:`RuntimeApiServer` to the daemon.
-    * Prepare a :class:`JsonRpcWebSocketServer` bound to the configured
-      control API host/port.
+    * Build a unified FastAPI/JSON-RPC application for the runtime
+      control API, bound to the configured host/port.
 
-    The returned context does **not** start the WebSocket server or mark
+    The returned context does **not** start the uvicorn server or mark
     the daemon as running; call :func:`serve_runtime_control_api` to do
     so under an event loop.
     """
@@ -106,24 +124,24 @@ def create_runtime_control_context(
 
     api_server = RuntimeApiServer(daemon=daemon)
 
-    ws_host = host or config.control_api_host
-    ws_port = port if port is not None else config.control_api_port
+    host_value = host or config.control_api_host
+    port_value = port if port is not None else config.control_api_port
 
-    ws_server = JsonRpcWebSocketServer(api_server=api_server, host=ws_host, port=ws_port)
+    app = create_runtime_api_app(api_server)
 
-    # Wire the runtime's AgentEvent pipeline into the WebSocket control API.
-    #
-    # The AgentSupervisor exposes an ``on_agent_event`` callback that is
-    # invoked whenever a new :class:`AgentEvent` is appended to an agent's
-    # in-memory event stream. Here we install a small bridge that forwards
-    # those events to :meth:`JsonRpcWebSocketServer.publish_event`, which in
-    # turn emits ``events.notify`` JSON-RPC notifications to subscribed
-    # clients.
+    # Wire the runtime's AgentEvent pipeline into the WebSocket event
+    # streaming endpoint exposed by the FastAPI app. The scheduler's
+    # AgentSupervisor invokes ``on_agent_event`` whenever a new
+    # :class:`AgentEvent` is appended to an agent's in-memory event
+    # stream; here we forward those events to the app's
+    # ``state.publish_event`` coroutine if it is present.
     scheduler = daemon.scheduler
     if scheduler is not None:
         supervisor = getattr(scheduler, "agent_supervisor", None)
+        publish_event = getattr(app.state, "publish_event", None)
 
-        if supervisor is not None:
+        if supervisor is not None and publish_event is not None:
+
             def _on_agent_event(event: AgentEvent) -> None:
                 try:
                     loop = asyncio.get_running_loop()
@@ -135,7 +153,7 @@ def create_runtime_control_context(
 
                 # Schedule asynchronous publication of the event without
                 # blocking the caller.
-                loop.create_task(ws_server.publish_event(event))
+                loop.create_task(publish_event(event))
 
             supervisor.on_agent_event = _on_agent_event
 
@@ -144,8 +162,73 @@ def create_runtime_control_context(
         mode=mode,
         daemon=daemon,
         api_server=api_server,
-        ws_server=ws_server,
+        app=app,
+        host=host_value,
+        port=port_value,
     )
+
+
+async def _start_api_server(ctx: RuntimeControlContext) -> None:
+    """Start the uvicorn server for the runtime control API.
+
+    This binds the configured host/port (supporting ``port=0`` for an
+    ephemeral port), runs uvicorn's startup sequence, and then launches
+    the main loop as a background task on the current event loop.
+    """
+
+    if ctx._uvicorn_server is not None:
+        # Already started.
+        return
+
+    config = uvicorn.Config(
+        ctx.app,
+        host=ctx.host,
+        port=ctx.port,
+        log_level="info",
+    )
+    if not config.loaded:
+        config.load()
+
+    # Bind a socket so we can discover the effective port when
+    # ``port=0`` was requested, then run uvicorn's startup sequence
+    # against that socket.
+    sock = config.bind_socket()
+    ctx.bound_port = int(sock.getsockname()[1])
+    ctx._sockets = [sock]
+
+    server = uvicorn.Server(config)
+    ctx._uvicorn_server = server
+    # Mirror the setup performed in ``Server._serve`` so that
+    # ``startup`` can run correctly when called directly.
+    server.lifespan = config.lifespan_class(config)
+    await server.startup(sockets=ctx._sockets)
+
+    # Run the uvicorn main loop in the background; the caller owns
+    # the event loop.
+    loop = asyncio.get_running_loop()
+    ctx._server_task = loop.create_task(server.main_loop())
+
+
+async def _stop_api_server(ctx: RuntimeControlContext) -> None:
+    """Stop the uvicorn server and close all active connections."""
+
+    server = ctx._uvicorn_server
+    ctx._uvicorn_server = None
+
+    # Ask the uvicorn main loop to exit and wait for it to finish.
+    task = ctx._server_task
+    ctx._server_task = None
+
+    if server is not None and task is not None:
+        server.should_exit = True
+        await task
+
+        sockets = ctx._sockets or []
+        await server.shutdown(sockets=sockets)
+
+    ctx._sockets = None
+    ctx.bound_port = 0
+
 
 
 async def serve_runtime_control_api(
@@ -153,24 +236,23 @@ async def serve_runtime_control_api(
     *,
     poll_interval: float = 0.1,
 ) -> None:
-    """Start the WebSocket control API and run until shutdown is requested.
+    """Start the FastAPI control API and run until shutdown is requested.
 
     This coroutine is responsible for the *lifetime* of the control API
     server for a single runtime instance. It:
 
-    * Starts the underlying :class:`JsonRpcWebSocketServer`.
+    * Starts the underlying FastAPI/uvicorn application.
     * Marks the :class:`RuntimeDaemon` as running via :meth:`start`.
     * Polls :attr:`RuntimeState.shutdown_requested` until a graceful
       shutdown has been requested (for example, via the
       ``runtime.shutdown`` control API method).
-    * On exit, stops the WebSocket server and marks the daemon as
-      stopped.
+    * On exit, stops the API server and marks the daemon as stopped.
 
     The caller owns the asyncio event loop and is expected to manage
     cancellation or process-level signals as appropriate.
     """
 
-    await ctx.ws_server.start()
+    await _start_api_server(ctx)
 
     try:
         # Transition the daemon into the Running state. This will, in
@@ -184,11 +266,11 @@ async def serve_runtime_control_api(
         while not ctx.daemon.state.shutdown_requested:
             await asyncio.sleep(poll_interval)
     finally:
-        # Always attempt to stop the WebSocket server and mark the
-        # daemon as fully stopped, even if an error or cancellation
-        # occurs while serving requests.
+        # Always attempt to stop the API server and mark the daemon as
+        # fully stopped, even if an error or cancellation occurs while
+        # serving requests.
         try:
-            await ctx.ws_server.stop()
+            await _stop_api_server(ctx)
         finally:
             ctx.daemon.mark_stopped()
 
@@ -233,7 +315,7 @@ def run_runtime_with_control_api(
     agent_count: int | None = None,
     adapters: RuntimeAdapters | None = None,
 ) -> None:
-    """Run a runtime daemon and its WebSocket control API to completion.
+    """Run a runtime daemon and its FastAPI control API to completion.
 
     This synchronous helper is intended for use from the Typer-based CLI
     and other non-async entrypoints. It drives the underlying coroutine

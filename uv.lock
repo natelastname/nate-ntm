@@ -3,6 +3,15 @@ revision = 2
 requires-python = ">=3.12, <3.14.1"
 
 [[package]]
+name = "aiojobs"
+version = "1.4.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/03/54/751969398e2039b4dc458fa153dc066a0f7337a5b480d58944f59b7b38ae/aiojobs-1.4.0.tar.gz", hash = "sha256:463665c75d1fcc46c78d44375c1034abf5e3f087894b0fc5ec4dd16ef90fdc98", size = 139598, upload-time = "2025-04-05T00:39:07.771Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ce/89/5a30b3c041712a8b2dadb5ccef2bae12a874469650c61c018705039699cd/aiojobs-1.4.0-py3-none-any.whl", hash = "sha256:e95eb0d10d1f6095aefb04d228d2b4b3747514503f26540de722c2228a8500ca", size = 9455, upload-time = "2025-04-05T00:39:06.279Z" },
+]
+
+[[package]]
 name = "annotated-doc"
 version = "0.0.4"
 source = { registry = "https://pypi.org/simple" }
@@ -107,6 +116,21 @@ wheels = [
 ]
 
 [[package]]
+name = "fastapi-jsonrpc"
+version = "3.5.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "aiojobs" },
+    { name = "fastapi" },
+    { name = "pydantic" },
+    { name = "starlette" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/3e/c9/4e5a5eb24f7d99aa1cf1f37a2c64e9c6d79c40c19a96541345157da362c7/fastapi_jsonrpc-3.5.0.tar.gz", hash = "sha256:e4fb3a1d8e4a32aed980dad819992b34299e247a35a8d28d930f6e972f9eb1dd", size = 446763, upload-time = "2026-04-17T15:49:50.781Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/13/90/39821f8171569469852502c868a47e91c091852230db4250e89c7e8c6f46/fastapi_jsonrpc-3.5.0-py3-none-any.whl", hash = "sha256:f13b7aa6c1f020222a9e997686bd92c43e123b3cf690f743357950d4aa4201b8", size = 23802, upload-time = "2026-04-17T15:49:33.348Z" },
+]
+
+[[package]]
 name = "h11"
 version = "0.16.0"
 source = { registry = "https://pypi.org/simple" }
@@ -205,9 +229,11 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
+    { name = "fastapi-jsonrpc" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "python-dotenv" },
+    { name = "starlette" },
     { name = "typer" },
     { name = "uvicorn", extra = ["standard"] },
     { name = "websockets" },
@@ -224,9 +250,11 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "fastapi", specifier = ">=0.139.0" },
+    { name = "fastapi-jsonrpc", specifier = ">=3.5.0" },
     { name = "pydantic", specifier = ">=2.13.4" },
     { name = "pydantic-settings", specifier = ">=2.14.2" },
     { name = "python-dotenv", specifier = ">=1,<2" },
+    { name = "starlette", specifier = ">=1.3.1" },
     { name = "typer", specifier = ">=0.26.8" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.50.0" },
     { name = "websockets", specifier = ">=12,<13" },

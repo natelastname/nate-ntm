@@ -23,12 +23,16 @@ loop in future phases.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass, field
 from typing import Any, Dict, Mapping
 
-import websockets
-from websockets.legacy.server import WebSocketServerProtocol
+import socket
+
+import uvicorn
+from fastapi import WebSocket, WebSocketDisconnect
+from fastapi_jsonrpc import API
 
 from .jsonrpc import JSONRPC_VERSION, build_events_notify_messages, dispatch_request
 from .server import RuntimeApiServer
@@ -73,67 +77,119 @@ class JsonRpcWebSocketServer:
     host: str = "127.0.0.1"
     port: int = 0
 
-    _ws_server: websockets.server.WebSocketServer | None = field(default=None, init=False, repr=False)
+    # Underlying FastAPI/JSON-RPC application and uvicorn server
+    _app: API | None = field(default=None, init=False, repr=False)
+    _uvicorn_server: uvicorn.Server | None = field(default=None, init=False, repr=False)
+    _server_task: asyncio.Task | None = field(default=None, init=False, repr=False)
+    _bound_port: int = field(default=0, init=False, repr=False)
+    _sockets: list[socket.socket] | None = field(default=None, init=False, repr=False)
 
     # Mapping from subscription_id -> WebSocket connection and the
     # inverse mapping from connection -> set[subscription_id]. These are
     # used to route ``events.notify`` notifications to the correct
     # clients.
-    _subscription_clients: Dict[str, WebSocketServerProtocol] = field(
+    _subscription_clients: Dict[str, WebSocket] = field(
         default_factory=dict, init=False, repr=False
     )
-    _client_subscriptions: Dict[WebSocketServerProtocol, set[str]] = field(
+    _client_subscriptions: Dict[WebSocket, set[str]] = field(
         default_factory=dict, init=False, repr=False
     )
 
     async def start(self) -> None:
         """Start the WebSocket server.
 
-        This coroutine binds the listening socket but does not block the
-        event loop indefinitely. Callers are responsible for running the
-        event loop (for example via :func:`asyncio.run`).
+        This coroutine binds the listening socket and waits until the
+        underlying uvicorn server has completed its startup sequence
+        before returning. Callers are responsible for running the event
+        loop (for example via :func:`asyncio.run`).
         """
 
-        self._ws_server = await websockets.serve(self._handle_client, self.host, self.port)
+        if self._app is None:
+            self._create_app()
+
+        assert self._app is not None
+        config = uvicorn.Config(
+            self._app,
+            host=self.host,
+            port=self.port,
+            log_level="info",
+        )
+        if not config.loaded:
+            config.load()
+
+        # Bind a socket so we can discover the effective port when
+        # ``port=0`` was requested, then run uvicorn's startup sequence
+        # against that socket.
+        sock = config.bind_socket()
+        self._bound_port = int(sock.getsockname()[1])
+        self._sockets = [sock]
+
+        self._uvicorn_server = uvicorn.Server(config)
+        # Mirror the setup performed in ``Server._serve`` so that
+        # ``startup`` can run correctly when called directly.
+        self._uvicorn_server.lifespan = config.lifespan_class(config)
+        await self._uvicorn_server.startup(sockets=self._sockets)
+
+        # Run the uvicorn main loop in the background; the caller owns
+        # the event loop.
+        loop = asyncio.get_running_loop()
+        self._server_task = loop.create_task(self._uvicorn_server.main_loop())
 
     async def stop(self) -> None:
         """Stop the WebSocket server and close all active connections."""
 
-        server = self._ws_server
-        self._ws_server = None
+        server = self._uvicorn_server
+        self._uvicorn_server = None
 
-        if server is not None:
-            server.close()
-            await server.wait_closed()
+        # Ask the uvicorn main loop to exit and wait for it to finish.
+        task = self._server_task
+        self._server_task = None
+
+        if server is not None and task is not None:
+            server.should_exit = True
+            await task
+
+            sockets = self._sockets or []
+            await server.shutdown(sockets=sockets)
+
+        self._sockets = None
 
         # Clear subscription tracking state.
         self._subscription_clients.clear()
         self._client_subscriptions.clear()
+        self._bound_port = 0
 
     @property
     def bound_port(self) -> int:
         """Return the effective TCP port the server is bound to.
 
-        When ``port=0`` was passed to the constructor, this inspects the
-        underlying listening socket to discover the OS-assigned
-        ephemeral port. Otherwise it simply returns the configured port.
+        When ``port=0`` was passed to the constructor, this returns the
+        OS-assigned ephemeral port. Otherwise it simply returns the
+        configured port.
         """
 
-        if self._ws_server is None:
-            return self.port
+        return self._bound_port or self.port
 
-        sockets = getattr(self._ws_server, "sockets", None)
-        if not sockets:
-            return self.port
+    # Internal wiring ----------------------------------------------------
 
-        sock = sockets[0]
-        return int(sock.getsockname()[1])
+    def _create_app(self) -> None:
+        """Create the FastAPI/JSON-RPC application for this server."""
 
-    async def _handle_client(self, websocket: WebSocketServerProtocol) -> None:
+        app = API(title="nate_ntm runtime control API")
+
+        # Expose a single WebSocket endpoint at ``/`` that speaks the
+        # same JSON-RPC over WebSocket protocol as the original
+        # websockets-based server.
+        app.add_api_websocket_route("/", self._handle_client, name="jsonrpc_ws")
+
+        self._app = app
+
+    async def _handle_client(self, websocket: WebSocket) -> None:
         """Per-connection handler for JSON-RPC messages.
 
         The current implementation is deliberately simple:
 
+        * Accept the WebSocket connection.
         * Each received text message is parsed as JSON.
         * Valid JSON-RPC request objects are dispatched via
           :func:`dispatch_request`.
@@ -143,8 +199,15 @@ class JsonRpcWebSocketServer:
           :meth:`publish_event`.
         """
 
+        await websocket.accept()
         try:
-            async for raw_message in websocket:
+            while True:
+                try:
+                    raw_message = await websocket.receive_text()
+                except WebSocketDisconnect:
+                    # Client disconnected.
+                    break
+
                 try:
                     request = json.loads(raw_message)
                 except json.JSONDecodeError:
@@ -153,7 +216,7 @@ class JsonRpcWebSocketServer:
                         message="Invalid JSON payload",
                         response_id=None,
                     )
-                    await websocket.send(json.dumps(error))
+                    await websocket.send_text(json.dumps(error))
                     continue
 
                 if not isinstance(request, Mapping):
@@ -162,7 +225,7 @@ class JsonRpcWebSocketServer:
                         message="Request must be a JSON object",
                         response_id=request.get("id") if isinstance(request, dict) else None,
                     )
-                    await websocket.send(json.dumps(error))
+                    await websocket.send_text(json.dumps(error))
                     continue
 
                 method = request.get("method")
@@ -183,11 +246,11 @@ class JsonRpcWebSocketServer:
                         if subs is not None:
                             subs.discard(sub_id_val)
 
-                await websocket.send(json.dumps(response))
+                await websocket.send_text(json.dumps(response))
         finally:
             await self._cleanup_client(websocket)
 
-    async def _cleanup_client(self, websocket: WebSocketServerProtocol) -> None:
+    async def _cleanup_client(self, websocket: WebSocket) -> None:
         """Remove all subscriptions associated with a disconnected client."""
 
         subs = self._client_subscriptions.pop(websocket, set())
@@ -224,4 +287,8 @@ class JsonRpcWebSocketServer:
             if ws is None:
                 continue
 
-            await ws.send(json.dumps(msg))
+            try:
+                await ws.send_text(json.dumps(msg))
+            except RuntimeError:
+                # Connection might already be closed; ignore.
+                continue
