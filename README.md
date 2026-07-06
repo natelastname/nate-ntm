@@ -3,7 +3,7 @@
 Swarm Runtime Orchestrator for coordinating coding agents (for example,
 OpenHands) around a single project directory. The runtime owns ACP
 connections, bridges Agent Mail coordination state, and exposes a local
-JSON-RPC/WebSocket control API used by CLI/TUI/web clients.
+JSON-RPC control API (HTTP + ``/events`` WebSocket) used by CLI/TUI/web clients.
 
 This repository currently focuses on the MVP described in
 `specs/001-swarm-runtime-orchestrator/`.
@@ -69,7 +69,8 @@ enabled via configuration flags and environment variables as they mature.
 
 ## Control API and shared models
 
-The runtime exposes a local JSON-RPC 2.0 + WebSocket control API. The
+The runtime exposes a local FastAPI-based JSON-RPC 2.0 control API
+(``POST /jsonrpc``) plus an ``/events`` WebSocket endpoint. The
 canonical response schemas for the most common JSON-RPC **results** live in
 `src/nate_ntm/api/models.py` as Pydantic models.
 

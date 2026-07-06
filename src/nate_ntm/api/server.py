@@ -1,12 +1,15 @@
 """Runtime control API server skeleton.
 
-For Phase 2 (T011), this module provides a very small abstraction over
-an eventual WebSocket JSON-RPC server. The goal is to pin down the
-in-process surface that the runtime daemon and CLI will rely on without
-binding to a specific async server implementation yet.
+For Phase 2 (T011), this module defines the small in-process surface
+that the runtime daemon and control API share. The unified FastAPI app
+in :mod:`nate_ntm.api.runtime_api` exposes this surface over HTTP
+JSON-RPC (``POST /jsonrpc``) plus an ``/events`` WebSocket endpoint,
+but :class:`RuntimeApiServer` itself is intentionally transport-agnostic.
 
-A minimal `RuntimeApiServer` class is provided with stubbed methods that
-can be expanded in later tasks (for example T018 and T019).
+A minimal :class:`RuntimeApiServer` class is provided with concrete
+handlers and an in-memory subscription registry that can be exercised
+directly in unit and CLI tests without binding to a specific ASGI
+implementation.
 """
 
 from __future__ import annotations
@@ -35,18 +38,20 @@ class SupportsRuntimeDaemon(Protocol):
 
 @dataclass(slots=True)
 class RuntimeApiServer:
-    """Skeleton for the runtime control API server (T011).
+    """In-process implementation of the runtime control API (T011).
 
-    The eventual implementation will:
+    This class owns the JSON-RPC method handlers used by the control API:
 
-    * Own an async WebSocket server bound to localhost.
-    * Accept JSON-RPC requests and dispatch them to the
-      :class:`RuntimeDaemon`.
-    * Expose high-level `start`/`stop` methods and
-      request/notification handlers.
+    * Inspect and control the runtime (``runtime.get_status``,
+      ``runtime.shutdown``).
+    * Inspect swarm and agents (``swarm.get_overview``,
+      ``agent.get_detail``).
+    * Manage an in-memory subscription registry for event streaming
+      (``events.subscribe``, ``events.unsubscribe``, ``events.notify``).
 
-    For now, we only capture the association with a `RuntimeDaemon` and a
-    minimal in-memory subscription registry for event streaming.
+    Transport concerns (HTTP, WebSocket, ASGI lifecycle) live in
+    :mod:`nate_ntm.api.runtime_api`; this class intentionally remains a
+    thin, synchronous wrapper around :class:`RuntimeDaemon`.
     """
 
     daemon: RuntimeDaemon
@@ -79,8 +84,8 @@ class RuntimeApiServer:
         """Return high-level runtime status for ``runtime.get_status``.
 
         For the MVP this is a thin wrapper over the
-        :class:`RuntimeDaemon` introspection APIs. JSON-RPC wiring and
-        WebSocket transport are added in later tasks.
+        :class:`RuntimeDaemon` introspection APIs. The FastAPI layer in
+        :mod:`nate_ntm.api.runtime_api` exposes this method via JSON-RPC.
         """
 
         return self.daemon.get_runtime_status()
@@ -103,8 +108,8 @@ class RuntimeApiServer:
         delegating to :meth:`RuntimeDaemon.request_shutdown` and returning a
         small acknowledgement payload.
 
-        In the eventual JSON-RPC/WebSocket layer this result will be mapped
-        to a structured response object or error.
+        In the JSON-RPC layer this result is returned as the ``result``
+        payload for a ``runtime.shutdown`` call.
         """
 
         if self.daemon.state.status is not RuntimeStatus.RUNNING:
@@ -129,9 +134,9 @@ class RuntimeApiServer:
         """Register an event subscription for ``events.subscribe``.
 
         This is a minimal, in-memory subscription registry suitable for the
-        MVP. The eventual WebSocket/JSON-RPC layer will call this method
-        when handling ``events.subscribe`` requests and map the returned
-        ``subscription_id`` onto a specific client connection.
+        MVP. The FastAPI control API calls this method when handling
+        ``events.subscribe`` requests and maps the returned
+        ``subscription_id`` onto specific ``/events`` WebSocket clients.
         """
 
         if agent_ids is None:
@@ -141,7 +146,7 @@ class RuntimeApiServer:
         self._next_subscription_id += 1
 
         # Store a small descriptor for future routing; concrete notification
-        # delivery is added alongside the WebSocket server.
+        # delivery is handled by the ``/events`` WebSocket endpoint.
         self._subscriptions[subscription_id] = {
             "agent_ids": tuple(agent_ids),
             "include_runtime": bool(include_runtime),
@@ -183,8 +188,8 @@ class RuntimeApiServer:
               ]
             }
 
-        The actual WebSocket/JSON-RPC layer will take this payload and
-        fan it out to connected clients.
+        The FastAPI/WebSocket layer in :mod:`nate_ntm.api.runtime_api` uses
+        this payload to fan out notifications to connected clients.
         """
 
         event_payload = event.to_dict()

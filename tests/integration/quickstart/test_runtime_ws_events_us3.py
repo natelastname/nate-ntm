@@ -45,7 +45,7 @@ from nate_ntm.runtime.state import AgentStatus, RuntimeStatus
 def _make_resume_config_and_metadata(tmp_path: Path) -> RuntimeConfig:
     """Create a project with minimal swarm/agent metadata for resume mode.
 
-    This mirrors the helper used in the US1 WebSocket control API
+    This mirrors the helper used in the US1 control API
     integration test, ensuring that the runtime can be started in
     ``StartupMode.RESUME`` with a single configured agent.
     """

@@ -142,8 +142,8 @@ def test_runtime_cli_us1_quickstart_flow(monkeypatch: pytest.MonkeyPatch, tmp_pa
     # changed that status.
     assert daemon.state.status is RuntimeStatus.RUNNING
 
-    # Use the in-process RuntimeApiServer as a stand-in for the eventual
-    # JSON-RPC/WebSocket control API layer.
+    # Use the in-process RuntimeApiServer as a stand-in for the unified
+    # FastAPI-based JSON-RPC control API layer.
     server = RuntimeApiServer(daemon=daemon)
     payload = server.get_runtime_status()
 
