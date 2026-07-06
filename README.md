@@ -67,6 +67,24 @@ By default the runtime uses in-memory "fake" adapters for Agent Mail and ACP so
 that US1–US3 can be exercised without external services. REAL adapters can be
 enabled via configuration flags and environment variables as they mature.
 
+## Control API and shared models
+
+The runtime exposes a local JSON-RPC 2.0 + WebSocket control API. The
+canonical response schemas for the most common JSON-RPC **results** live in
+`src/nate_ntm/api/models.py` as Pydantic models.
+
+These models represent the wire-level JSON result shapes and are reused by:
+
+- the FastAPI/JSON-RPC server (`nate_ntm.api.runtime_api`),
+- the HTTP JSON-RPC client (`nate_ntm.api.client.JsonRpcHttpClient`), and
+- the `nate-ntm api call` CLI command, which normalises output for common
+  methods through these models.
+
+`JsonRpcHttpClient` also exposes a low-level `call_for_result` helper that
+works with any JSON-RPC method. Typed helpers (e.g. `get_runtime_status`,
+`get_swarm_overview`, `get_agent_detail`) are convenience wrappers that
+validate and return the shared Pydantic result models.
+
 ## Development
 
 Key implementation docs for this feature live under:

@@ -46,6 +46,15 @@ from fastapi_jsonrpc import API, BaseError, Entrypoint
 from pydantic import BaseModel, ValidationError
 
 from .jsonrpc import JSONRPC_VERSION, build_events_notify_messages
+from .models import (
+    AgentCounts,
+    AgentDetailAgent,
+    AgentDetailEvent,
+    AgentDetailResult,
+    AgentOverview,
+    RuntimeStatusResult,
+    SwarmOverviewResult,
+)
 from .server import RuntimeApiServer
 from ..runtime.events import AgentEvent
 
@@ -123,12 +132,25 @@ def _create_entrypoint(api_server: RuntimeApiServer, path: str = "/jsonrpc") -> 
     ep = Entrypoint(path)
 
     @ep.method(name="runtime.get_status")
-    def runtime_get_status() -> Dict[str, Any]:
-        return api_server.get_runtime_status()
+    def runtime_get_status() -> RuntimeStatusResult:
+        """Return a typed view of the runtime status.
+
+        The underlying :class:`RuntimeDaemon` continues to expose a
+        dictionary-based payload via :meth:`get_runtime_status`; this is
+        validated and wrapped in a :class:`RuntimeStatusResult` model so
+        the FastAPI/JSON-RPC layer can rely on a stable, typed schema
+        without changing the JSON-RPC wire format.
+        """
+
+        payload = api_server.get_runtime_status()
+        return RuntimeStatusResult.model_validate(payload)
 
     @ep.method(name="swarm.get_overview")
-    def swarm_get_overview() -> Dict[str, Any]:
-        return api_server.get_swarm_overview()
+    def swarm_get_overview() -> SwarmOverviewResult:
+        """Return a typed view of the swarm overview snapshot."""
+
+        payload = api_server.get_swarm_overview()
+        return SwarmOverviewResult.model_validate(payload)
 
     @ep.method(name="runtime.shutdown", errors=[RuntimeStateConflictError])
     def runtime_shutdown(timeout_seconds: int = 30) -> Dict[str, Any]:
@@ -142,11 +164,15 @@ def _create_entrypoint(api_server: RuntimeApiServer, path: str = "/jsonrpc") -> 
     def agent_get_detail(
         agent_id: str,
         max_events: int = 100,
-    ) -> Dict[str, Any]:
+    ) -> AgentDetailResult:
+        """Return a typed view of detailed agent state and events."""
+
         try:
-            return api_server.get_agent_detail(agent_id=agent_id, max_events=max_events)
+            payload = api_server.get_agent_detail(agent_id=agent_id, max_events=max_events)
         except KeyError:
             raise AgentNotFoundError({"agent_id": agent_id})
+
+        return AgentDetailResult.model_validate(payload)
 
     @ep.method(name="events.subscribe")
     def events_subscribe(

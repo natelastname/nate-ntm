@@ -22,7 +22,8 @@ import json
 import typer
 from dotenv import load_dotenv
 
-from .api.client import JsonRpcHttpClient
+from .api.client import JsonRpcClientError, JsonRpcHttpClient
+from .api.models import AgentDetailResult, RuntimeStatusResult, SwarmOverviewResult
 from .config.runtime_config import RuntimeConfig, load_runtime_config
 from .runtime.daemon import (
     MetadataAlreadyExistsError,
@@ -262,18 +263,35 @@ def api_call(
     client = JsonRpcHttpClient(host=host, port=port)
 
     try:
-        response = asyncio.run(client.call_async(method, params or {}))
+        # Use the higher-level ``call_for_result`` helper so JSON-RPC
+        # errors are surfaced as :class:`JsonRpcClientError` exceptions.
+        result = asyncio.run(client.call_for_result(method, params or {}))
+    except JsonRpcClientError as exc:
+        # Render the structured error payload to stderr and exit with a
+        # non-zero status code, mirroring the behaviour for raw
+        # ``error`` envelopes in earlier iterations.
+        error_payload: Dict[str, Any] = {"code": exc.code, "message": exc.message}
+        if exc.data is not None:
+            error_payload["data"] = exc.data
+        typer.echo(json.dumps(error_payload, indent=2, sort_keys=True), err=True)
+        raise typer.Exit(code=1) from exc
     except Exception as exc:  # pragma: no cover - defensive
         typer.echo(f"Error calling runtime API: {exc}", err=True)
         raise typer.Exit(code=1) from exc
 
-    # Treat JSON-RPC ``error`` envelopes as non-zero exit codes.
-    if "error" in response:
-        typer.echo(json.dumps(response["error"], indent=2, sort_keys=True), err=True)
-        raise typer.Exit(code=1)
+    # Where practical, normalise known method results through the shared
+    # Pydantic models so the CLI relies on the same schema as server and
+    # client code.
+    if method == "runtime.get_status":
+        payload = RuntimeStatusResult.model_validate(result).model_dump()
+    elif method == "swarm.get_overview":
+        payload = SwarmOverviewResult.model_validate(result).model_dump()
+    elif method == "agent.get_detail":
+        payload = AgentDetailResult.model_validate(result).model_dump()
+    else:
+        payload = result
 
-    result = response.get("result")
-    typer.echo(json.dumps(result, indent=2, sort_keys=True))
+    typer.echo(json.dumps(payload, indent=2, sort_keys=True))
 
 
 def cli() -> None:

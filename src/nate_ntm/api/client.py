@@ -27,6 +27,7 @@ from typing import Any, Mapping
 import websockets
 
 from .jsonrpc import JSONRPC_VERSION
+from .models import AgentDetailResult, RuntimeStatusResult, SwarmOverviewResult
 
 
 class JsonRpcClientError(RuntimeError):
@@ -196,6 +197,40 @@ class JsonRpcHttpClient:
             raise JsonRpcClientError(code=code, message=message, data=data)
 
         return response.get("result")
+
+    async def get_runtime_status(self) -> RuntimeStatusResult:
+        """Typed helper for ``runtime.get_status``.
+
+        This method performs a JSON-RPC call and validates the ``result``
+        payload against :class:`RuntimeStatusResult`, raising
+        :class:`JsonRpcClientError` on JSON-RPC errors and
+        :class:`pydantic.ValidationError` if the server returns an
+        unexpected shape.
+        """
+
+        payload = await self.call_for_result("runtime.get_status", {})
+        return RuntimeStatusResult.model_validate(payload)
+
+    async def get_swarm_overview(self) -> SwarmOverviewResult:
+        """Typed helper for ``swarm.get_overview``."""
+
+        payload = await self.call_for_result("swarm.get_overview", {})
+        return SwarmOverviewResult.model_validate(payload)
+
+    async def get_agent_detail(
+        self,
+        agent_id: str,
+        max_events: int = 100,
+    ) -> AgentDetailResult:
+        """Typed helper for ``agent.get_detail``.
+
+        Parameters are forwarded as JSON-RPC params; the resulting
+        payload is validated against :class:`AgentDetailResult`.
+        """
+
+        params: Mapping[str, Any] = {"agent_id": agent_id, "max_events": max_events}
+        payload = await self.call_for_result("agent.get_detail", params)
+        return AgentDetailResult.model_validate(payload)
 
 def call(method: str, params: Mapping[str, Any] | None = None, *, host: str = "127.0.0.1", port: int = 8765) -> Any:
     """Synchronous helper for one-off CLI-style JSON-RPC calls.
