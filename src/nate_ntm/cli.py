@@ -294,6 +294,38 @@ def api_call(
     typer.echo(json.dumps(payload, indent=2, sort_keys=True))
 
 
+
+
+@app.command("console")
+def console(
+    host: str = typer.Option(
+        "127.0.0.1",
+        "--host",
+        envvar="NATE_NTM_CONTROL_HOST",
+        help="Runtime control API host (default: 127.0.0.1)",
+    ),
+    port: int = typer.Option(  # type: ignore[assignment]
+        8765,
+        "--port",
+        envvar="NATE_NTM_CONTROL_PORT",
+        help="Runtime control API TCP port (default: 8765)",
+    ),
+) -> None:
+    """Launch the Textual runtime console.
+
+    This command starts the Textual-based monitoring console connected to a
+    single runtime instance. The console owns exactly one RuntimeSession and
+    shares it across all screens and widgets.
+    """
+
+    # Import locally so that Textual and TUI dependencies are only loaded when
+    # the console command is actually invoked.
+    from .tui.app import ConsoleApp
+
+    console_app = ConsoleApp(host=host, port=port)
+    console_app.run()
+
+
 def cli() -> None:
     """Primary console_script entrypoint (for pyproject.toml)."""
 

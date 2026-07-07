@@ -49,7 +49,7 @@ description: "Implementation tasks for Feature 003: Textual Runtime Console"
 
 **⚠️ CRITICAL**: Complete this phase before implementing overview/inspection/event screens.
 
-- [ ] T310 Implement the `RuntimeClient` abstraction.
+- [x] T310 Implement the `RuntimeClient` abstraction.
   - In `src/nate_ntm/api/runtime_client.py`, define a `RuntimeClient` class that:
     - Wraps the existing `JsonRpcHttpClient` in `src/nate_ntm/api/client.py` for control-plane methods (e.g., `runtime.get_status`, `swarm.get_overview`, `agent.get_detail`).
     - Owns the `/events` WebSocket subscription, including basic reconnect logic and backoff.
@@ -57,22 +57,22 @@ description: "Implementation tasks for Feature 003: Textual Runtime Console"
     - Exposes an async event subscription interface (e.g., callback or async iterator) that yields high-level `AgentEvent` / runtime events.
   - Ensure `RuntimeClient` is independent of Textual and TUI concerns so it can be reused by other tools.
 
-- [ ] T311 [P] Implement the `RuntimeSession` abstraction.
+- [x] T311 [P] Implement the `RuntimeSession` abstraction.
   - In `src/nate_ntm/tui/runtime_session.py`, define a `RuntimeSession` class that depends on `RuntimeClient` and:
     - Is constructed with a `RuntimeClient` instance (or factory) instead of raw connection parameters.
     - Maintains cached state for runtime status, swarm overview, agents, and a bounded event buffer.
     - Exposes async methods such as `connect()`, `disconnect()`, `get_overview()`, `get_agent_detail(agent_id)`, and a way to subscribe screens/widgets to state updates.
     - Does **not** perform raw HTTP/WebSocket operations; all such work is delegated to `RuntimeClient`.
 
-- [ ] T312 [P] Implement periodic status polling in `RuntimeSession`.
+- [x] T312 [P] Implement periodic status polling in `RuntimeSession`.
   - In `runtime_session.py`, add logic to periodically call `RuntimeClient` control methods (e.g., `get_runtime_status()`, `get_swarm_overview()`) on a background task, updating cached state structures for overview and agents.
   - Provide a configuration for polling interval with a sensible default (for example, a few seconds) and ensure clean shutdown of polling tasks when the console exits.
 
-- [ ] T313 [P] Wire the runtime event stream from `RuntimeClient` into `RuntimeSession`.
+- [x] T313 [P] Wire the runtime event stream from `RuntimeClient` into `RuntimeSession`.
   - In `runtime_session.py`, subscribe to the `RuntimeClient`'s event interface and merge incoming events into the cached state and event buffers.
   - Ensure that loss of the event stream is detected and surfaced via a status flag (e.g., `live_events_degraded=True`), without crashing the session.
 
-- [ ] T314 [P] Add unit tests for `RuntimeClient` and `RuntimeSession` behavior.
+- [x] T314 [P] Add unit tests for `RuntimeClient` and `RuntimeSession` behavior.
   - In `tests/tui/unit/test_runtime_session.py` and a new `tests/unit/api/test_runtime_client.py`, add tests that:
     - Verify `RuntimeClient` issues control calls via `JsonRpcHttpClient` and exposes a usable event interface.
     - Verify a single `RuntimeSession` instance uses exactly one `RuntimeClient` instance per runtime connection.
