@@ -182,9 +182,17 @@ class OverviewScreen(Screen):
         The task blocks on :meth:`RuntimeSession.wait_for_update` and refreshes
         the screen whenever new state is available, avoiding manual polling in
         the UI layer.
+
+        It also sends initial keyboard focus to the agent table so that cursor
+        keys work out of the box when the overview first appears.
         """
 
         self._update_task = asyncio.create_task(self._watch_session_updates())
+
+        # Best-effort: focus the agent table so that Up/Down keys drive
+        # selection without requiring the operator to tab through widgets.
+        with contextlib.suppress(Exception):
+            self.set_focus(self.query_one("#agent-table"))
 
     async def on_unmount(self) -> None:  # pragma: no cover - Textual runtime hook
         if self._update_task is not None:
@@ -206,9 +214,29 @@ class OverviewScreen(Screen):
                 # or UI surfacing can be added later.
                 break
 
-            # Trigger a re-render so dependent widgets can pick up the new
-            # cached state from the session.
-            self.refresh()
+            # Explicitly refresh the widgets that render session-driven state so
+            # that their ``render`` methods are re-invoked with the latest
+            # cached values. Relying solely on ``Screen.refresh`` can result in
+            # stale child widgets if Textual decides that they do not need to be
+            # repainted or re-laid out.
+            for selector in ("#swarm-summary", "#agent-table", "#agent-detail", "#event-view"):
+                with contextlib.suppress(Exception):
+                    # Use ``layout=True`` so that widgets whose rendered height
+                    # depends on session state (for example, the agent table or
+                    # event list) can grow beyond their initial measurement
+                    # without requiring an external resize event.
+                    self.query_one(selector).refresh(layout=True)
+
+            # Also refresh the agent-row container and the screen itself and
+            # request a layout recalculation so that containers can grow to fit
+            # new content such as a populated agent list. Without ``layout=True``
+            # Textual may continue using the initial, smaller height until a
+            # manual resize (SIGWINCH) triggers a full layout pass in some
+            # terminal drivers.
+            with contextlib.suppress(Exception):
+                self.query_one("#agent-row").refresh(layout=True)
+
+            self.refresh(layout=True)
 
     def action_inspect_agent(self) -> None:
         """Open the agent inspection screen for the currently selected agent.

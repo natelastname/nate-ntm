@@ -230,11 +230,10 @@ async def test_overview_to_inspect_and_back_flow() -> None:
         assert "agent-1" in table_text
         assert "Agent One" in table_text
 
-        # Drive selection via the shared RuntimeSession. This is equivalent to
-        # having the operator move the selection within the agent table and keeps
-        # the focus of this test on screen wiring rather than Textual's focus
-        # semantics for individual widgets.
-        session.select_agent("agent-1")
+        # Drive selection via cursor keys. AgentTable is focusable and focused
+        # by default on the overview screen, so pressing Down selects the first
+        # (and only) agent.
+        await pilot.press("down")
         await pilot.pause()
 
         assert session.selected_agent_id == "agent-1"

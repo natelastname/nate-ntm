@@ -280,13 +280,38 @@ async def test_overview_screen_reacts_to_session_updates() -> None:
     session = _FakeSession()
     screen = OverviewScreen(session)  # type: ignore[arg-type]
 
-    refresh_calls: list[Any] = []
+    # Stub out ``refresh`` so the test does not depend on Textual internals.
+    refresh_calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
 
-    def _fake_refresh() -> None:
-        refresh_calls.append(object())
+    def _fake_refresh(*args: Any, **kwargs: Any) -> None:
+        refresh_calls.append((args, kwargs))
 
-    # Replace Textual's ``refresh`` method with our recording stub.
     screen.refresh = _fake_refresh  # type: ignore[assignment]
+
+    # Stub ``query_one`` so that we can observe per-widget refresh calls
+    # without requiring a full Textual DOM.
+    widget_refresh_counts: dict[str, int] = {
+        "#swarm-summary": 0,
+        "#agent-table": 0,
+        "#agent-detail": 0,
+        "#event-view": 0,
+    }
+    query_calls: list[tuple[str, Any]] = []
+
+    class _FakeWidget:
+        def __init__(self, selector: str) -> None:
+            self.selector = selector
+
+        def refresh(self, *args: Any, **kwargs: Any) -> None:  # pragma: no cover - trivial
+            widget_refresh_counts[self.selector] += 1
+
+    def _fake_query_one(selector: str, widget_type: Any | None = None) -> Any:
+        query_calls.append((selector, widget_type))
+        if selector not in widget_refresh_counts:
+            raise AssertionError(f"unexpected selector queried: {selector!r}")
+        return _FakeWidget(selector)
+
+    screen.query_one = _fake_query_one  # type: ignore[assignment]
 
     task = asyncio.create_task(screen._watch_session_updates())
 
@@ -298,4 +323,7 @@ async def test_overview_screen_reacts_to_session_updates() -> None:
         await task
 
     assert session.calls >= 1
-    assert len(refresh_calls) >= 1
+    # The watcher should have attempted to refresh all session-driven widgets.
+    assert query_calls
+    for selector, count in widget_refresh_counts.items():
+        assert count >= 1, selector

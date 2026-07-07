@@ -24,5 +24,6 @@ uv run nate-ntm runtime start \
   --project "$PROJECT_ROOT" \
   --mode create \
   --agents 1 \
-  --adapter-mode real \
+  --adapter-mode fake \
+  --acp-adapter real \
   --with-control-api

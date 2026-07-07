@@ -22,7 +22,12 @@ class AgentTable(Static):
     associated :class:`RuntimeSession`. The selected agent identifier is stored
     on the session (via :meth:`RuntimeSession.select_agent`) so that other
     screens and widgets can observe or react to the current selection.
+
+    The widget is focusable so that cursor keys can be used to move the
+    selection, mirroring familiar table-style TUIs.
     """
+
+    can_focus = True
 
     BINDINGS = [
         Binding("up", "cursor_up", "Select previous agent", show=False),
