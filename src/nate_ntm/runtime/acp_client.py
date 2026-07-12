@@ -32,7 +32,11 @@ import uuid
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from acp.meta import PROTOCOL_VERSION
+
 from ..config.runtime_config import RuntimeConfig
+from .acp_connection import open_nate_oha_acp_client
+from .acp_protocol_client import NATE_NTM_CLIENT_CAPABILITIES
 from .events import AgentEvent, AgentEventSource
 from .metadata_store import AgentMetadata, MetadataStore
 
@@ -776,6 +780,16 @@ class NateOhaAcpClient(BaseAcpClient):
     # adapter.
     _process_handles: Dict[str, subprocess.Popen] = field(default_factory=dict, init=False)
 
+    # Active ACP sessions keyed by ``agent_id``. These records are populated
+    # by the async lifecycle helpers once the ACP SDK wiring is in place.
+    _sessions: Dict[str, AcpAgentSession] = field(default_factory=dict, init=False)
+
+    # Underlying async context managers that own the ACP stdio transport and
+    # subprocess lifetime for each agent. ``start_agent_async`` calls
+    # ``__aenter__`` on these and ``stop_agent_async`` is responsible for
+    # invoking ``__aexit__``.
+    _session_contexts: Dict[str, Any] = field(default_factory=dict, init=False)
+
     # Cache of per-agent conversation identifiers for this adapter instance.
     _conversations: Dict[str, str] = field(default_factory=dict, init=False)
 
@@ -954,6 +968,167 @@ class NateOhaAcpClient(BaseAcpClient):
                     payload={"pid": proc.pid},
                 )
             )
+
+    # ------------------------------------------------------------------
+    # Agent-lifecycle async API (ACP SDK-backed)
+    # ------------------------------------------------------------------
+
+    async def start_agent_async(self, agent_id: str, *, metadata: AgentMetadata) -> None:
+        """Asynchronously launch or attach to the nate_OHA ACP runtime.
+
+        This implementation wires the nate_OHA subprocess into the official
+        ACP SDK using :func:`open_nate_oha_acp_client` and establishes an ACP
+        session for ``agent_id`` via :class:`acp.client.ClientSideConnection`.
+
+        The synchronous :meth:`start_agent` method continues to provide the
+        process-supervision contract used by existing tests and callers;
+        :meth:`start_agent_async` is the entrypoint for the new ACP SDK-based
+        lifecycle and maintains an :class:`AcpAgentSession` record for the
+        live connection.
+        """
+
+        # Avoid spawning duplicate sessions when one is already starting or
+        # running. Restart semantics are implemented in later tasks.
+        session = self._sessions.get(agent_id)
+        if session is not None and session.status in {"starting", "running"}:
+            return
+
+        # Construct the nate_OHA command and environment using the existing
+        # helpers so that process-launch semantics remain consistent with the
+        # synchronous implementation.
+        cmd = self._build_command(metadata)
+        env = self._build_env(agent_id, metadata)
+
+        # ``open_nate_oha_acp_client`` is an async context manager that binds
+        # the nate_OHA subprocess stdio to an ACP client connection. We call
+        # ``__aenter__`` manually here so that the session can outlive this
+        # method and be shut down later by :meth:`stop_agent_async`.
+        cm = open_nate_oha_acp_client(
+            command=cmd,
+            env=env,
+            cwd=self.config.project_path,
+            agent_id=agent_id,
+            event_sink=self.on_event or (lambda _e: None),
+            capabilities=NATE_NTM_CLIENT_CAPABILITIES,
+        )
+
+        try:
+            connection, process, protocol_client = await cm.__aenter__()
+        except Exception as exc:  # pragma: no cover - defensive
+            # Ensure we do not leak a partially entered context on failure.
+            with_context = hasattr(cm, "__aexit__")
+            if with_context:
+                try:
+                    await cm.__aexit__(type(exc), exc, exc.__traceback__)
+                except Exception:
+                    # Suppress secondary errors during cleanup; the original
+                    # exception is what we surface to callers.
+                    pass
+            raise AcpClientError(
+                f"Failed to establish ACP connection for agent {agent_id!r}: {exc}"
+            ) from exc
+
+        # Record the context so that ``stop_agent_async`` can close the ACP
+        # connection and subprocess using the SDK's defensive shutdown
+        # semantics.
+        self._session_contexts[agent_id] = cm
+
+        # Initialize the ACP connection and negotiate capabilities.
+        await connection.initialize(
+            protocol_version=PROTOCOL_VERSION,
+            client_capabilities=NATE_NTM_CLIENT_CAPABILITIES,
+        )
+
+        # Determine whether we are resuming an existing conversation or
+        # creating a new one. For Nate OHA / ACP, the authoritative
+        # conversation identifier is the opaque ``session_id`` returned by
+        # the ACP "session/new" operation. When a non-empty
+        # ``metadata.conversation_id`` is present we treat it as a previously
+        # persisted ACP session identifier and attach via ``load_session``;
+        # otherwise we create a fresh session and persist the returned
+        # ``session_id`` back into :class:`AgentMetadata` so it can be reused
+        # on ``--resume`` and in subsequent launches.
+        conversation_id = (metadata.conversation_id or "").strip()
+        if conversation_id:
+            # Attach to an existing, persisted ACP session.
+            await connection.load_session(
+                cwd=str(self.config.project_path),
+                session_id=conversation_id,
+            )
+        else:
+            # Create a fresh ACP session for this agent and treat the returned
+            # ``session_id`` as the conversation identifier for runtime
+            # purposes. The new identifier is persisted into the metadata
+            # store and cached for future calls.
+            new_session = await connection.new_session(
+                cwd=str(self.config.project_path),
+            )
+            conversation_id = new_session.session_id
+
+            # Persist the ACP-assigned session identifier into per-agent
+            # metadata so that later runs (including ``--resume``) can reuse
+            # it. We deliberately perform a best-effort update here: if the
+            # metadata record does not yet exist we create a minimal
+            # AgentMetadata entry seeded from the in-memory ``metadata``
+            # instance supplied by the caller.
+            store = MetadataStore(config=self.config)
+            try:
+                existing_meta = store.load_agent_metadata(agent_id)
+            except FileNotFoundError:
+                existing_meta = metadata
+
+            updated_meta = replace(existing_meta, conversation_id=conversation_id)
+            store.save_agent_metadata(updated_meta)
+
+            # Keep the adapter's in-memory cache aligned with the persisted
+            # value so that :meth:`ensure_conversation` observes the ACP ID on
+            # subsequent calls.
+            self._conversations[agent_id] = conversation_id
+
+        self._sessions[agent_id] = AcpAgentSession(
+            agent_id=agent_id,
+            conversation_id=conversation_id,
+            process=process,
+            connection=connection,
+            protocol_client=protocol_client,
+            status="running",
+            stderr_task=None,
+            exit_monitor_task=None,
+        )
+
+    async def stop_agent_async(self, agent_id: str, *, timeout: float) -> None:
+        """Asynchronously request a graceful stop for the ACP runtime.
+
+        When an ACP-backed session has been established via
+        :meth:`start_agent_async`, this method closes the ACP connection and
+        underlying subprocess using the context manager returned by
+        :func:`open_nate_oha_acp_client`. If no such session exists, it
+        falls back to the synchronous :meth:`stop_agent` implementation so
+        existing call sites and tests continue to behave as before.
+        """
+
+        ctx = self._session_contexts.pop(agent_id, None)
+        session = self._sessions.pop(agent_id, None)
+
+        if ctx is None or session is None:
+            # No async session is active; delegate to the synchronous
+            # process-supervision implementation.
+            self.stop_agent(agent_id, timeout=timeout)
+            return
+
+        try:
+            # The context manager owns both the ACP connection and the
+            # subprocess shutdown semantics.
+            await ctx.__aexit__(None, None, None)
+        except Exception as exc:  # pragma: no cover - defensive
+            raise AcpClientError(
+                f"Failed to stop ACP session for agent {agent_id!r}: {exc}"
+            ) from exc
+
+        # Mark the in-memory session as terminated so any future status
+        # queries can distinguish between running and stopped agents.
+        session.status = "terminated"
+        self._sessions[agent_id] = session
 
     def start_turn(self, agent_id: str, prompt: str | None = None) -> str:  # pragma: no cover - placeholder
         """Start a new ACP turn for ``agent_id``.

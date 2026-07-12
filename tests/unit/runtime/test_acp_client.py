@@ -9,6 +9,7 @@ HTTP behavior is covered by gated integration tests.
 from __future__ import annotations
 
 from pathlib import Path
+from contextlib import asynccontextmanager
 import os
 
 import pytest
@@ -730,6 +731,487 @@ def test_nate_oha_acp_client_start_agent_includes_conversation_id_env_when_prese
     assert isinstance(env, dict)
     assert env["NATE_NTM_AGENT_CONVERSATION_ID"] == "conv-123"
 
+
+
+
+
+@pytest.mark.asyncio
+async def test_nate_oha_acp_client_start_agent_async_creates_new_acp_session_when_missing_conversation_id(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """start_agent_async uses ACP SDK to create a new session when no ID.
+
+    This test exercises the initial NateOhaAcpClient async lifecycle wiring:
+
+    * ``start_agent_async`` must invoke ``open_nate_oha_acp_client`` with the
+      same command/env as the synchronous ``start_agent`` helper.
+    * The resulting ACP connection is initialized with the expected
+      protocol version and client capabilities.
+    * When ``AgentMetadata.conversation_id`` is empty, a new ACP session is
+      created and the returned ``session_id`` is stored in
+      :class:`AcpAgentSession`.
+    """
+
+    client = _make_nate_oha_client(tmp_path, monkeypatch)
+
+    captured: dict[str, object] = {}
+
+    class DummyConnection:
+        def __init__(self) -> None:
+            self.initialized_args: tuple[object, ...] | None = None
+            self.new_session_args: dict[str, object] | None = None
+            self.load_session_args: dict[str, object] | None = None
+            self.closed: bool = False
+
+        async def initialize(self, protocol_version: int, client_capabilities=None, client_info=None, **kwargs):
+            self.initialized_args = (protocol_version, client_capabilities)
+
+        async def new_session(self, cwd: str, additional_directories=None, mcp_servers=None, **kwargs):
+            self.new_session_args = {
+                "cwd": cwd,
+                "additional_directories": additional_directories,
+                "mcp_servers": mcp_servers,
+            }
+
+            class _Resp:
+                def __init__(self, session_id: str) -> None:
+                    self.session_id = session_id
+
+            return _Resp("acp-session-123")
+
+        async def load_session(self, cwd: str, session_id: str, mcp_servers=None, additional_directories=None, **kwargs):
+            self.load_session_args = {
+                "cwd": cwd,
+                "session_id": session_id,
+                "mcp_servers": mcp_servers,
+                "additional_directories": additional_directories,
+            }
+
+        async def close(self) -> None:
+            self.closed = True
+
+    class DummyProcess:
+        def __init__(self) -> None:
+            self.closed: bool = False
+
+    class DummyProtocolClient:
+        def __init__(self, agent_id: str, event_sink) -> None:
+            self.agent_id = agent_id
+            self.event_sink = event_sink
+
+    @asynccontextmanager
+    async def fake_open_nate_oha_acp_client(*, command, env, cwd, agent_id, event_sink, capabilities):  # type: ignore[override]
+        conn = DummyConnection()
+        proc = DummyProcess()
+        proto = DummyProtocolClient(agent_id, event_sink)
+
+        captured["command"] = command
+        captured["env"] = env
+        captured["cwd"] = cwd
+        captured["agent_id"] = agent_id
+        captured["connection"] = conn
+        captured["process"] = proc
+        captured["protocol_client"] = proto
+
+        try:
+            yield conn, proc, proto
+        finally:
+            await conn.close()
+            proc.closed = True
+
+    import nate_ntm.runtime.acp_connection as acp_conn
+
+    # Patch the symbol imported into nate_ntm.runtime.acp_client rather than
+    # the acp_connection module itself so that NateOhaAcpClient.start_agent_async
+    # sees the stub.
+    monkeypatch.setattr(acp_mod, "open_nate_oha_acp_client", fake_open_nate_oha_acp_client, raising=True)
+
+    meta = AgentMetadata(agent_id="agent-1", display_name="Agent One")
+
+    # Invoke the async lifecycle entrypoint.
+    await client.start_agent_async("agent-1", metadata=meta)
+
+    # The helper must be called with the same command/env as the synchronous
+    # process-launch helper.
+    expected_cmd = client._build_command(meta)
+    expected_env = client._build_env("agent-1", meta)
+    assert captured["command"] == expected_cmd
+    assert captured["env"] == expected_env
+    assert captured["cwd"] == client.config.project_path
+
+    # The ACP connection should have been initialized with the correct
+    # protocol version and client capabilities.
+    from acp.meta import PROTOCOL_VERSION as ACP_PROTOCOL_VERSION
+    from nate_ntm.runtime.acp_protocol_client import NATE_NTM_CLIENT_CAPABILITIES as CAPS
+
+    conn = captured["connection"]
+    assert isinstance(conn, DummyConnection)
+    assert conn.initialized_args == (ACP_PROTOCOL_VERSION, CAPS)
+
+    # Because metadata had no conversation_id, ``new_session`` should have
+    # been used and ``load_session`` should not.
+    assert conn.new_session_args is not None
+    assert conn.new_session_args["cwd"] == str(client.config.project_path)
+    assert conn.load_session_args is None
+
+    # An AcpAgentSession record should exist for the agent with the
+    # ACP-derived session identifier.
+    session = client._sessions.get("agent-1")
+    assert session is not None
+    assert session.agent_id == "agent-1"
+    assert session.conversation_id == "acp-session-123"
+    assert session.status == "running"
+
+
+@pytest.mark.asyncio
+async def test_nate_oha_acp_client_start_agent_async_loads_existing_acp_session_when_conversation_present(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """start_agent_async uses ``load_session`` when metadata has an ID."""
+
+    client = _make_nate_oha_client(tmp_path, monkeypatch)
+
+    captured: dict[str, object] = {}
+
+    class DummyConnection:
+        def __init__(self) -> None:
+            self.initialized_args: tuple[object, ...] | None = None
+            self.new_session_called: bool = False
+            self.load_session_args: dict[str, object] | None = None
+            self.closed: bool = False
+
+        async def initialize(self, protocol_version: int, client_capabilities=None, client_info=None, **kwargs):
+            self.initialized_args = (protocol_version, client_capabilities)
+
+        async def new_session(self, *args, **kwargs):  # pragma: no cover - should not be called
+            self.new_session_called = True
+            raise AssertionError("new_session should not be called when conversation_id is present")
+
+        async def load_session(self, cwd: str, session_id: str, mcp_servers=None, additional_directories=None, **kwargs):
+            self.load_session_args = {
+                "cwd": cwd,
+                "session_id": session_id,
+            }
+
+        async def close(self) -> None:
+            self.closed = True
+
+    class DummyProcess:
+        def __init__(self) -> None:
+            self.closed: bool = False
+
+    class DummyProtocolClient:
+        def __init__(self, agent_id: str, event_sink) -> None:
+            self.agent_id = agent_id
+            self.event_sink = event_sink
+
+    @asynccontextmanager
+    async def fake_open_nate_oha_acp_client(*, command, env, cwd, agent_id, event_sink, capabilities):  # type: ignore[override]
+        conn = DummyConnection()
+        proc = DummyProcess()
+        proto = DummyProtocolClient(agent_id, event_sink)
+
+        captured["connection"] = conn
+
+        try:
+            yield conn, proc, proto
+        finally:
+            await conn.close()
+            proc.closed = True
+
+    import nate_ntm.runtime.acp_connection as acp_conn
+
+    # Patch the symbol imported into nate_ntm.runtime.acp_client rather than
+    # the acp_connection module itself so that NateOhaAcpClient.start_agent_async
+    # sees the stub.
+    monkeypatch.setattr(acp_mod, "open_nate_oha_acp_client", fake_open_nate_oha_acp_client, raising=True)
+
+    meta = AgentMetadata(agent_id="agent-1", display_name="Agent One", conversation_id="existing-session-42")
+
+    await client.start_agent_async("agent-1", metadata=meta)
+
+    conn = captured["connection"]
+    assert isinstance(conn, DummyConnection)
+
+    # ``load_session`` should have been invoked with the metadata ID and
+    # ``new_session`` must not have been called.
+    assert conn.load_session_args is not None
+    assert conn.load_session_args["session_id"] == "existing-session-42"
+    assert conn.new_session_called is False
+
+    session = client._sessions.get("agent-1")
+    assert session is not None
+    assert session.conversation_id == "existing-session-42"
+
+
+
+
+@pytest.mark.asyncio
+async def test_nate_oha_acp_client_start_agent_async_persists_new_session_id_to_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """start_agent_async persists ACP-assigned session_id into AgentMetadata.
+
+    When ``AgentMetadata.conversation_id`` is empty, ``start_agent_async`` must
+    create a new ACP session via ``new_session`` and persist the returned
+    ``session_id`` back into the per-agent metadata store so that later
+    resume flows can reuse it.
+    """
+
+    client = _make_nate_oha_client(tmp_path, monkeypatch)
+
+    # Use a metadata store wired to the client's config so we can observe
+    # persisted changes.
+    store = MetadataStore(config=client.config)
+
+    # Seed an AgentMetadata record without a conversation_id.
+    meta = AgentMetadata(agent_id="agent-1", display_name="Agent One")
+    store.save_agent_metadata(meta)
+
+    class DummyConnection:
+        def __init__(self) -> None:
+            self.closed: bool = False
+
+        async def initialize(self, *args, **kwargs):  # pragma: no cover - not relevant
+            pass
+
+        async def new_session(self, cwd: str, **kwargs):
+            class _Resp:
+                def __init__(self, session_id: str) -> None:
+                    self.session_id = session_id
+
+            # Return a deterministic session identifier so assertions are
+            # straightforward.
+            return _Resp("acp-session-meta-123")
+
+        async def load_session(self, *args, **kwargs):  # pragma: no cover - not used here
+            raise AssertionError(
+                "load_session should not be called when metadata.conversation_id is empty"
+            )
+
+        async def close(self) -> None:
+            self.closed = True
+
+    class DummyProcess:
+        def __init__(self) -> None:
+            self.closed: bool = False
+
+    class DummyProtocolClient:
+        def __init__(self, agent_id: str, event_sink) -> None:
+            self.agent_id = agent_id
+            self.event_sink = event_sink
+
+    @asynccontextmanager
+    async def fake_open_nate_oha_acp_client(*, command, env, cwd, agent_id, event_sink, capabilities):  # type: ignore[override]
+        conn = DummyConnection()
+        proc = DummyProcess()
+        proto = DummyProtocolClient(agent_id, event_sink)
+
+        try:
+            yield conn, proc, proto
+        finally:
+            await conn.close()
+            proc.closed = True
+
+    # Patch the symbol imported into nate_ntm.runtime.acp_client so that
+    # NateOhaAcpClient.start_agent_async uses the dummy connection above.
+    monkeypatch.setattr(acp_mod, "open_nate_oha_acp_client", fake_open_nate_oha_acp_client, raising=True)
+
+    # Invoke the async lifecycle entrypoint. The adapter should allocate a
+    # new ACP session and persist the returned ``session_id`` into
+    # per-agent metadata.
+    await client.start_agent_async("agent-1", metadata=meta)
+
+    # Reload metadata from disk and verify that conversation_id was
+    # updated to the ACP-assigned session identifier.
+    reloaded = store.load_agent_metadata("agent-1")
+    assert reloaded.conversation_id == "acp-session-meta-123"
+
+    # ``ensure_conversation`` should also observe the new ACP identifier via
+    # its in-memory cache.
+    conv_from_adapter = client.ensure_conversation("agent-1")
+    assert conv_from_adapter == "acp-session-meta-123"
+
+
+
+
+@pytest.mark.asyncio
+async def test_nate_oha_acp_client_acp_session_id_is_deterministic_via_metadata_across_clients(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """ACP-assigned session_id persists into metadata and is reused.
+
+    This test verifies that once ``start_agent_async`` has created a new
+    ACP session for an agent and persisted the returned ``session_id``
+    into :class:`AgentMetadata`, a fresh :class:`NateOhaAcpClient` with
+    the same runtime configuration will derive the same conversation ID
+    via :meth:`ensure_conversation`.
+    """
+
+    # First client: create a new ACP session via start_agent_async and
+    # persist the resulting session_id into per-agent metadata.
+    client1 = _make_nate_oha_client(tmp_path, monkeypatch)
+    store1 = MetadataStore(config=client1.config)
+
+    # Seed a minimal AgentMetadata record for the agent without any
+    # pre-existing conversation_id.
+    seed_meta = AgentMetadata(agent_id="agent-1", display_name="Agent One")
+    store1.save_agent_metadata(seed_meta)
+
+    class DummyConnection:
+        def __init__(self) -> None:
+            self.closed: bool = False
+
+        async def initialize(self, *args, **kwargs):  # pragma: no cover - not relevant
+            pass
+
+        async def new_session(self, cwd: str, **kwargs):
+            class _Resp:
+                def __init__(self, session_id: str) -> None:
+                    self.session_id = session_id
+
+            # Use a fixed session identifier to keep assertions simple.
+            return _Resp("acp-session-cross-client-1")
+
+        async def load_session(self, *args, **kwargs):  # pragma: no cover - not used here
+            raise AssertionError(
+                "load_session should not be called when metadata.conversation_id is empty"
+            )
+
+        async def close(self) -> None:
+            self.closed = True
+
+    class DummyProcess:
+        def __init__(self) -> None:
+            self.closed: bool = False
+
+    class DummyProtocolClient:
+        def __init__(self, agent_id: str, event_sink) -> None:
+            self.agent_id = agent_id
+            self.event_sink = event_sink
+
+    @asynccontextmanager
+    async def fake_open_nate_oha_acp_client(*, command, env, cwd, agent_id, event_sink, capabilities):  # type: ignore[override]
+        conn = DummyConnection()
+        proc = DummyProcess()
+        proto = DummyProtocolClient(agent_id, event_sink)
+
+        try:
+            yield conn, proc, proto
+        finally:
+            await conn.close()
+            proc.closed = True
+
+    # Ensure that client1.start_agent_async uses the dummy ACP
+    # connection above so we control the session_id value.
+    monkeypatch.setattr(acp_mod, "open_nate_oha_acp_client", fake_open_nate_oha_acp_client, raising=True)
+
+    await client1.start_agent_async("agent-1", metadata=seed_meta)
+
+    # Metadata on disk should now reflect the ACP-assigned
+    # "acp-session-cross-client-1" identifier.
+    reloaded1 = store1.load_agent_metadata("agent-1")
+    assert reloaded1.conversation_id == "acp-session-cross-client-1"
+
+    # Second client: with the same project path and config, ensure that
+    # ensure_conversation returns the persisted ACP session identifier
+    # without talking to ACP again.
+    client2 = _make_nate_oha_client(tmp_path, monkeypatch)
+
+    conv2 = client2.ensure_conversation("agent-1")
+    assert conv2 == "acp-session-cross-client-1"
+
+@pytest.mark.asyncio
+async def test_nate_oha_acp_client_stop_agent_async_closes_acp_session(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """stop_agent_async should close the ACP connection and subprocess."""
+
+    client = _make_nate_oha_client(tmp_path, monkeypatch)
+
+    captured: dict[str, object] = {}
+
+    class DummyConnection:
+        def __init__(self) -> None:
+            self.closed: bool = False
+
+        async def initialize(self, *args, **kwargs):  # pragma: no cover - not relevant
+            pass
+
+        async def new_session(self, cwd: str, **kwargs):
+            class _Resp:
+                def __init__(self, session_id: str) -> None:
+                    self.session_id = session_id
+
+            return _Resp("acp-session-terminate")
+
+        async def load_session(self, *args, **kwargs):  # pragma: no cover - not used in this test
+            pass
+
+        async def close(self) -> None:
+            self.closed = True
+
+    class DummyProcess:
+        def __init__(self) -> None:
+            self.closed: bool = False
+
+    class DummyProtocolClient:
+        def __init__(self, agent_id: str, event_sink) -> None:
+            self.agent_id = agent_id
+            self.event_sink = event_sink
+
+    @asynccontextmanager
+    async def fake_open_nate_oha_acp_client(*, command, env, cwd, agent_id, event_sink, capabilities):  # type: ignore[override]
+        conn = DummyConnection()
+        proc = DummyProcess()
+        proto = DummyProtocolClient(agent_id, event_sink)
+
+        captured["connection"] = conn
+        captured["process"] = proc
+
+        try:
+            yield conn, proc, proto
+        finally:
+            await conn.close()
+            proc.closed = True
+
+    import nate_ntm.runtime.acp_connection as acp_conn
+
+    # Patch the symbol imported into nate_ntm.runtime.acp_client rather than
+    # the acp_connection module itself so that NateOhaAcpClient.start_agent_async
+    # sees the stub.
+    monkeypatch.setattr(acp_mod, "open_nate_oha_acp_client", fake_open_nate_oha_acp_client, raising=True)
+
+    meta = AgentMetadata(agent_id="agent-1", display_name="Agent One")
+
+    await client.start_agent_async("agent-1", metadata=meta)
+
+    conn = captured["connection"]
+    proc = captured["process"]
+
+    assert isinstance(conn, DummyConnection)
+    assert isinstance(proc, DummyProcess)
+    assert conn.closed is False
+    assert proc.closed is False
+
+    # Stopping the agent via the async API should trigger the context
+    # manager's cleanup, closing the ACP connection and marking the process
+    # as closed.
+    await client.stop_agent_async("agent-1", timeout=5.0)
+
+    assert conn.closed is True
+    assert proc.closed is True
+
+    # The in-memory session should be marked as terminated for future
+    # status queries.
+    session = client._sessions.get("agent-1")
+    assert session is not None
+    assert session.status == "terminated"
 
 
 def test_runtime_create_with_nate_oha_acp_persists_conversation_metadata(
