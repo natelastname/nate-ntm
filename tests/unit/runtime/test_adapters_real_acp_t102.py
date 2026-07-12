@@ -13,7 +13,7 @@ from pathlib import Path
 from nate_ntm.config.runtime_config import AdapterKind, load_runtime_config
 from nate_ntm.runtime.adapters import create_runtime_adapters
 from nate_ntm.runtime.agent_mail_client import FakeAgentMailClient, McpAgentMailClient
-from nate_ntm.runtime.acp_client import FakeAcpClient, NateOhaAcpClient
+from nate_ntm.runtime.acp_client import NateOhaAcpClient
 
 
 def _make_project(tmp_path: Path) -> Path:

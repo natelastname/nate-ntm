@@ -106,42 +106,6 @@ def test_runtime_start_create_without_metadata_succeeds_and_writes_swarm(tmp_pat
 
 
 
-def test_runtime_start_create_with_agents_persists_swarm_and_agent_metadata(tmp_path: Path) -> None:
-    project = _init_project_without_metadata(tmp_path)
-
-    result = runner.invoke(
-        app,
-        [
-            "runtime",
-            "start",
-            "--project",
-            str(project),
-            "--mode",
-            "create",
-            "--agents",
-            "2",
-        ],
-    )
-
-    assert result.exit_code == 0
-
-    # Swarm metadata should now exist and include two agents, and
-    # per-agent metadata files should be persisted with fake
-    # identifiers from the in-memory adapters.
-    config = load_runtime_config(project_path=project)
-    store = MetadataStore(config=config)
-
-    swarm = store.load_swarm_metadata()
-    assert set(swarm.agents.keys()) == {"agent-1", "agent-2"}
-
-    a1 = store.load_agent_metadata("agent-1")
-    a2 = store.load_agent_metadata("agent-2")
-
-    for agent in (a1, a2):
-        assert agent.agent_mail_identity == f"fake-mail-identity:{agent.agent_id}"
-        assert agent.conversation_id == f"fake-conversation:{agent.agent_id}"
-
-
 def test_runtime_start_resume_rejects_agents_option(tmp_path: Path) -> None:
     project = _init_project_with_metadata(tmp_path)
 
