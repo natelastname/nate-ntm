@@ -1,305 +1,602 @@
 ---
-
-description: "Task list for Epic 005: Nate OHA runtime integration"
+description: "Implementation tasks for Epic 005: Nate OHA runtime integration"
 ---
 
-# Tasks: Nate OHA Runtime Integration (Epic 005)
+# Tasks: Nate OHA Runtime Integration
 
-**Input**: Design documents from `specs/005-nate-oha-migration/`
+**Input**: Design documents under `specs/005-nate-oha-migration/`
 
-**Prerequisites**: `plan.md` (required), `spec.md` (required for user stories), optional `research.md`, `data-model.md`, and related appendices/contracts
+**Required design artifacts**:
 
-**Tests**: The epic spec calls out explicit validation and integration behavior. Each user story below includes test tasks that SHOULD be implemented (or updated) alongside code.
+- `spec.md`
+- `plan.md`
+- `spec-appendix-B.md`
+- `spec-appendix-C.md`
 
-**Organization**: Tasks are grouped by user story (P1–P5) so that each story can be implemented and validated as an independent increment.
+**Supporting artifacts**:
 
-## Format: `[ID] [P?] [Story] Description`
+- `research.md`
+- `data-model.md`
+- `contracts/`
+- `quickstart.md`
 
-- **[P]**: Can run in parallel (different files, no direct dependencies)
-- **[Story]**: Which user story this task belongs to (e.g., US1, US2, US3)
-- Include exact file paths in descriptions
+**Validation approach**: Prefer real subprocess and integration tests over mocked ACP transports. Unit tests should cover runtime-owned logic only. Existing tests may be rewritten or removed when they preserve obsolete ACP or fake-adapter behavior.
 
-## Path Conventions
+## Format
 
-- Single project layout:
-  - Runtime and adapters: `src/nate_ntm/runtime/`
-  - Configuration: `src/nate_ntm/config/`
-  - CLI: `src/nate_ntm/cli.py`
-  - API/control surface: `src/nate_ntm/api/`
-  - Unit tests: `tests/unit/`
-  - Integration tests: `tests/integration/`
-  - E2E tests: `tests/e2e/`
+```
+[ID] [P?] [Story?] Description
+```
+
+- **\[P\]**: Can proceed in parallel with other tasks in the same phase.
+- **\[Story\]**: Maps the task to a Speckit user story where applicable.
+- Every implementation task includes the relevant file paths.
+- Tasks are ordered by architectural dependency, not merely by file or user-story number.
+
+------------------------------------------------------------------------
+
+# Phase 1: Research and Contract Confirmation
+
+**Purpose**: Confirm the external contracts before changing the runtime architecture.
 
----
+-
+  T001 Review `specs/005-nate-oha-migration/spec.md`, `plan.md`, `spec-appendix-B.md`, and `spec-appendix-C.md`; record the final architectural decisions in `specs/005-nate-oha-migration/research.md`.
+-
+  T002 \[P\] Verify the installed `agent-client-protocol` Python SDK APIs required by this epic and document the selected interfaces in `specs/005-nate-oha-migration/research.md`, including:
 
-## Phase 1: Setup (Shared Infrastructure)
+  - agent process spawning;
+  - `ClientSideConnection`;
+  - initialization and capability negotiation;
+  - `session/new`;
+  - the Nate OHA resume-session flow;
+  - prompting;
+  - cancellation;
+  - session updates;
+  - connection shutdown.
+
+-
+  T003 \[P\] Verify the concrete `nate-oha acp` contract against the current Nate OHA implementation and document it in `specs/005-nate-oha-migration/contracts/nate-oha-launch.md`, including:
+
+  - executable name;
+  - `acp` subcommand;
+  - `--config`;
+  - `--resume`;
+  - repeated `--set path=value`;
+  - stdio ownership;
+  - stderr behavior;
+  - conversation ID returned by `session/new`;
+  - behavior of resumed sessions and conversation-history replay.
+
+-
+  T004 \[P\] Verify the real `mcp_agent_mail` API contract used by `McpAgentMailClient` and record the supported project, identity, credential, and inbox operations in `specs/005-nate-oha-migration/contracts/agent-mail.md`.
+-
+  T005 Verify the `agent-client-protocol` SDK dependency version, update `uv.lock` if needed using `uv sync`, and confirm the project environment can be reconstructed from a clean checkout.
+
+**Checkpoint**: The ACP SDK, Nate OHA launch contract, resume behavior, and Agent Mail contract are explicit and no longer inferred from legacy code.
+
+------------------------------------------------------------------------
+
+# Phase 2: Foundational Runtime Model
+
+**Purpose**: Establish the new runtime-owned abstractions before replacing existing behavior.
+
+## Launch specification
 
-**Purpose**: Confirm design context and capture the current ACP/Agent Mail behavior for Epic 005.
+-
+  T010 Define `NateOhaLaunchSpec` in `src/nate_ntm/runtime/nate_oha_launch.py` as the single representation of a Nate OHA process launch, including:
 
-- [ ] T001 Read `specs/005-nate-oha-migration/spec.md`, `plan.md`, and appendices A–C plus `NATE_OHA_GUIDE.md`, and create `specs/005-nate-oha-migration/research.md` capturing key goals (Nate OHA–centric runtime, ACP-owned conversation IDs, no fake ACP/mail) and open questions.
-- [ ] T002 Survey existing runtime integration code and tests and append findings to `specs/005-nate-oha-migration/research.md`, covering:
-  - ACP adapters in `src/nate_ntm/runtime/acp_client.py` (`FakeAcpClient`, `OpenHandsAcpClient`, `NateOhaAcpClient`)
-  - Agent Mail adapters in `src/nate_ntm/runtime/agent_mail_client.py`
-  - Adapter wiring in `src/nate_ntm/runtime/adapters.py`
-  - Current tests in `tests/unit/runtime/test_acp_client.py` and `tests/integration/runtime_acp/`.
+  - executable;
+  - base configuration path;
+  - working directory;
+  - runtime mode;
+  - optional persisted conversation ID;
+  - model and API-key overrides;
+  - prompt soul content;
+  - optional Agent Mail settings;
+  - final argument vector.
 
----
+-
+  T011 Implement deterministic argument construction in `src/nate_ntm/runtime/nate_oha_launch.py` for:
 
-## Phase 2: Foundational (Blocking Prerequisites)
+  ```
+  nate-oha acp
+      --config BASE_CONFIG
+      [--resume CONVERSATION_ID]
+      [--set path=value]…
+  ```
 
-**Purpose**: Shared design artifacts that subsequent user stories rely on.
+  The implementation must build an argv list directly, avoid shell interpolation, and omit unset optional overrides.
+-
+  T012 \[P\] Add focused tests in `tests/unit/runtime/test_nate_oha_launch.py` covering:
 
-- [ ] T003 Create or update `specs/005-nate-oha-migration/data-model.md` to describe the runtime data model for this epic, including:
-  - Swarm metadata and per-agent metadata fields relevant to ACP and Agent Mail (`src/nate_ntm/runtime/metadata_store.py`).
-  - `RuntimeConfig` fields that affect ACP and Nate OHA launches (`src/nate_ntm/config/runtime_config.py`).
-  - Adapter abstractions (`BaseAcpClient`, `NateOhaAcpClient`, Agent Mail clients) in `src/nate_ntm/runtime/acp_client.py` and `src/nate_ntm/runtime/agent_mail_client.py`.
-  - How ACP-owned conversation identifiers and Agent Mail configuration are persisted and reused across create/resume flows.
+  - required `--config`;
+  - echo and agent modes;
+  - optional `--resume`;
+  - supported `--set` paths;
+  - Agent Mail enabled and disabled;
+  - values containing whitespace and punctuation;
+  - deterministic argument ordering.
 
-**Checkpoint**: Foundation ready – user story implementation can now begin.
+## Configuration
 
----
+-
+  T013 Extend `RuntimeConfig` and `load_runtime_config` in `src/nate_ntm/config/runtime_config.py` with the runtime-owned inputs needed to construct `NateOhaLaunchSpec`, including:
 
-## Phase 3: User Story 1 - Launch and supervise Nate OHA agents through ACP (Priority: P1) 🎯 MVP
+  - Nate OHA executable;
+  - base JSON configuration path;
+  - runtime mode;
+  - optional model;
+  - optional API key;
+  - optional prompt soul content;
+  - Agent Mail enabled state;
+  - Agent Mail upstream URL.
 
-**Goal**: `nate_ntm` launches and supervises `nate-oha acp` subprocesses via the ACP SDK so that swarm agents use the current configuration-driven Nate OHA runtime rather than the obsolete HTTP-oriented ACP design.
+-
+  T014 Update `src/nate_ntm/cli.py` to expose only the operator-facing Nate OHA launch options required by the specification and pass them into `load_runtime_config`.
+-
+  T015 \[P\] Add or update configuration and CLI tests under `tests/unit/config/` and `tests/unit/cli/` for the new Nate OHA fields and precedence rules.
 
-**Independent Test (from spec)**: Start a swarm with one or more agents and verify that each agent is launched through `nate-oha acp`, establishes an ACP session, exposes its ACP events to `nate_ntm`, and can be shut down cleanly.
+## ACP runtime types
 
-### Tests for User Story 1
+-
+  T016 Redesign the runtime-facing ACP types in `src/nate_ntm/runtime/acp_client.py` around agent lifecycle rather than conversations or turns.
 
-- [ ] T010 [P] [US1] Extend unit tests in `tests/unit/runtime/test_acp_client.py` to cover NateOhaAcpClient ACP session management and event emission, including:
-  - Successful ACP connection establishment (using stubbed ACP SDK objects).
-  - Emission of `AgentEvent` instances for key ACP lifecycle/turn events via `on_event`.
-  - Robust handling of process startup failures and early exits.
-- [ ] T011 [P] [US1] Add or update integration tests in `tests/integration/runtime_acp/` (e.g., `test_nate_oha_acp_runtime_us1.py`) that start a `RuntimeDaemon` using `NateOhaAcpClient` and verify:
-  - Each agent is launched via `nate-oha acp`.
-  - An ACP session is established per agent.
-  - ACP events are visible via the runtime’s event/inspection interfaces.
-  - Shutdown requests lead to graceful process termination, with escalation to forced kill only when necessary.
+  The public interface must provide asynchronous operations equivalent to:
 
-### Implementation for User Story 1
+  ```
+  async def start_agent(…)
+  async def prompt(…)
+  async def interrupt(…)
+  async def stop_agent(…)
+  def get_status(…)
+  ```
 
-- [ ] T012 [US1] Implement ACP SDK session management in `src/nate_ntm/runtime/acp_client.py` for `NateOhaAcpClient`, creating per-agent ACP client sessions bound to each `nate-oha acp` subprocess and wiring their callbacks into the adapter’s `on_event`.
-- [ ] T013 [US1] Implement translation from ACP SDK events to `AgentEvent` instances in `src/nate_ntm/runtime/acp_client.py` (and/or helper functions in `src/nate_ntm/runtime/events.py`), ensuring event `source=AgentEventSource.ACP`, stable type names, and JSON-serializable payloads that match `contracts/runtime-api.md` expectations.
-- [ ] T014 [US1] Ensure ACP events from `NateOhaAcpClient` flow through the existing runtime pipeline by verifying that `RuntimeDaemon` → `AgentSupervisor` → `RuntimeScheduler` wiring (`src/nate_ntm/runtime/daemon.py`, `src/nate_ntm/runtime/agents.py`, `src/nate_ntm/runtime/scheduler.py`) appends ACP events to per-agent streams and exposes them via the control API (`src/nate_ntm/api/runtime_api.py`, `tests/integration/quickstart/`).
-- [ ] T015 [US1] Harden `NateOhaAcpClient.start_agent` and `stop_agent` in `src/nate_ntm/runtime/acp_client.py` to fully satisfy FR-002 (startup checks, graceful shutdown, forced termination on timeout, accurate `AcpAgentStatus`), updating existing unit tests in `tests/unit/runtime/test_acp_client.py` as needed.
+  Remove `ensure_conversation()` and `start_turn()` from the public runtime-facing contract.
+-
+  T017 Define active-session state in `src/nate_ntm/runtime/acp_client.py`, including:
 
-**Checkpoint**: User Story 1 is fully functional and testable independently using the Nate OHA ACP adapter.
+  - agent ID;
+  - ACP-owned conversation ID;
+  - managed process;
+  - `ClientSideConnection`;
+  - protocol callback client;
+  - lifecycle status;
+  - background tasks required to drain stderr or monitor process exit.
 
----
+-
+  T018 Update `specs/005-nate-oha-migration/data-model.md` to reflect:
 
-## Phase 4: User Story 2 - Create and resume persistent agent conversations (Priority: P2)
+  - ACP-owned opaque conversation IDs;
+  - persisted versus transient state;
+  - `NateOhaLaunchSpec`;
+  - active ACP sessions;
+  - optional Agent Mail metadata;
+  - removal of synthetic conversation and fake-adapter state.
 
-**Goal**: Conversation identifiers for agents are allocated by ACP (`session/new`), persisted by `nate_ntm`, and reused on resume via `--resume`, with no locally synthesized conversation IDs.
+**Checkpoint**: The runtime has a clear launch specification, configuration model, and agent-centric ACP interface before any production behavior is migrated.
 
-**Independent Test (from spec)**: Create a swarm, capture the conversation identifier returned by ACP `session/new`, stop the swarm, resume it using the persisted identifier, and verify that the resumed agent continues the same conversation.
+------------------------------------------------------------------------
 
-### Tests for User Story 2
+# Phase 3: User Story 1 — Launch and Supervise Nate OHA Agents
 
-- [ ] T020 [P] [US2] Add unit tests in `tests/unit/runtime/test_acp_client.py` that stub ACP SDK `session/new` responses and verify that `NateOhaAcpClient.ensure_conversation`:
-  - Calls `session/new` only when no persisted `conversation_id` exists for an agent.
-  - Persists the ACP-provided conversation identifier via `MetadataStore` (`src/nate_ntm/runtime/metadata_store.py`).
-  - Reuses the persisted identifier on subsequent calls and across processes.
-- [ ] T021 [P] [US2] Add integration tests in `tests/integration/runtime_acp/test_nate_oha_conversations_p2.py` that exercise create → shutdown → resume for a swarm and assert:
-  - Conversation identifiers observed on first run come from ACP (or a stubbed ACP SDK).
-  - Resume launches `nate-oha acp` with the same conversation identifiers via `--resume`.
-  - No new conversations are created for agents that already have persisted IDs.
+**Priority**: P1
 
-### Implementation for User Story 2
+**Goal**: Each managed agent is backed by a real `nate-oha acp` subprocess connected through the official ACP SDK.
 
-- [ ] T022 [US2] Replace deterministic/UUID-based conversation ID derivation in `NateOhaAcpClient.ensure_conversation` (`src/nate_ntm/runtime/acp_client.py`) with ACP-owned semantics:
-  - When metadata has no `conversation_id`, open an ACP session and call `session/new` via the ACP SDK.
-  - Persist the returned conversation identifier to `AgentMetadata` via `MetadataStore`.
-  - Cache the identifier in-memory for subsequent calls in the same process.
-- [ ] T023 [US2] Update `RuntimeDaemon.resume` (`src/nate_ntm/runtime/daemon.py`) and any other call sites that validate conversation IDs to treat the persisted `AgentMetadata.conversation_id` as canonical and to call `NateOhaAcpClient.ensure_conversation` only to validate that the adapter’s view matches metadata, never to allocate new IDs during resume.
-- [ ] T024 [US2] Update `NateOhaAcpClient.start_agent` (and any future turn-start helpers) in `src/nate_ntm/runtime/acp_client.py` to propagate the persisted conversation identifier to `nate-oha acp` via `--resume CONVERSATION_ID` when resuming an existing conversation, and avoid creating a fresh ACP session in those cases.
-- [ ] T025 [US2] Remove or revise tests and documentation that assert deterministic, locally derived conversation IDs for NateOhaAcpClient or OpenHandsAcpClient (e.g., `tests/unit/runtime/test_acp_client.py`, `tests/integration/runtime_acp/test_nate_oha_acp_client_integration_002.py`, `CONOP_NATEOHAv2_FEEDBACK.md`) so that all expectations treat conversation IDs as opaque ACP-owned values.
+**Independent test**: Start a swarm in echo mode and verify that each configured agent launches through `nate-oha acp`, establishes an ACP session, emits ACP events, reports runtime status, and shuts down cleanly.
 
-**Checkpoint**: User Stories 1 and 2 both work independently; conversational continuity is ACP-owned and resume-safe.
+## ACP SDK integration
 
----
+-
+  T020 \[US1\] Implement `NateNtmAcpProtocolClient` in `src/nate_ntm/runtime/acp_protocol_client.py` using the official ACP SDK client interface.
 
-## Phase 5: User Story 3 - Exercise production ACP code paths in echo mode (Priority: P3)
+  It must:
 
-**Goal**: Development and test execution use `NateOhaAcpClient` with Nate OHA configured in echo mode so that tests exercise the same subprocess, ACP, event, shutdown, and resume paths used in production.
+  - advertise explicit `ClientCapabilities`;
+  - receive structured session updates;
+  - translate supported updates into runtime events;
+  - provide explicit protocol-appropriate responses for unsupported client capabilities.
 
-**Independent Test (from spec)**: Launch an agent with `runtime.mode=echo`, exchange ACP messages, inspect emitted events, stop the process, and resume the same conversation using the same ACP client implementation used in agent mode.
+-
+  T021 \[US1\] Implement ACP update translation in `src/nate_ntm/runtime/acp_event_translation.py`, converting official ACP SDK models into JSON-serializable `AgentEvent` values without exposing ACP SDK models to the rest of the runtime.
+-
+  T022 \[P\] \[US1\] Add unit tests in `tests/unit/runtime/test_acp_event_translation.py` for representative ACP update variants and stable runtime event output.
 
-### Tests for User Story 3
+## Process and session lifecycle
 
-- [ ] T030 [P] [US3] Add or update integration tests in `tests/integration/runtime_acp/test_nate_oha_echo_mode_p3.py` that:
-  - Start agents via `RuntimeDaemon`/`NateOhaAcpClient` with `runtime.mode=echo`.
-  - Verify ACP session establishment, event streaming, shutdown, and resume paths.
-  - Compare behavior to agent-mode runs to confirm the same code paths are exercised.
-- [ ] T031 [P] [US3] Add unit tests in `tests/unit/runtime/test_acp_client.py` and `tests/unit/runtime/test_adapters_real_acp_t102.py` (or equivalent) that verify:
-  - `create_runtime_adapters` (`src/nate_ntm/runtime/adapters.py`) always selects `NateOhaAcpClient` for ACP in both dev/fake and real/production modes.
-  - The only behavioral difference between these modes is the `runtime.mode` configuration passed to Nate OHA.
+-
+  T023 \[US1\] Replace the existing `NateOhaAcpClient.start_agent` implementation in `src/nate_ntm/runtime/acp_client.py` so it:
 
-### Implementation for User Story 3
+  - accepts a `NateOhaLaunchSpec`;
+  - launches `nate-oha acp` through the official ACP SDK process helper where practical;
+  - establishes stdio ACP transport;
+  - initializes ACP;
+  - negotiates capabilities;
+  - creates the ACP session;
+  - stores the active session;
+  - reports the agent ready only after session establishment succeeds.
 
-- [ ] T032 [US3] Simplify ACP adapter selection in `src/nate_ntm/runtime/adapters.py` so that `create_runtime_adapters` always constructs `NateOhaAcpClient` for ACP (for both `AdapterKind.FAKE` and `AdapterKind.REAL`), and remove `OpenHandsAcpClient` from the selection logic.
-- [ ] T033 [US3] Implement configuration logic in `NateOhaAcpClient` (likely in `_build_command` and associated helpers) to set `runtime.mode=echo` for development/test executions and `runtime.mode=agent` for production executions, using `RuntimeConfig`/swarm metadata rather than raw environment variables.
-- [ ] T034 [US3] Update scheduler/daemon wiring and tests so that development/test flows (for example, `adapter_mode=fake`) launch Nate OHA in echo mode via `NateOhaAcpClient` instead of using `FakeAcpClient` (`src/nate_ntm/runtime/daemon.py`, `src/nate_ntm/runtime/state.py`, `tests/unit/runtime/test_acp_client.py`, `tests/integration/runtime_acp/`).
-- [ ] T035 [US3] Deprecate or remove `FakeAcpClient` as a runtime-selected ACP implementation in `src/nate_ntm/runtime/acp_client.py`, keeping only minimal test-only helpers if still required, and update references in specs/docs (`specs/001-swarm-runtime-orchestrator/`, `specs/002-nate-oha-acp-adapter/`, `README.md`) to describe echo-mode Nate OHA as the dev/test ACP path.
+-
+  T024 \[US1\] Implement continuous stderr draining and process-exit monitoring in `src/nate_ntm/runtime/acp_client.py`, ensuring:
 
-**Checkpoint**: User Stories 1–3 work independently; echo-mode runs fully exercise the production ACP code path.
+  - stdout remains ACP-only;
+  - stderr is exposed through logging or runtime diagnostics;
+  - unexpected process exit updates agent status and emits a failure event.
 
----
+-
+  T025 \[US1\] Implement `prompt`, `interrupt`, `stop_agent`, and `get_status` in `src/nate_ntm/runtime/acp_client.py` using the official ACP SDK and Linux process supervision semantics.
+-
+  T026 \[US1\] Implement graceful shutdown escalation in `src/nate_ntm/runtime/acp_client.py`:
 
-## Phase 6: User Story 4 - Run swarms with optional real Agent Mail coordination (Priority: P4)
+  - request protocol-level cancellation or closure where applicable;
+  - terminate the process group after the graceful timeout;
+  - kill the process group only after the termination timeout;
+  - clean up SDK connections and background tasks.
 
-**Goal**: Enable real `mcp_agent_mail` coordination for swarms while preserving the ability to create, supervise, stop, and resume swarms with Agent Mail completely disabled.
+## Scheduler integration
 
-**Independent Test (from spec)**: Run one swarm with Agent Mail disabled and another with Agent Mail enabled against a running `mcp_agent_mail` server. Verify that both swarms can launch and resume, and that only the enabled swarm contacts Agent Mail.
+-
+  T027 \[US1\] Replace placeholder agent launch behavior in `src/nate_ntm/runtime/agents.py` and `src/nate_ntm/runtime/scheduler.py` with calls to `NateOhaAcpClient.start_agent`.
+-
+  T028 \[US1\] Update scheduler and daemon startup/shutdown flows in:
 
-### Tests for User Story 4
+  - `src/nate_ntm/runtime/scheduler.py`;
+  - `src/nate_ntm/runtime/daemon.py`;
+  - `src/nate_ntm/runtime/runner.py`;
 
-- [ ] T040 [P] [US4] Add integration tests in `tests/integration/runtime_mail/` that:
-  - Start a swarm with Agent Mail disabled and assert that no calls are made to a `mcp_agent_mail` server (for example, by running without a server and confirming no failures).
-  - Start a swarm with Agent Mail enabled against a running `mcp_agent_mail` reference server and verify that project, identity, credential reference, and upstream URL are passed correctly to Nate OHA and that attempts to run without a reachable server fail clearly.
-- [ ] T041 [P] [US4] Add unit tests for `McpAgentMailClient` in `tests/unit/runtime/test_agent_mail_client.py` exercising:
-  - `ensure_project`, `ensure_agent_identity_with_credentials`, and `get_unread_mail_flags` happy paths.
-  - JSON-RPC error handling and network failures raising `AgentMailClientError` (`src/nate_ntm/runtime/agent_mail_client.py`).
+  so all managed agents are started, supervised, and stopped through `NateOhaAcpClient`.
+-
+  T029 \[US1\] Ensure ACP events pass through the existing runtime event pipeline into:
 
-### Implementation for User Story 4
+  - per-agent `AgentEventStream`;
+  - `agent.get_detail`;
+  - WebSocket event subscriptions.
 
-- [ ] T042 [US4] Introduce explicit Agent Mail enable/disable semantics in the runtime configuration and metadata:
-  - Extend `RuntimeConfig`/`load_runtime_config` in `src/nate_ntm/config/runtime_config.py` and `SwarmMetadata` in `src/nate_ntm/runtime/metadata_store.py` to represent whether Agent Mail is enabled for a swarm.
-  - Treat missing/empty Agent Mail settings as "Agent Mail disabled" while ensuring that this state does not prevent swarm creation/resume.
-- [ ] T043 [US4] Update `create_runtime_adapters` (`src/nate_ntm/runtime/adapters.py`) and `RuntimeDaemon.create`/`RuntimeDaemon.resume` (`src/nate_ntm/runtime/daemon.py`) so that:
-  - `McpAgentMailClient` is constructed and used only when Agent Mail is enabled.
-  - No Agent Mail adapter is used, and no Agent Mail APIs are contacted, when Agent Mail is disabled.
-  - Runtime behavior remains correct for create/resume/supervision with Agent Mail off.
-- [ ] T044 [US4] Remove or quarantine `FakeAgentMailClient` from runtime code paths:
-  - Ensure it is no longer selectable via configuration (`AdapterKind`, `create_runtime_adapters`).
-  - If retained, move it to a clearly test-only context or mark it as deprecated so production/runtime flows cannot depend on it.
-- [ ] T045 [US4] Update documentation to reflect real-only Agent Mail behavior and optionality, including `NATE_OHA_GUIDE.md`, `specs/005-nate-oha-migration/spec-appendix-*.md`, and `README.md`, with guidance on running Agent Mail–dependent tests and expected failure modes when `mcp_agent_mail` is unreachable.
+## Validation
 
-**Checkpoint**: User Stories 1–4 work independently; Agent Mail is a real, optional integration with clear test behavior.
+-
+  T030 \[US1\] Add a real echo-mode subprocess integration test in `tests/integration/runtime_acp/test_nate_oha_agent_lifecycle.py` covering:
 
----
+  - process launch;
+  - ACP initialization;
+  - capability negotiation;
+  - session creation;
+  - prompt exchange;
+  - event receipt;
+  - clean shutdown.
 
-## Phase 7: User Story 5 - Configure Nate OHA from a base JSON file plus runtime overrides (Priority: P5)
+-
+  T031 \[US1\] Add a runtime-level integration test in `tests/integration/quickstart/test_nate_oha_swarm_start.py` covering multiple echo-mode agents through `RuntimeDaemon`, scheduler status, inspection, and shutdown.
 
-**Goal**: `nate_ntm` launches agents from a shared Nate OHA JSON configuration and provides only swarm-/agent-specific overrides so that Nate OHA remains responsible for its own runtime and prompt configuration.
+**Checkpoint**: The runtime no longer simulates agent processes. Echo-mode agents run through the full Nate OHA and ACP pipeline.
 
-**Independent Test (from spec)**: Launch multiple agents from the same base configuration while supplying different runtime mode, prompt identity, Agent Mail, model, or credential overrides, and verify that each process receives the expected configuration.
+------------------------------------------------------------------------
 
-### Tests for User Story 5
+# Phase 4: User Story 2 — Persist and Resume ACP Conversations
 
-- [ ] T050 [P] [US5] Add integration tests in `tests/integration/runtime_acp/test_nate_oha_config_overrides_p5.py` that:
-  - Use a shared base JSON configuration (e.g., `nate-oha-profiles/profile1.json`).
-  - Launch multiple agents with different runtime overrides (mode, model, `prompt.soul_content`, Agent Mail settings).
-  - Verify via ACP events, logs, or other observable signals that each process receives the correct configuration derived from base + overrides.
+**Priority**: P2
 
-### Implementation for User Story 5
+**Goal**: Conversation IDs come from ACP, are persisted by `nate_ntm`, and are supplied back to Nate OHA during resume.
 
-- [ ] T051 [US5] Extend `RuntimeConfig`/`load_runtime_config` in `src/nate_ntm/config/runtime_config.py` to capture Nate OHA launch settings, including:
-  - Base Nate OHA configuration path (defaulting to `nate-oha-profiles/profile1.json` for repository tests when not explicitly set).
-  - Optional default `llm.model` and `llm.api_key` values.
-  - Optional default `prompt.soul_content` and related prompt overrides.
-  - Any additional fields needed to compute `--set` overrides, with appropriate environment variable names documented.
-- [ ] T052 [US5] Update the CLI entrypoint in `src/nate_ntm/cli.py` (and any related API wiring) to accept optional flags for base Nate OHA config path and key runtime overrides (model, API key, prompt soul, Agent Mail options), forwarding them into `load_runtime_config`.
-- [ ] T053 [US5] Refactor `NateOhaAcpClient._build_command` and related helpers in `src/nate_ntm/runtime/acp_client.py` to:
-  - Always pass `--config <base_json>` using the configured base path from `RuntimeConfig`.
-  - Pass `--resume <conversation_id>` when launching an agent with a persisted conversation.
-  - Materialize runtime-specific values (`runtime.mode`, `llm.model`, `llm.api_key`, `prompt.soul_content`, `features.agent_mail.*`) as repeated `--set path=value` arguments rather than constructing full Nate OHA/OpenHands configuration in-process.
-- [ ] T054 [US5] Update unit tests in `tests/unit/runtime/test_acp_client.py` to assert on the new NateOhaAcpClient command-line contract (including `--config`, `--resume`, and `--set` arguments) for both echo and agent modes, with Agent Mail enabled/disabled.
-- [ ] T055 [US5] Sweep the codebase for any remaining places that construct OpenHands or Nate OHA configuration dictionaries directly (for example, legacy HTTP ACP client code in `OpenHandsAcpClient` within `src/nate_ntm/runtime/acp_client.py`) and either adapt them to the base-config-plus-overrides model or remove them entirely in line with FR-011/FR-023/FR-024.
+**Independent test**: Create a conversation, persist the `session/new` result, stop the runtime, resume with `--resume`, receive the prior conversation history, and continue the same conversation.
 
-**Checkpoint**: User Stories 1–5 work independently; all Nate OHA launches use a base JSON configuration plus explicit runtime overrides.
+## Conversation persistence
 
----
+-
+  T040 \[US2\] Remove deterministic or synthetic conversation-ID generation from `src/nate_ntm/runtime/acp_client.py` and all related helpers.
+-
+  T041 \[US2\] Update `NateOhaAcpClient.start_agent` so a new launch:
 
-## Phase N: Polish & Cross-Cutting Concerns
+  - obtains the canonical session ID from ACP `session/new`;
+  - returns it as part of the active session;
+  - does not generate or infer an ID locally.
 
-**Purpose**: Remove obsolete implementations, align documentation, and validate the integrated runtime end-to-end.
+-
+  T042 \[US2\] Update `src/nate_ntm/runtime/daemon.py` and `src/nate_ntm/runtime/metadata_store.py` so a newly returned ACP session ID is persisted into the corresponding `AgentMetadata.conversation_id`.
+-
+  T043 \[P\] \[US2\] Add metadata tests in `tests/unit/runtime/test_metadata_store.py` proving ACP-provided conversation IDs round-trip unchanged and remain opaque.
 
-- [ ] T060 [P] Remove `OpenHandsAcpClient` from `src/nate_ntm/runtime/acp_client.py` and its associated tests in `tests/unit/runtime/test_acp_client.py` and `tests/integration/runtime_acp/test_openhands_acp_client_integration_t102.py`, after confirming that NateOhaAcpClient-based flows meet all acceptance criteria.
-- [ ] T061 [P] Ensure no runtime configuration path or CLI option can select `FakeAcpClient` or `FakeAgentMailClient` by searching the repository and either deleting these classes, moving them to clearly test-only modules, or marking them as deprecated fixtures with no production callers.
-- [ ] T062 Update high-level docs and specs (`README.md`, `AGENTS_MK2.md`, `specs/001-swarm-runtime-orchestrator/*`, `specs/002-nate-oha-acp-adapter/*`, `specs/005-nate-oha-migration/*`) to:
-  - Describe `NateOhaAcpClient` as the single ACP adapter.
-  - Emphasize ACP-owned conversation IDs and history.
-  - Document echo vs agent runtime modes and Agent Mail optionality.
-  - Document integration-test gating via environment variables (e.g., `NATE_OHA_INTEGRATION`, an Agent Mail integration flag).
-- [ ] T063 Add or update end-to-end tests in `tests/e2e/test_real_runtime_nate_oha_agent_mail.py` that exercise the full stack (CLI → `RuntimeDaemon` → `NateOhaAcpClient` → Nate OHA → optional `mcp_agent_mail`) and verify success criteria SC-001–SC-010 from `specs/005-nate-oha-migration/spec.md`.
-- [ ] T064 Run the full test suite under representative configurations (echo mode only, agent mode with valid LLM credentials, Agent Mail disabled, Agent Mail enabled with a real server) and fix any brittle tests or missing gating markers (e.g., pytest markers, environment guards), updating `pyproject.toml` or test helpers in `tests/` as needed.
+## Resume flow
 
----
+-
+  T044 \[US2\] Update `NateOhaLaunchSpec` construction so an agent with a persisted conversation ID receives:
 
-## Dependencies & Execution Order
+  ```
+  --resume CONVERSATION_ID
+  ```
+-
+  T045 \[US2\] Implement the Nate OHA-defined ACP establishment flow after launching with `--resume` in `src/nate_ntm/runtime/acp_client.py`.
+-
+  T046 \[US2\] Verify that the resumed ACP session reports the same canonical session ID as persisted metadata and fail startup with an actionable error on disagreement.
+-
+  T047 \[US2\] Ensure resumed ACP history flows through the same event translation and `AgentEventStream` pipeline used for newly generated events, without adding a second durable event store.
+-
+  T048 \[US2\] Update runtime resume logic in `src/nate_ntm/runtime/daemon.py` so it:
 
-### Phase Dependencies
+  - requires a persisted conversation ID for agents being resumed;
+  - delegates session reconstruction to Nate OHA and ACP;
+  - does not call obsolete conversation-allocation helpers.
 
-- **Setup (Phase 1)**: No dependencies – can start immediately.
-- **Foundational (Phase 2)**: Depends on Setup completion – provides shared design context for all user stories.
-- **User Stories (Phases 3–7)**:
-  - All depend on the Foundational phase for agreed data-model and terminology.
-  - **US1 (P1)** can start as soon as Phase 2 is complete.
-  - **US5 (P5)** configuration work (base JSON + overrides) can begin in parallel with US1 but must be in place before full acceptance of US1/US2/US3.
-  - **US2 (P2)** depends on US1’s ACP launch/event wiring and on the base `--config`/`--resume` helpers from US5.
-  - **US3 (P3)** depends on US1 (ACP runtime path) and US5 (ability to override `runtime.mode`).
-  - **US4 (P4)** depends on US1 (runtime orchestration) but is otherwise orthogonal; it can proceed in parallel with US2/US3 once Phase 2 is complete.
-- **Polish (Final Phase)**: Depends on all desired user stories being complete; it removes legacy adapters, aligns docs, and validates the integrated system.
+## Validation
 
-### User Story Dependencies
+-
+  T049 \[US2\] Add a real echo-mode integration test in `tests/integration/runtime_acp/test_nate_oha_resume.py` that:
 
-- **User Story 1 (P1)**: Baseline for ACP subprocess launch, session management, and event streaming; no dependencies on other stories beyond Phase 2.
-- **User Story 2 (P2)**: Depends on US1 (ACP session and event framework) and on US5’s command-line/resume wiring; focuses on ACP-owned conversation IDs and resume semantics.
-- **User Story 3 (P3)**: Depends on US1 and US5; ensures echo-mode runs exercise the same ACP code paths as agent mode and retires fake ACP implementations.
-- **User Story 4 (P4)**: Depends on US1; ensures Agent Mail is both real and optional, without affecting core ACP lifecycle.
-- **User Story 5 (P5)**: Shares dependencies with US1; can be developed in parallel but is required for full compliance with the launch architecture in the spec.
+  - creates a session;
+  - emits multiple identifiable events;
+  - persists the session ID;
+  - stops Nate OHA;
+  - relaunches with `--resume`;
+  - receives the prior conversation history;
+  - sends a new prompt;
+  - verifies continuation on the same conversation.
 
-### Within Each User Story
+-
+  T050 \[US2\] Add a runtime-level create → shutdown → resume test in `tests/integration/quickstart/test_nate_oha_swarm_resume.py` covering metadata persistence, agent reconstruction, status, event inspection, and shutdown.
 
-- Write or update tests (T010/T011, T020/T021, etc.) to describe the desired behavior and ensure they FAIL before implementation.
-- Implement adapter/configuration changes next.
-- Integrate with `RuntimeDaemon`, scheduler, and control API where applicable.
-- Confirm the independent test from the spec passes before moving to the next story.
+**Checkpoint**: Conversation identity and durable history are entirely owned by Nate OHA; `nate_ntm` persists only the opaque session ID and transiently projects ACP events.
 
-### Parallel Opportunities
+------------------------------------------------------------------------
 
-- Setup and Foundational tasks touch mostly documentation and can be completed quickly up front.
-- US1 and the configuration portions of US5 can proceed in parallel as long as the ACP launch contract is coordinated.
-- After US1+US5 basics are in place, US2, US3, and US4 can be worked on in parallel by different contributors (they primarily touch different areas: conversations, echo-mode wiring, Agent Mail).
-- Polish tasks (T060–T064) should be deferred until after the new architecture is validating all user stories, to avoid prematurely deleting useful references.
+# Phase 5: User Story 3 — Use One ACP Path for Echo and Agent Modes
 
----
+**Priority**: P3
 
-## Implementation Strategy
+**Goal**: Echo and agent modes use the same process, ACP, event, shutdown, and resume implementation.
 
-### MVP First (User Story 1 + minimal config)
+**Independent test**: Run the same lifecycle once with `runtime.mode=echo` and once with `runtime.mode=agent`; only the configuration differs.
 
-1. Complete Phase 1 (Setup) and Phase 2 (Foundational).
-2. Implement Phase 3 (US1) alongside the minimal configuration support from Phase 7 (enough to pass `--config` and `--resume`).
-3. **Validate**: Run US1 integration tests (T011) to ensure agents launch via `nate-oha acp`, produce ACP events, and shut down cleanly.
+-
+  T060 \[US3\] Remove `FakeAcpClient` and all runtime selection paths that construct it from:
 
-### Incremental Delivery
+  - `src/nate_ntm/runtime/acp_client.py`;
+  - `src/nate_ntm/runtime/adapters.py`;
+  - `src/nate_ntm/config/runtime_config.py`;
+  - `src/nate_ntm/cli.py`.
 
-1. US1 + minimal US5 → MVP ACP launch + supervision.
-2. US2 → Persistent ACP-owned conversations (`session/new` + `--resume`).
-3. US3 → Echo-mode exercising production ACP code paths.
-4. US4 → Optional real Agent Mail integration with clear failure modes.
-5. Remaining US5 tasks → Full base-config-plus-overrides launch model.
-6. Polish phase → Remove legacy adapters, align docs, and finalize E2E validation.
+-
+  T061 \[US3\] Replace binary fake/real ACP adapter selection with Nate OHA runtime mode selection in `src/nate_ntm/config/runtime_config.py`.
+-
+  T062 \[US3\] Update runtime construction in `src/nate_ntm/runtime/adapters.py` or its replacement so all ACP-enabled agents receive `NateOhaAcpClient`, regardless of echo or agent mode.
+-
+  T063 \[US3\] Remove fake-ACP-specific tests and fixtures under `tests/` that simulate conversations, turns, or agent status without launching Nate OHA.
+-
+  T064 \[US3\] Add a shared lifecycle test parametrized across echo and agent modes in `tests/integration/runtime_acp/test_nate_oha_runtime_modes.py`.
 
-### Parallel Team Strategy
+  Agent-mode execution may require configured credentials and should be run through an explicit pytest command or marker, but the default test collection must remain complete and discoverable through:
 
-With multiple contributors:
+  ```
+  uv run pytest
+  ```
+-
+  T065 \[US3\] Remove `OpenHandsAcpClient` and its HTTP-specific tests from:
 
-- After Setup + Foundational:
-  - Developer A: US1 (ACP launch + events) + core US5 CLI/config work.
-  - Developer B: US2 (ACP-owned conversations) + resume semantics.
-  - Developer C: US3 (echo-mode) and US4 (Agent Mail optionality).
-- Coordinate on shared files (`acp_client.py`, `runtime_config.py`, `adapters.py`) to avoid conflicts.
-- Use checkpoints (end of each phase) as points to run the integration/E2E tests and adjust the plan if needed.
+  - `src/nate_ntm/runtime/acp_client.py`;
+  - `tests/unit/runtime/`;
+  - `tests/integration/runtime_acp/`.
 
----
+**Checkpoint**: There is exactly one ACP implementation: `NateOhaAcpClient`. Echo and agent behavior differ only through Nate OHA configuration.
 
-## Notes
+------------------------------------------------------------------------
 
-- `[P]` tasks target different files or logically independent work and can be parallelized when capacity allows.
-- `[USn]` labels map tasks to specific user stories for traceability.
-- Each user story should be independently completable and testable using its acceptance criteria and independent test from the spec.
-- Prefer simplifying or deleting obsolete code and tests (per FR-023/FR-024) over preserving compatibility with the legacy HTTP ACP design.
-- Commit after each task or logical group and keep `specs/005-nate-oha-migration/tasks.md` up to date as new work is discovered.
+# Phase 6: User Story 4 — Optional Real Agent Mail
+
+**Priority**: P4
+
+**Goal**: Agent Mail is absent when disabled and uses only the real `mcp_agent_mail` integration when enabled.
+
+**Independent test**: Run a swarm successfully with Agent Mail disabled, then run an Agent Mail-enabled swarm against a real server and verify project/identity configuration reaches Nate OHA.
+
+## Runtime model
+
+-
+  T070 \[US4\] Replace adapter-kind-based Agent Mail configuration with explicit enabled/disabled semantics in `src/nate_ntm/config/runtime_config.py`.
+-
+  T071 \[US4\] Update runtime adapter construction so:
+
+  - disabled Agent Mail produces no Agent Mail client;
+  - enabled Agent Mail constructs `McpAgentMailClient`;
+  - no fallback or fake implementation exists.
+
+-
+  T072 \[US4\] Remove `FakeAgentMailClient`, its configuration values, and runtime callers from:
+
+  - `src/nate_ntm/runtime/agent_mail_client.py`;
+  - `src/nate_ntm/runtime/adapters.py`;
+  - `src/nate_ntm/config/runtime_config.py`;
+  - `src/nate_ntm/cli.py`.
+
+## Nate OHA configuration
+
+-
+  T073 \[US4\] Update `NateOhaLaunchSpec` so Agent Mail-disabled launches set or inherit:
+
+  ```
+  features.agent_mail.enabled=false
+  ```
+
+  and omit project, identity, credentials, and upstream URL overrides.
+-
+  T074 \[US4\] Update `NateOhaLaunchSpec` so Agent Mail-enabled launches provide:
+
+  ```
+  features.agent_mail.enabled=true
+  features.agent_mail.project=…
+  features.agent_mail.agent_identity=…
+  features.agent_mail.credentials_ref=…
+  features.agent_mail.upstream_url=…
+  ```
+-
+  T075 \[US4\] Update create and resume flows in `src/nate_ntm/runtime/daemon.py` so real Agent Mail project and identity data are established only when Agent Mail is enabled.
+-
+  T076 \[US4\] Ensure Agent Mail connection or registration failures prevent startup only when Agent Mail is enabled and produce actionable runtime errors.
+
+## Validation
+
+-
+  T077 \[P\] \[US4\] Add an Agent Mail-disabled integration test in `tests/integration/runtime_mail/test_agent_mail_disabled.py` proving create, ACP startup, shutdown, and resume work without an Agent Mail server.
+-
+  T078 \[US4\] Add Agent Mail integration tests in `tests/integration/runtime_mail/test_mcp_agent_mail_runtime.py` that require a reachable `mcp_agent_mail` instance and fail clearly when the configured service cannot be contacted.
+-
+  T079 \[US4\] Remove tests that skip or silently fall back when an Agent Mail-dependent test cannot reach the configured real service.
+
+**Checkpoint**: Agent Mail is genuinely optional, but when enabled it is always real.
+
+------------------------------------------------------------------------
+
+# Phase 7: Cross-Cutting Cleanup and Runtime Simplification
+
+**Purpose**: Remove obsolete architecture as part of the migration rather than preserving compatibility indefinitely.
+
+-
+  T080 Remove remaining legacy ACP abstractions, helper methods, comments, and configuration references that describe:
+
+  - HTTP OpenHands ACP;
+  - locally allocated conversations;
+  - turn-centric runtime APIs;
+  - fake ACP implementations.
+
+-
+  T081 Remove remaining fake Agent Mail code, tests, configuration values, and documentation.
+-
+  T082 Remove direct OpenHands or Nate OHA configuration construction from `src/nate_ntm/`; all agent launches must use a base JSON file plus `NateOhaLaunchSpec` overrides.
+-
+  T083 Review `src/nate_ntm/runtime/adapters.py`; either simplify it to construct only real runtime integrations or replace it with a more accurate factory module such as `runtime/integrations.py`.
+-
+  T084 Update runtime state and scheduler code to remove placeholder subprocess handles, transitional status simulation, and code paths no longer reachable after real Nate OHA process supervision is active.
+-
+  T085 Update error types and logging across:
+
+  - `src/nate_ntm/runtime/acp_client.py`;
+  - `src/nate_ntm/runtime/scheduler.py`;
+  - `src/nate_ntm/runtime/daemon.py`;
+  - `src/nate_ntm/runtime/runner.py`;
+
+  so process, ACP, resume, configuration, and Agent Mail failures remain distinguishable and actionable.
+
+**Checkpoint**: No production or test architecture depends on the superseded fake or HTTP ACP models.
+
+------------------------------------------------------------------------
+
+# Phase 8: Documentation and Final Validation
+
+-
+  T090 Update `specs/005-nate-oha-migration/quickstart.md` with:
+
+  - echo-mode startup;
+  - agent-mode startup;
+  - base Nate OHA configuration;
+  - conversation creation and resume;
+  - Agent Mail-disabled operation;
+  - Agent Mail-enabled operation.
+
+-
+  T091 Update `README.md` with the new runtime architecture and link to the Epic 005 quickstart.
+-
+  T092 Update historical specs and guidance that may otherwise mislead implementers, including:
+
+  - `specs/001-swarm-runtime-orchestrator/`;
+  - `specs/002-nate-oha-acp-adapter/`;
+  - `NATE_OHA_GUIDE.md`;
+  - `AGENTS_MK2.md`.
+
+  Preserve history where useful, but clearly identify superseded architecture.
+-
+  T093 Run the complete default suite:
+
+  ```
+  uv run pytest
+  ```
+
+  The default invocation must collect the complete test suite rather than an artificially reduced subset.
+-
+  T094 Run focused echo-mode ACP integration tests:
+
+  ```
+  uv run pytest tests/integration/runtime_acp
+  ```
+-
+  T095 Run Agent Mail integration tests with a real configured service and confirm they fail clearly when the service is unavailable.
+-
+  T096 Run agent-mode integration tests with valid LLM credentials using explicit pytest selection.
+-
+  T097 Add or update a full runtime integration test in `tests/e2e/test_nate_oha_runtime.py` covering:
+
+  ```
+  CLI
+    → RuntimeDaemon
+    → Scheduler
+    → NateOhaAcpClient
+    → nate-oha acp
+    → ACP event stream
+    → runtime API
+    → shutdown
+    → resume
+  ```
+-
+  T098 Record validation results, intentional test removals, and any deferred work in `specs/005-nate-oha-migration/plan_feedback.md`.
+
+------------------------------------------------------------------------
+
+# Dependencies and Execution Order
+
+## Phase dependencies
+
+- Phase 1 is required before protocol implementation.
+- Phase 2 blocks all subsequent runtime work.
+- Phase 3 establishes the real Nate OHA process and ACP path.
+- Phase 4 depends on Phase 3 and adds ACP-owned persistence and resume.
+- Phase 5 depends on Phases 3–4 and removes parallel ACP implementations.
+- Phase 6 depends on the launch specification and real Nate OHA process path, but may otherwise proceed alongside late Phase 4 or Phase 5 work.
+- Phases 7–8 follow the completed migration.
+
+## Parallel work
+
+The following work may proceed concurrently after Phase 2:
+
+- ACP event translation;
+- launch-specification tests;
+- runtime configuration/CLI updates;
+- Agent Mail contract validation;
+- metadata model updates.
+
+Do not mark tasks parallel when they modify the same central modules, especially:
+
+- `src/nate_ntm/runtime/acp_client.py`;
+- `src/nate_ntm/runtime/daemon.py`;
+- `src/nate_ntm/runtime/scheduler.py`;
+- `src/nate_ntm/config/runtime_config.py`.
+
+## Migration checkpoints
+
+### Checkpoint A: Real echo-mode agent
+
+After Phase 3, one echo-mode Nate OHA agent can be launched, prompted, inspected, and stopped through the real ACP stack.
+
+### Checkpoint B: Resume
+
+After Phase 4, the same agent can be stopped and resumed using its ACP-owned conversation ID, with prior conversation history visible through ACP.
+
+### Checkpoint C: Single ACP implementation
+
+After Phase 5, no fake or generic HTTP ACP implementation remains.
+
+### Checkpoint D: Optional real Agent Mail
+
+After Phase 6, swarms work both without Agent Mail and with a real Agent Mail server.
+
+### Checkpoint E: Migration complete
+
+After Phase 8, the runtime operates exclusively through the new Nate OHA architecture and the documented validation scenarios pass.
+
+------------------------------------------------------------------------
+
+# Implementation Guidance
+
+- Prefer maintained libraries over custom protocol or process infrastructure.
+- Use `uv add` for dependencies and `uv run` for project commands.
+- Do not preserve obsolete code or tests merely to maintain compatibility.
+- Prefer a few strong subprocess integration tests over extensive mocked protocol tests.
+- Do not mock ACP framing, session creation, or event transport when echo-mode Nate OHA can exercise the real path.
+- Remove obsolete implementations as their replacements become functional rather than deferring all deletion until the end.
+- Keep ACP protocol models isolated from the scheduler, daemon, and runtime API through explicit translation boundaries.
