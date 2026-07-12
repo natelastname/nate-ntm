@@ -296,27 +296,39 @@ def test_runtime_start_with_control_api_passes_agents_to_runner(monkeypatch, tmp
 
 
 
-def test_runtime_start_forwards_adapter_cli_flags_to_config_loader(monkeypatch, tmp_path: Path) -> None:
-    """Adapter-related CLI flags are forwarded to load_runtime_config.
+def test_runtime_start_forwards_adapter_and_nate_oha_cli_flags_to_config_loader(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """Adapter and Nate OHA-related CLI flags are forwarded to the loader.
 
-    This exercises the T100 wiring from the Typer command down to the
+    This exercises the wiring from the Typer command down to the
     configuration loader without requiring a real runtime or metadata
     store. The runner entrypoint is patched so that the test remains
     side-effect-light.
     """
 
     project = _init_project_without_metadata(tmp_path)
+    nate_oha_config = project / "nate-oha.json"
+    nate_oha_config.write_text("{}", encoding="utf-8")
 
     called: dict[str, object] = {}
 
     class DummyConfig:
         pass
 
-    def fake_load_runtime_config(*, project_path, adapter_mode=None, agent_mail_adapter=None, acp_adapter=None, **kwargs):  # type: ignore[override]
+    def fake_load_runtime_config(
+        *,
+        project_path,
+        adapter_mode=None,
+        agent_mail_adapter=None,
+        acp_adapter=None,
+        **kwargs,
+    ):  # type: ignore[override]
         called["project_path"] = project_path
         called["adapter_mode"] = adapter_mode
         called["agent_mail_adapter"] = agent_mail_adapter
         called["acp_adapter"] = acp_adapter
+        called["extra"] = kwargs
         return DummyConfig()
 
     def fake_run_runtime_with_control_api(config, mode, *args, **kwargs):  # type: ignore[override]
@@ -324,7 +336,10 @@ def test_runtime_start_forwards_adapter_cli_flags_to_config_loader(monkeypatch, 
         called["mode"] = mode
 
     monkeypatch.setattr("nate_ntm.cli.load_runtime_config", fake_load_runtime_config)
-    monkeypatch.setattr("nate_ntm.cli.run_runtime_with_control_api", fake_run_runtime_with_control_api)
+    monkeypatch.setattr(
+        "nate_ntm.cli.run_runtime_with_control_api",
+        fake_run_runtime_with_control_api,
+    )
 
     result = runner.invoke(
         app,
@@ -341,6 +356,16 @@ def test_runtime_start_forwards_adapter_cli_flags_to_config_loader(monkeypatch, 
             "fake-mail",
             "--acp-adapter",
             "fake-acp",
+            "--nate-oha-config",
+            str(nate_oha_config),
+            "--nate-oha-runtime-mode",
+            "echo",
+            "--llm-model",
+            "gpt-cli",
+            "--llm-api-key",
+            "cli-key",
+            "--prompt-soul-content",
+            "Hello from CLI",
             "--with-control-api",
         ],
     )
@@ -350,6 +375,14 @@ def test_runtime_start_forwards_adapter_cli_flags_to_config_loader(monkeypatch, 
     assert called["adapter_mode"] == "fake"
     assert called["agent_mail_adapter"] == "fake-mail"
     assert called["acp_adapter"] == "fake-acp"
+
+    extra = called["extra"]
+    assert extra["nate_oha_config_path"] == nate_oha_config.resolve()
+    assert extra["nate_oha_runtime_mode"] == "echo"
+    assert extra["llm_model"] == "gpt-cli"
+    assert extra["llm_api_key"] == "cli-key"
+    assert extra["prompt_soul_content"] == "Hello from CLI"
+
     assert isinstance(called["config"], DummyConfig)
 
 def test_runtime_start_default_mode_resume_is_applied(tmp_path: Path) -> None:

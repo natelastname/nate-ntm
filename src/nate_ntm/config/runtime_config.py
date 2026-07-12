@@ -105,10 +105,10 @@ class RuntimeConfig:
     """
 
     agent_mail_project: Optional[str] = None
-    """Optional Agent Mail project identifier used for nate_OHA launches.
+    """Optional Agent Mail project identifier used for nate-oha launches.
 
-    This is a swarm-level identifier used when launching nate_OHA with
-    Agent Mail integration enabled. It is resolved by
+    This is a swarm-level identifier used when launching ``nate-oha acp``
+    with Agent Mail integration enabled. It is resolved by
     :func:`load_runtime_config` from, in order of precedence:
 
     * the explicit ``agent_mail_project`` argument
@@ -116,14 +116,15 @@ class RuntimeConfig:
     * ``AGENT_MAIL_PROJECT``
 
     When an agent has ``AgentMetadata.agent_mail_identity`` configured,
-    the nate_OHA ACP adapter requires this field to be non-empty and will
-    raise :class:`AcpClientError` if it is missing.
+    this field must be non-empty; launching nate-oha with Agent Mail
+    enabled but without a project identifier is considered a
+    misconfiguration and may cause the runtime to fail agent startup.
     """
 
     agent_mail_upstream_url: Optional[str] = None
-    """Optional Agent Mail upstream URL used for nate_OHA launches.
+    """Optional Agent Mail upstream URL used for nate-oha launches.
 
-    The URL of the upstream Agent Mail MCP endpoint that nate_OHA should
+    The URL of the upstream Agent Mail MCP endpoint that nate-oha should
     connect to when Agent Mail integration is enabled. It is resolved by
     :func:`load_runtime_config` from, in order of precedence:
 
@@ -132,6 +133,45 @@ class RuntimeConfig:
     * ``AGENT_MAIL_UPSTREAM_URL``
     * ``AGENT_MAIL_URL`` (legacy/compatibility alias)
     """
+
+    nate_oha_executable: str = "nate-oha"
+    """Executable used to launch Nate OHA (for example, ``"nate-oha"``)."""
+
+    nate_oha_config_path: Path | None = None
+    """Optional base Nate OHA JSON configuration file passed via ``--config``.
+
+    When :data:`None`, higher-level components are responsible for selecting a
+    suitable default or refusing to launch until one is provided.
+    """
+
+    nate_oha_runtime_mode: str | None = None
+    """Optional default Nate OHA ``runtime.mode`` (for example, ``"echo"``).
+
+    When :data:`None`, the adapter layer may select a mode-specific default
+    based on the current feature or test scenario.
+    """
+
+    llm_model: str | None = None
+    """Optional default model identifier supplied via ``llm.model`` overrides."""
+
+    llm_api_key: str | None = None
+    """Optional API key for the configured LLM (``llm.api_key``).
+
+    In most environments this should be provided via a process environment
+    variable rather than a command-line option for security reasons.
+    """
+
+    prompt_soul_content: str | None = None
+    """Optional ``prompt.soul_content`` override for Nate OHA launches."""
+
+    agent_mail_enabled: bool | None = None
+    """Optional flag indicating whether Agent Mail integration is enabled.
+
+    When :data:`None`, Agent Mail enablement is left to higher-level
+    defaults. When :data:`True` or :data:`False`, this value is used
+    directly by adapter construction and Nate OHA launch helpers.
+    """
+
 
 
 def load_runtime_config(
@@ -146,6 +186,13 @@ def load_runtime_config(
     acp_adapter: Optional[Union[str, AdapterKind]] = None,
     agent_mail_project: Optional[str] = None,
     agent_mail_upstream_url: Optional[str] = None,
+    nate_oha_executable: Optional[str] = None,
+    nate_oha_config_path: Optional[Path | str] = None,
+    nate_oha_runtime_mode: Optional[str] = None,
+    llm_model: Optional[str] = None,
+    llm_api_key: Optional[str] = None,
+    prompt_soul_content: Optional[str] = None,
+    agent_mail_enabled: Optional[bool] = None,
     env: Optional[Mapping[str, str]] = None,
 ) -> RuntimeConfig:
     """Construct :class:`RuntimeConfig` from arguments and environment.
@@ -179,9 +226,16 @@ def load_runtime_config(
     * ``NATE_NTM_ACP_ADAPTER`` – ACP adapter override
     * ``NATE_NTM_AGENT_MAIL_PROJECT`` – Agent Mail project identifier
     * ``NATE_NTM_AGENT_MAIL_URL`` – Agent Mail upstream URL (MCP endpoint)
+    * ``NATE_NTM_NATE_OHA_EXECUTABLE`` – Nate OHA executable name/path
+    * ``NATE_NTM_NATE_OHA_CONFIG`` – base Nate OHA JSON config (``--config``)
+    * ``NATE_NTM_NATE_OHA_RUNTIME_MODE`` – default Nate OHA ``runtime.mode``
+    * ``NATE_NTM_LLM_MODEL`` – default model identifier (``llm.model``)
+    * ``NATE_NTM_LLM_API_KEY`` – API key for the configured LLM (``llm.api_key``)
+    * ``NATE_NTM_PROMPT_SOUL_CONTENT`` – ``prompt.soul_content`` override
+    * ``NATE_NTM_AGENT_MAIL_ENABLED`` – explicit Agent Mail enabled/disabled flag
 
-    For compatibility with existing Agent Mail tooling, the loader also
-    honors the following when :class:`NateOhaAcpClient` is used:
+    In addition to the ``NATE_NTM_*`` variables, the loader also honors
+    the following Agent Mail compatibility variables as fallbacks:
 
     * ``AGENT_MAIL_PROJECT`` – fallback source for the project identifier
     * ``AGENT_MAIL_UPSTREAM_URL`` – fallback source for the upstream URL
@@ -234,6 +288,32 @@ def load_runtime_config(
     resolved_agent_mail_upstream = _resolve_agent_mail_upstream_url(
         agent_mail_upstream_url, env_mapping
     )
+    resolved_nate_oha_executable = _resolve_nate_oha_executable(
+        nate_oha_executable, env_mapping
+    )
+    resolved_nate_oha_config_path = _resolve_nate_oha_config_path(
+        nate_oha_config_path, resolved_project_path, env_mapping
+    )
+    resolved_nate_oha_runtime_mode = _resolve_optional_str_option(
+        nate_oha_runtime_mode,
+        env_mapping.get("NATE_NTM_NATE_OHA_RUNTIME_MODE"),
+    )
+    resolved_llm_model = _resolve_optional_str_option(
+        llm_model,
+        env_mapping.get("NATE_NTM_LLM_MODEL"),
+    )
+    resolved_llm_api_key = _resolve_optional_str_option(
+        llm_api_key,
+        env_mapping.get("NATE_NTM_LLM_API_KEY"),
+    )
+    resolved_prompt_soul_content = _resolve_optional_str_option(
+        prompt_soul_content,
+        env_mapping.get("NATE_NTM_PROMPT_SOUL_CONTENT"),
+    )
+    resolved_agent_mail_enabled = _resolve_agent_mail_enabled_option(
+        agent_mail_enabled,
+        env_mapping,
+    )
 
     return RuntimeConfig(
         project_path=resolved_project_path,
@@ -246,6 +326,13 @@ def load_runtime_config(
         acp_adapter=resolved_acp_adapter,
         agent_mail_project=resolved_agent_mail_project,
         agent_mail_upstream_url=resolved_agent_mail_upstream,
+        nate_oha_executable=resolved_nate_oha_executable,
+        nate_oha_config_path=resolved_nate_oha_config_path,
+        nate_oha_runtime_mode=resolved_nate_oha_runtime_mode,
+        llm_model=resolved_llm_model,
+        llm_api_key=resolved_llm_api_key,
+        prompt_soul_content=resolved_prompt_soul_content,
+        agent_mail_enabled=resolved_agent_mail_enabled,
     )
 
 
@@ -461,4 +548,115 @@ def _resolve_agent_mail_upstream_url(
     )
     value = raw.strip()
     return value or None
+
+
+
+def _resolve_nate_oha_executable(
+    executable: Optional[str], env: Mapping[str, str]
+) -> str:
+    """Resolve the Nate OHA executable from args/env.
+
+    The precedence order is:
+
+    * explicit ``nate_oha_executable`` argument
+    * ``NATE_NTM_NATE_OHA_EXECUTABLE`` environment variable
+    * hard-coded default ``"nate-oha"``
+    """
+
+    if executable is not None:
+        value = executable.strip()
+        return value or "nate-oha"
+
+    raw = env.get("NATE_NTM_NATE_OHA_EXECUTABLE", "nate-oha")
+    value = raw.strip()
+    return value or "nate-oha"
+
+
+
+def _resolve_nate_oha_config_path(
+    config_path: Optional[Path | str], project_path: Path, env: Mapping[str, str]
+) -> Path | None:
+    """Resolve the base Nate OHA JSON config path from args/env.
+
+    The precedence order is:
+
+    * explicit ``nate_oha_config_path`` argument
+    * ``NATE_NTM_NATE_OHA_CONFIG`` environment variable
+
+    When a relative path is provided, it is interpreted as relative to the
+    resolved project directory so that tests and simple projects can use
+    project-local configuration files.
+    """
+
+    raw: Optional[Path | str] = config_path
+    if raw is None:
+        env_value = env.get("NATE_NTM_NATE_OHA_CONFIG")
+        if env_value:
+            raw = env_value
+
+    if raw is None:
+        return None
+
+    path = Path(raw)
+    if not path.is_absolute():
+        path = (project_path / path).resolve()
+    else:
+        path = path.expanduser().resolve()
+    return path
+
+
+
+def _resolve_optional_str_option(
+    value: Optional[str], env_value: Optional[str]
+) -> Optional[str]:
+    """Resolve an optional string configuration field from args/env.
+
+    ``value`` (an explicit function argument) wins over ``env_value`` (from the
+    environment). Empty strings are normalized to :data:`None`.
+    """
+
+    if value is not None:
+        v = value.strip()
+        return v or None
+
+    if env_value is None:
+        return None
+
+    v = env_value.strip()
+    return v or None
+
+
+
+def _parse_bool(raw: str, *, field_name: str) -> bool:
+    """Parse a boolean value from a string with helpful errors."""
+
+    normalized = raw.strip().lower()
+    if normalized in {"1", "true", "yes", "y", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "n", "off"}:
+        return False
+
+    raise ValueError(f"Invalid boolean value for {field_name}: {raw!r}")
+
+
+
+def _resolve_agent_mail_enabled_option(
+    value: Optional[bool], env: Mapping[str, str]
+) -> Optional[bool]:
+    """Resolve the optional Agent Mail enabled flag from args/env.
+
+    ``value`` (an explicit function argument) wins over the
+    ``NATE_NTM_AGENT_MAIL_ENABLED`` environment variable. When neither is
+    provided, :data:`None` is returned so that higher-level components can
+    apply their own defaults.
+    """
+
+    if isinstance(value, bool):
+        return value
+
+    raw = env.get("NATE_NTM_AGENT_MAIL_ENABLED")
+    if raw is None:
+        return None
+
+    return _parse_bool(raw, field_name="env:agent_mail_enabled")
 

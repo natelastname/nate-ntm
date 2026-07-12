@@ -39,6 +39,7 @@ from .metadata_store import AgentMetadata, MetadataStore
 __all__ = [
     "AcpClientError",
     "AcpAgentStatus",
+    "AcpAgentSession",
     "BaseAcpClient",
     "FakeAcpClient",
     "OpenHandsAcpClient",
@@ -76,6 +77,73 @@ class AcpAgentStatus:
     """Number of restarts attempted for this agent, when tracked."""
 
 
+
+@dataclass(slots=True)
+class AcpAgentSession:
+    """Runtime-owned state for a live ACP-backed agent session.
+
+    This structure captures the resources and identifiers needed to
+    supervise a single Nate OHA / ACP session from the runtime's
+    perspective. It is intentionally narrow and does not expose ACP SDK
+    types directly; concrete adapters such as :class:`NateOhaAcpClient`
+    are responsible for storing whatever rich SDK objects are required
+    in the opaque ``process``, ``connection``, and ``protocol_client``
+    fields.
+
+    The fields are aligned with the active-session model described in
+    ``specs/005-nate-oha-migration/spec-appendix-B.md`` and the T017
+    task in ``tasks.md``.
+    """
+
+    agent_id: str
+    """Identifier of the agent this session belongs to."""
+
+    conversation_id: str
+    """Opaque, ACP-owned conversation/session identifier.
+
+    The runtime treats this as an opaque token obtained from Nate OHA
+    (for example via ``session/new``) and persists it only for resume
+    and correlation purposes.
+    """
+
+    process: Any
+    """Process or process-group handle used for supervision.
+
+    In early implementations this may be a :class:`subprocess.Popen`
+    instance; longer term it is expected to be a small adapter type such
+    as ``AgentProcess``.
+    """
+
+    connection: Any
+    """Client-side ACP connection handle.
+
+    This will typically be an instance of the ACP SDK's
+    ``ClientSideConnection`` type once the integration is wired in.
+    """
+
+    protocol_client: Any
+    """Callback client responsible for translating ACP events.
+
+    Concrete implementations are expected to store a
+    ``NateNtmAcpProtocolClient``-like object here, which exposes methods
+    such as ``session_update(...)`` and emits :class:`AgentEvent`
+    instances into the runtime.
+    """
+
+    status: str = "starting"
+    """Adapter-level lifecycle status for this session.
+
+    Typical values include ``"starting"``, ``"running"``,
+    ``"stopping"``, ``"terminated"``, and ``"failed"``.
+    """
+
+    stderr_task: Any | None = None
+    """Background task responsible for draining stderr diagnostics."""
+
+    exit_monitor_task: Any | None = None
+    """Background task responsible for monitoring process exit."""
+
+
 @dataclass(slots=True)
 class NateOhaProcessRecord:
     """In-memory supervision record for a nate_OHA subprocess.
@@ -100,13 +168,28 @@ class BaseAcpClient:
     Implementations are responsible for:
 
     * Owning ACP/runtime lifecycle for managed agents (process launch,
-      readiness checks, shutdown, and status reporting).
-    * Ensuring a per-agent control-protocol conversation exists and
-      returning an opaque identifier for it.
-    * Starting new "turns" of work for agents and surfacing their
-      identifiers back to the runtime.
-    * Optionally emitting :class:`AgentEvent` instances via the
-      :attr:`on_event` callback.
+      ACP session initialization, shutdown, and status reporting).
+    * Providing an agent-centric interface to ACP that can be driven
+      from the runtime scheduler and daemon.
+
+    Long-term, the public contract is expected to be expressed in terms
+    of asynchronous, agent-lifecycle operations (see T016 in
+    ``specs/005-nate-oha-migration/tasks.md``). The initial
+    implementation exposes these via ``*_async`` methods so they can
+    coexist with the pre-existing synchronous API during the migration:
+
+    .. code-block:: python
+
+        async def start_agent_async(...)
+        async def prompt(...)
+        async def interrupt(...)
+        async def stop_agent_async(...)
+        def get_status(...)
+
+    The legacy conversation/turn helpers :meth:`ensure_conversation`
+    and :meth:`start_turn` remain available for backwards-compatibility
+    with existing adapters and tests, but new runtime code should
+    prefer the agent-lifecycle operations above.
 
     Concrete implementations are expected to be **runtime-owned** and
     reused for the lifetime of the process.
@@ -121,11 +204,13 @@ class BaseAcpClient:
     # implementations *must* override them.
 
     def ensure_conversation(self, agent_id: str) -> str:  # pragma: no cover - abstract
-        """Ensure a control-protocol conversation exists for ``agent_id``.
+        """[Legacy] Ensure a control-protocol conversation exists for ``agent_id``.
 
-        The returned string is an opaque conversation identifier. The
-        method must be **idempotent**: repeated calls for the same
-        ``agent_id`` MUST return the same conversation ID.
+        This helper is part of the pre–Epic 005, conversation-centric
+        contract. It is retained solely for compatibility with existing
+        adapters and tests. New runtime code should prefer the
+        agent-lifecycle API described in :class:`BaseAcpClient`'s
+        docstring instead of calling this method directly.
         """
 
         raise NotImplementedError
@@ -137,18 +222,68 @@ class BaseAcpClient:
         synchronously here (for example, spawning a subprocess and
         performing an initial health check) as long as they satisfy the
         process launch contract described in the feature spec.
+
+        Longer term this operation is expected to be expressed as an
+        asynchronous agent-lifecycle method (see T016); this synchronous
+        variant remains the stable API until the async interface is
+        introduced and call sites are migrated.
         """
 
         raise NotImplementedError
 
     def start_turn(self, agent_id: str, prompt: str | None = None) -> str:  # pragma: no cover - abstract
-        """Start a new ACP turn for ``agent_id`` and return its ID.
+        """[Legacy] Start a new ACP turn for ``agent_id`` and return its ID.
 
-        The exact semantics of a "turn" are defined by the ACP spec and
-        the concrete implementation. The fake client simply allocates a
-        monotonically increasing identifier per agent. The optional
-        ``prompt`` parameter is accepted for compatibility with adapters
-        that initiate work based on an explicit prompt.
+        This helper is part of the pre–Epic 005, turn-centric contract
+        and is retained solely for compatibility with existing adapters
+        and tests. New ACP integrations should expose prompt/interrupt
+        operations through the agent-lifecycle API described in
+        :class:`BaseAcpClient` rather than adding new turn-based call
+        sites.
+        """
+
+        raise NotImplementedError
+
+    # ------------------------------------------------------------------
+    # Agent-lifecycle async API (T016)
+    # ------------------------------------------------------------------
+
+    async def start_agent_async(self, agent_id: str, *, metadata: AgentMetadata) -> None:  # pragma: no cover - abstract
+        """Asynchronously launch or attach to the ACP runtime for ``agent_id``.
+
+        Implementations SHOULD override this method to provide an
+        awaitable agent-lifecycle entrypoint. The default implementation
+        delegates to :meth:`start_agent` so that existing synchronous
+        adapters remain usable during the migration.
+        """
+
+        self.start_agent(agent_id, metadata=metadata)
+
+    async def stop_agent_async(self, agent_id: str, *, timeout: float) -> None:  # pragma: no cover - abstract
+        """Asynchronously request a graceful stop for the ACP runtime.
+
+        Implementations SHOULD override this method to provide an
+        awaitable shutdown helper. The default implementation delegates
+        to :meth:`stop_agent`.
+        """
+
+        self.stop_agent(agent_id, timeout=timeout)
+
+    async def prompt(self, agent_id: str, prompt: str | None = None) -> str | None:  # pragma: no cover - abstract
+        """Asynchronously prompt the agent and return an adapter-defined ID.
+
+        Concrete implementations are expected to map this onto the
+        appropriate ACP operation for initiating new work. For legacy
+        adapters this may delegate to :meth:`start_turn`.
+        """
+
+        raise NotImplementedError
+
+    async def interrupt(self, agent_id: str) -> None:  # pragma: no cover - abstract
+        """Request cancellation or interruption of in-flight work for ``agent_id``.
+
+        The exact behavior is adapter-specific and may be a no-op for
+        simple dev-mode implementations.
         """
 
         raise NotImplementedError
@@ -275,6 +410,46 @@ class FakeAcpClient(BaseAcpClient):
             last_error=None,
             restart_count=0,
         )
+
+    # ------------------------------------------------------------------
+    # Agent-lifecycle async API shims
+    # ------------------------------------------------------------------
+
+    async def start_agent_async(self, agent_id: str, *, metadata: AgentMetadata) -> None:
+        """Async shim for :meth:`start_agent`.
+
+        The fake adapter performs all work synchronously, so this simply
+        delegates to :meth:`start_agent` and returns immediately.
+        """
+
+        self.start_agent(agent_id, metadata=metadata)
+
+    async def stop_agent_async(self, agent_id: str, *, timeout: float) -> None:
+        """Async shim for :meth:`stop_agent`.
+
+        This helper delegates directly to :meth:`stop_agent`.
+        """
+
+        self.stop_agent(agent_id, timeout=timeout)
+
+    async def prompt(self, agent_id: str, prompt: str | None = None) -> str | None:
+        """Async shim that delegates to :meth:`start_turn`.
+
+        The returned string is the fake turn identifier allocated by
+        :meth:`start_turn`.
+        """
+
+        return self.start_turn(agent_id, prompt=prompt)
+
+    async def interrupt(self, agent_id: str) -> None:
+        """No-op interrupt for the fake adapter.
+
+        The in-memory implementation does not model in-flight work, so
+        interrupt is a no-op.
+        """
+
+        return None
+
 
 
 @dataclass(slots=True)
@@ -466,6 +641,48 @@ class OpenHandsAcpClient(BaseAcpClient):
         """
 
         return AcpAgentStatus(agent_id=agent_id, state="unknown")
+
+    # ------------------------------------------------------------------
+    # Agent-lifecycle async API shims
+    # ------------------------------------------------------------------
+
+    async def start_agent_async(self, agent_id: str, *, metadata: AgentMetadata) -> None:
+        """Async shim for :meth:`start_agent`.
+
+        The HTTP adapter does not manage a local subprocess, so this
+        helper simply delegates to :meth:`start_agent` (which is a
+        no-op beyond ensuring a conversation exists).
+        """
+
+        self.start_agent(agent_id, metadata=metadata)
+
+    async def stop_agent_async(self, agent_id: str, *, timeout: float) -> None:
+        """Async shim for :meth:`stop_agent`.
+
+        This helper delegates directly to :meth:`stop_agent`.
+        """
+
+        self.stop_agent(agent_id, timeout=timeout)
+
+    async def prompt(self, agent_id: str, prompt: str | None = None) -> str | None:
+        """Start a new run for ``agent_id`` and return its run ID.
+
+        This async helper delegates to :meth:`start_turn` so that new
+        runtime code can use the agent-lifecycle API while the underlying
+        adapter continues to use the thread/run HTTP surface.
+        """
+
+        return self.start_turn(agent_id, prompt=prompt)
+
+    async def interrupt(self, agent_id: str) -> None:
+        """Best-effort interrupt for in-flight work.
+
+        The legacy HTTP adapter does not currently expose an explicit
+        interrupt surface, so this helper is a no-op.
+        """
+
+        return None
+
 
     # ------------------------------------------------------------------
     # Low-level HTTP helpers

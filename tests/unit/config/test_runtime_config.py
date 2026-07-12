@@ -41,6 +41,35 @@ def test_load_runtime_config_basic_defaults(tmp_path: Path) -> None:
 
 
 
+def test_load_runtime_config_nate_oha_and_llm_defaults(tmp_path: Path) -> None:
+    """New Nate OHA and LLM-related fields have sensible defaults.
+
+    This exercises the additional configuration surface introduced for the
+    Nate OHA ACP integration (Epic 005) without requiring any environment
+    variables or explicit arguments.
+    """
+
+    project_dir = tmp_path / "project_nate_oha_defaults"
+    project_dir.mkdir()
+
+    config = load_runtime_config(project_path=project_dir)
+
+    # Nate OHA-related defaults
+    assert config.nate_oha_executable == "nate-oha"
+    assert config.nate_oha_config_path is None
+    assert config.nate_oha_runtime_mode is None
+
+    # LLM / prompt defaults
+    assert config.llm_model is None
+    assert config.llm_api_key is None
+    assert config.prompt_soul_content is None
+
+    # Agent Mail enablement flag defaults to "unspecified" so that
+    # higher-level components can apply their own behavior.
+    assert config.agent_mail_enabled is None
+
+
+
 
 def test_load_runtime_config_adapter_mode_and_overrides_from_env(tmp_path: Path) -> None:
     """Adapter selection fields can be driven from environment variables.
@@ -153,6 +182,90 @@ def test_load_runtime_config_metadata_dir_validation(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError):
         load_runtime_config(project_path=project_dir, metadata_dir=metadata_outside)
+
+
+
+def test_load_runtime_config_nate_oha_fields_from_env(tmp_path: Path) -> None:
+    """Nate OHA and LLM fields can be driven entirely from the environment."""
+
+    project_dir = tmp_path / "project_nate_oha_env"
+    project_dir.mkdir()
+
+    env = {
+        "NATE_NTM_PROJECT_DIR": str(project_dir),
+        "NATE_NTM_NATE_OHA_EXECUTABLE": "nate-oha",
+        "NATE_NTM_NATE_OHA_CONFIG": "config/base.json",
+        "NATE_NTM_NATE_OHA_RUNTIME_MODE": "echo",
+        "NATE_NTM_LLM_MODEL": "gpt-test-1",
+        "NATE_NTM_LLM_API_KEY": "secret-key",
+        "NATE_NTM_PROMPT_SOUL_CONTENT": "Hello from env",
+        "NATE_NTM_AGENT_MAIL_ENABLED": "true",
+    }
+
+    config = load_runtime_config(env=env)
+
+    assert config.project_path == project_dir.resolve()
+    assert config.nate_oha_executable == "nate-oha"
+    assert config.nate_oha_config_path == (project_dir / "config/base.json").resolve()
+    assert config.nate_oha_runtime_mode == "echo"
+    assert config.llm_model == "gpt-test-1"
+    assert config.llm_api_key == "secret-key"
+    assert config.prompt_soul_content == "Hello from env"
+    assert config.agent_mail_enabled is True
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        ("1", True),
+        ("true", True),
+        ("TRUE", True),
+        ("yes", True),
+        ("on", True),
+        ("0", False),
+        ("false", False),
+        ("FALSE", False),
+        ("no", False),
+        ("off", False),
+    ],
+)
+def test_load_runtime_config_agent_mail_enabled_env_parsing(
+    tmp_path: Path, raw: str, expected: bool
+) -> None:
+    """Boolean Agent Mail enabled flag is parsed from a variety of forms."""
+
+    project_dir = tmp_path / "agent_mail_enabled_env"
+    project_dir.mkdir()
+
+    env = {
+        "NATE_NTM_PROJECT_DIR": str(project_dir),
+        "NATE_NTM_AGENT_MAIL_ENABLED": raw,
+    }
+
+    config = load_runtime_config(env=env)
+
+    assert config.agent_mail_enabled is expected
+
+
+@pytest.mark.parametrize("raw", ["", "2", "maybe", "truthy"])
+def test_load_runtime_config_agent_mail_enabled_invalid_env_raises(
+    tmp_path: Path, raw: str
+) -> None:
+    """Invalid boolean strings for the enabled flag raise ValueError."""
+
+    project_dir = tmp_path / "agent_mail_enabled_invalid"
+    project_dir.mkdir()
+
+    env = {
+        "NATE_NTM_PROJECT_DIR": str(project_dir),
+        "NATE_NTM_AGENT_MAIL_ENABLED": raw,
+    }
+
+    with pytest.raises(ValueError) as excinfo:
+        load_runtime_config(env=env)
+
+    msg = str(excinfo.value)
+    assert "env:agent_mail_enabled" in msg
 
 
 def test_load_runtime_config_uses_environment_when_args_missing(tmp_path: Path) -> None:

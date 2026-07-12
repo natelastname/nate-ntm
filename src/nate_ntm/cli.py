@@ -60,13 +60,18 @@ def _resolve_runtime_config(
     adapter_mode: Optional[str] = None,
     agent_mail_adapter: Optional[str] = None,
     acp_adapter: Optional[str] = None,
+    nate_oha_config: Optional[Path] = None,
+    nate_oha_runtime_mode: Optional[str] = None,
+    llm_model: Optional[str] = None,
+    llm_api_key: Optional[str] = None,
+    prompt_soul_content: Optional[str] = None,
 ) -> RuntimeConfig:
     """Resolve a RuntimeConfig from CLI options.
 
     For now we require an explicit `--project` path to keep behavior
-    simple and predictable. Adapter-related options are forwarded to
-    :func:`load_runtime_config`, which is responsible for validating and
-    normalizing them.
+    simple and predictable. Adapter-related options and the small set of
+    Nate OHA launch-related options are forwarded to :func:`load_runtime_config`,
+    which is responsible for validating and normalizing them.
     """
 
     return load_runtime_config(
@@ -74,6 +79,11 @@ def _resolve_runtime_config(
         adapter_mode=adapter_mode,
         agent_mail_adapter=agent_mail_adapter,
         acp_adapter=acp_adapter,
+        nate_oha_config_path=nate_oha_config,
+        nate_oha_runtime_mode=nate_oha_runtime_mode,
+        llm_model=llm_model,
+        llm_api_key=llm_api_key,
+        prompt_soul_content=prompt_soul_content,
     )
 
 
@@ -121,6 +131,45 @@ def runtime_start(
             "Defaults to the value of --adapter-mode when omitted."
         ),
     ),
+    nate_oha_config: Optional[Path] = typer.Option(
+        None,
+        "--nate-oha-config",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        resolve_path=True,
+        help=(
+            "Base Nate OHA JSON configuration file to pass to `nate-oha acp` "
+            "via --config."
+        ),
+    ),
+    nate_oha_runtime_mode: Optional[str] = typer.Option(
+        None,
+        "--nate-oha-runtime-mode",
+        help=(
+            "Default Nate OHA runtime.mode for agents (for example, 'echo' "
+            "or 'agent')."
+        ),
+    ),
+    llm_model: Optional[str] = typer.Option(
+        None,
+        "--llm-model",
+        help="Default LLM model identifier to pass as llm.model to Nate OHA.",
+    ),
+    llm_api_key: Optional[str] = typer.Option(
+        None,
+        "--llm-api-key",
+        envvar="NATE_NTM_LLM_API_KEY",
+        help=(
+            "API key for the configured LLM (llm.api_key). Prefer the "
+            "environment variable for production setups."
+        ),
+    ),
+    prompt_soul_content: Optional[str] = typer.Option(
+        None,
+        "--prompt-soul-content",
+        help="Override prompt.soul_content passed to Nate OHA.",
+    ),
     with_control_api: bool = typer.Option(
         False,
         "--with-control-api",
@@ -148,6 +197,11 @@ def runtime_start(
         adapter_mode=adapter_mode,
         agent_mail_adapter=agent_mail_adapter,
         acp_adapter=acp_adapter,
+        nate_oha_config=nate_oha_config,
+        nate_oha_runtime_mode=nate_oha_runtime_mode,
+        llm_model=llm_model,
+        llm_api_key=llm_api_key,
+        prompt_soul_content=prompt_soul_content,
     )
 
     # Map CLI startup mode onto the runtime's StartupMode enum.

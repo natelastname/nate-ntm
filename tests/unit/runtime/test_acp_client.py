@@ -229,6 +229,44 @@ def test_fake_acp_client_start_turn_emits_event_when_callback_configured(tmp_pat
     assert event.payload["prompt"] == "hello world"
 
 
+
+@pytest.mark.asyncio
+async def test_fake_acp_client_async_lifecycle_shims(tmp_path: Path) -> None:
+    """Async lifecycle helpers delegate to the synchronous FakeAcpClient API.
+
+    This covers the transitional ``*_async`` and ``prompt``/``interrupt``
+    methods added for T016 so that new runtime code can rely on an
+    awaitable agent-lifecycle interface while legacy call sites continue
+    to use the synchronous methods.
+    """
+
+    client = _make_fake_client(tmp_path)
+
+    # Before an agent is started, status should default to ``idle``.
+    status_before = client.get_status("agent-1")
+    assert status_before.state == "idle"
+
+    # ``start_agent_async`` should delegate to ``start_agent``.
+    meta = AgentMetadata(agent_id="agent-1", display_name="Agent One")
+    await client.start_agent_async("agent-1", metadata=meta)
+
+    status_running = client.get_status("agent-1")
+    assert status_running.state == "running"
+
+    # ``prompt`` should delegate to ``start_turn`` and return a turn ID.
+    turn_id = await client.prompt("agent-1", prompt="hello async")
+    assert isinstance(turn_id, str)
+    assert turn_id.startswith("fake-turn:agent-1:")
+
+    # ``interrupt`` is a no-op for the fake adapter but must be awaitable.
+    await client.interrupt("agent-1")
+
+    # ``stop_agent_async`` should delegate to ``stop_agent`` and update status.
+    await client.stop_agent_async("agent-1", timeout=1.0)
+    status_stopped = client.get_status("agent-1")
+    assert status_stopped.state == "terminated"
+
+
 def test_openhands_acp_client_ensures_stable_conversation_ids(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """OpenHands client returns stable conversation IDs per agent.
 
@@ -261,6 +299,40 @@ def test_openhands_acp_client_ensures_stable_conversation_ids(monkeypatch: pytes
     conv3 = client2.ensure_conversation("agent-1")
     assert conv3 == conv1
 
+
+
+
+@pytest.mark.asyncio
+async def test_openhands_acp_client_async_lifecycle_shims(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Async lifecycle helpers delegate to the HTTP adapter primitives.
+
+    This mirrors the FakeAcpClient coverage for T016 but exercises the
+    OpenHands HTTP adapter using the stubbed ``_request`` implementation.
+    """
+
+    client = _make_openhands_client(tmp_path, monkeypatch)
+
+    # ``start_agent_async`` should be a no-op beyond ensuring a conversation.
+    meta = AgentMetadata(agent_id="agent-1", display_name="Agent One")
+    await client.start_agent_async("agent-1", metadata=meta)
+
+    # ``prompt`` should delegate to ``start_turn`` and return a run_id from
+    # the stubbed HTTP layer.
+    run_id = await client.prompt("agent-1")
+    assert run_id == "run-123"
+
+    calls = getattr(client, "_test_calls")
+    # One call to /threads from ensure_conversation and one to /runs.
+    assert len(calls) == 2
+    methods_paths = [(m, p) for (m, p, _body, _name) in calls]
+    assert methods_paths[0] == ("POST", "/threads")
+    assert methods_paths[1][0] == "POST"
+    assert methods_paths[1][1].startswith("/threads/") and methods_paths[1][1].endswith("/runs")
+
+    # ``interrupt`` and ``stop_agent_async`` are defined and awaitable but
+    # currently act as no-ops for this legacy HTTP adapter.
+    await client.interrupt("agent-1")
+    await client.stop_agent_async("agent-1", timeout=1.0)
 
 
 def test_nate_oha_acp_client_start_and_stop_update_status(
