@@ -1,3 +1,17 @@
+
+# RULES
+
+1. DO NOT waste your time on updating documentation files unless you are ordered to do so.
+2. **[IMPORTANT]** This project uses a `uv`-managed virtual environment
+   - DO NOT run `pytest` directly; Use `uv run pytest ...` to run pytest.
+   - DO NOT run `pip install ...` directly; Use `uv add ...`
+3. DO NOT gate tests behind environment variable checks. 
+4. DO NOT try to minimize dependencies for CI. That is NOT a requirement of the project.
+5. DO assume that the environment is set up correctly 
+   - ALWAYS assume `nate-oha` is installed
+   - ALWAYS assume `mcp_agent_mail` is running on `127.0.0.1`
+   - **IF ANY OF THESE PREREQS ARE NOT MET, TEST MUST FAIL.**
+
 # Agent Discipline and Spec-kit Workflows
 
 When working in this repository, organize multi-step work around

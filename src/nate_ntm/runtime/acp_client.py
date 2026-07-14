@@ -5,17 +5,10 @@ for agents in a swarm. This module defines the
 :class:`BaseAcpClient` abstraction that the runtime and scheduler use to
 interact with ACP-backed agent runtimes.
 
-Concrete implementations in this branch are:
+Concrete implementation in this branch:
 
-* :class:`FakeAcpClient` – an in-memory, dev-mode implementation used in
-  unit/integration tests that simulates conversations and turn
-  identifiers without performing any network I/O.
-* :class:`OpenHandsAcpClient` – a legacy HTTP adapter that speaks the
-  OpenHands-compatible ACP server surface and is retained for
-  compatibility and potential OpenHands-focused integrations.
 * :class:`NateOhaAcpClient` – the nate_OHA-backed ACP adapter used as the
-  canonical ``AdapterKind.REAL`` implementation for the nate_ntm
-  runtime.
+  canonical implementation for the nate_ntm runtime in all modes.
 """
 
 from __future__ import annotations
@@ -27,13 +20,9 @@ import logging
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator, Callable, Dict, Mapping, Optional, Literal, Set
 
-import json
 import os
-import re
 import subprocess
 import uuid
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
 
 from acp.meta import PROTOCOL_VERSION
 from acp.schema import TextContentBlock
@@ -51,8 +40,6 @@ __all__ = [
     "AcpAgentStatus",
     "AcpAgentSession",
     "BaseAcpClient",
-    "FakeAcpClient",
-    "OpenHandsAcpClient",
     "NateOhaAcpClient",
     "next_matching_event",
 ]
@@ -247,10 +234,13 @@ class BaseAcpClient:
         async def stop_agent_async(...)
         def get_status(...)
 
-    The legacy conversation/turn helpers :meth:`ensure_conversation`
-    and :meth:`start_turn` remain available for backwards-compatibility
-    with existing adapters and tests, but new runtime code should
-    prefer the agent-lifecycle operations above.
+    Earlier iterations of the ACP client exposed additional
+    conversation/turn helpers such as ``ensure_conversation`` and
+    ``start_turn``. These have been superseded by the agent-centric
+    async lifecycle above (see Epic 005) and are no longer part of the
+    public ACP client contract. New runtime code and adapters should
+    model work in terms of the agent-lifecycle operations listed
+    above.
 
     Concrete implementations are expected to be **runtime-owned** and
     reused for the lifetime of the process.
@@ -264,18 +254,6 @@ class BaseAcpClient:
     # The following methods define the public contract. Concrete
     # implementations *must* override them.
 
-    def ensure_conversation(self, agent_id: str) -> str:  # pragma: no cover - abstract
-        """[Legacy] Ensure a control-protocol conversation exists for ``agent_id``.
-
-        This helper is part of the pre–Epic 005, conversation-centric
-        contract. It is retained solely for compatibility with existing
-        adapters and tests. New runtime code should prefer the
-        agent-lifecycle API described in :class:`BaseAcpClient`'s
-        docstring instead of calling this method directly.
-        """
-
-        raise NotImplementedError
-
     def start_agent(self, agent_id: str, *, metadata: AgentMetadata) -> None:  # pragma: no cover - abstract
         """Launch or attach to the ACP runtime backing ``agent_id``.
 
@@ -288,19 +266,6 @@ class BaseAcpClient:
         asynchronous agent-lifecycle method (see T016); this synchronous
         variant remains the stable API until the async interface is
         introduced and call sites are migrated.
-        """
-
-        raise NotImplementedError
-
-    def start_turn(self, agent_id: str, prompt: str | None = None) -> str:  # pragma: no cover - abstract
-        """[Legacy] Start a new ACP turn for ``agent_id`` and return its ID.
-
-        This helper is part of the pre–Epic 005, turn-centric contract
-        and is retained solely for compatibility with existing adapters
-        and tests. New ACP integrations should expose prompt/interrupt
-        operations through the agent-lifecycle API described in
-        :class:`BaseAcpClient` rather than adding new turn-based call
-        sites.
         """
 
         raise NotImplementedError
@@ -334,8 +299,8 @@ class BaseAcpClient:
         """Asynchronously prompt the agent and return an adapter-defined ID.
 
         Concrete implementations are expected to map this onto the
-        appropriate ACP operation for initiating new work. For legacy
-        adapters this may delegate to :meth:`start_turn`.
+        appropriate ACP operation for initiating new work in the
+        agent-centric model.
         """
 
         raise NotImplementedError
@@ -366,441 +331,6 @@ class BaseAcpClient:
         """
 
         raise NotImplementedError
-
-
-@dataclass(slots=True)
-class FakeAcpClient(BaseAcpClient):
-    """In-memory ACP client for tests and dev-mode.
-
-    This implementation does **not** perform any network I/O. It keeps
-    a minimal in-memory model of:
-
-    * A per-agent conversation identifier.
-    * A monotonically increasing counter of turn IDs per agent.
-    * A lightweight adapter-level lifecycle state for each agent.
-
-    It is sufficient for unit tests and early integration tests that
-    need stable, realistic-looking conversation and turn identifiers
-    without talking to a real ACP server.
-    """
-
-    config: RuntimeConfig
-
-    _conversations: Dict[str, str] = field(default_factory=dict)
-    _turn_counters: Dict[str, int] = field(default_factory=dict)
-    _agent_states: Dict[str, str] = field(default_factory=dict)
-
-    # ------------------------------------------------------------------
-    # BaseAcpClient API
-    # ------------------------------------------------------------------
-
-    def ensure_conversation(self, agent_id: str) -> str:
-        if agent_id in self._conversations:
-            return self._conversations[agent_id]
-
-        # Derive a deterministic, human-readable conversation identifier.
-        conv_id = f"fake-conversation:{agent_id}"
-        self._conversations[agent_id] = conv_id
-        return conv_id
-
-    def start_agent(self, agent_id: str, *, metadata: AgentMetadata) -> None:
-        """Dev-mode implementation: record the agent as running.
-
-        This method does not launch any real subprocesses. It simply tracks a
-        basic lifecycle state suitable for tests that exercise
-        :meth:`BaseAcpClient.get_status`.
-        """
-
-        # Ensure a conversation is allocated for the agent so that metadata
-        # and runtime state can rely on a stable identifier.
-        self.ensure_conversation(agent_id)
-        self._agent_states[agent_id] = "running"
-
-    def start_turn(self, agent_id: str, prompt: str | None = None) -> str:
-        """Allocate a new fake turn ID and emit an optional event.
-
-        The ``prompt`` parameter is accepted for API compatibility but is not
-        interpreted by this dev-mode implementation.
-        """
-
-        # Ensure a conversation exists; many callers will already have done
-        # this explicitly but the helper is cheap and idempotent.
-        conversation_id = self.ensure_conversation(agent_id)
-
-        counter = self._turn_counters.get(agent_id, 0) + 1
-        self._turn_counters[agent_id] = counter
-        turn_id = f"fake-turn:{agent_id}:{counter}"
-
-        # When configured, emit a simple adapter-level event so that tests can
-        # observe ACP activity via the runtime event pipeline.
-        if self.on_event is not None:
-            event = AgentEvent(
-                event_id=f"{agent_id}:{counter}",
-                timestamp=datetime.utcnow(),
-                agent_id=agent_id,
-                source=AgentEventSource.ACP,
-                type="TurnCompleted",
-                payload={
-                    "adapter": "fake",
-                    "conversation_id": conversation_id,
-                    "turn_id": turn_id,
-                    **({"prompt": prompt} if prompt is not None else {}),
-                },
-            )
-            self.on_event(event)
-
-        return turn_id
-
-    def stop_agent(self, agent_id: str, *, timeout: float) -> None:
-        """Dev-mode implementation: mark the agent as terminated.
-
-        Unknown agents are treated as a no-op but will subsequently report a
-        ``"terminated"`` state via :meth:`get_status`.
-        """
-
-        self._agent_states[agent_id] = "terminated"
-
-    def get_status(self, agent_id: str) -> AcpAgentStatus:
-        """Return a lightweight adapter-level status for ``agent_id``."""
-
-        state = self._agent_states.get(agent_id, "idle")
-        return AcpAgentStatus(
-            agent_id=agent_id,
-            state=state,
-            last_exit_code=None,
-            last_error=None,
-            restart_count=0,
-        )
-
-    # ------------------------------------------------------------------
-    # Agent-lifecycle async API shims
-    # ------------------------------------------------------------------
-
-    async def start_agent_async(self, agent_id: str, *, metadata: AgentMetadata) -> None:
-        """Async shim for :meth:`start_agent`.
-
-        The fake adapter performs all work synchronously, so this simply
-        delegates to :meth:`start_agent` and returns immediately.
-        """
-
-        self.start_agent(agent_id, metadata=metadata)
-
-    async def stop_agent_async(self, agent_id: str, *, timeout: float) -> None:
-        """Async shim for :meth:`stop_agent`.
-
-        This helper delegates directly to :meth:`stop_agent`.
-        """
-
-        self.stop_agent(agent_id, timeout=timeout)
-
-    async def prompt(self, agent_id: str, prompt: str | None = None) -> str | None:
-        """Async shim that delegates to :meth:`start_turn`.
-
-        The returned string is the fake turn identifier allocated by
-        :meth:`start_turn`.
-        """
-
-        return self.start_turn(agent_id, prompt=prompt)
-
-    async def interrupt(self, agent_id: str) -> None:
-        """No-op interrupt for the fake adapter.
-
-        The in-memory implementation does not model in-flight work, so
-        interrupt is a no-op.
-        """
-
-        return None
-
-
-
-@dataclass(slots=True)
-class OpenHandsAcpClient(BaseAcpClient):
-    """Legacy OpenHands-compatible ACP adapter over HTTP (T102).
-
-    This implementation speaks the ACP HTTP/OpenAPI surface defined in
-    ``reference/acp-spec/openapi.json`` (v0.2.3). It focuses on the minimal
-    operations required by the runtime today:
-
-    * Ensure a per-agent conversation (ACP thread) exists.
-    * Start new runs on that thread and return their identifiers.
-
-    The adapter remains available for compatibility and potential
-    OpenHands-focused integrations, but the nate_ntm runtime now uses
-    :class:`NateOhaAcpClient` as the canonical ``AdapterKind.REAL`` ACP
-    implementation.
-    """
-
-    config: RuntimeConfig
-    base_url: str | None = None
-    bearer_token: str | None = None
-    timeout: float = 5.0
-
-    # Cache of per-agent conversation identifiers (thread IDs).
-    _conversations: Dict[str, str] = field(default_factory=dict, init=False)
-
-    # Namespace used to derive deterministic thread IDs from runtime context.
-    _thread_namespace = uuid.UUID("d71950ef-c7fe-44b8-b892-24c0960f46a4")
-
-    def __post_init__(self) -> None:
-        """Resolve endpoint and auth settings from arguments or environment.
-
-        The base URL is taken from, in order of precedence:
-
-        * the explicit ``base_url`` argument
-        * ``NATE_NTM_ACP_URL``
-        * ``ACP_URL``
-        * a localhost default (``http://127.0.0.1:8766``)
-
-        Similarly, the bearer token is taken from:
-
-        * the explicit ``bearer_token`` argument
-        * ``NATE_NTM_ACP_TOKEN``
-        * ``ACP_TOKEN``
-        * or left empty if none is provided.
-        """
-
-        url = (
-            self.base_url
-            or os.environ.get("NATE_NTM_ACP_URL")
-            or os.environ.get("ACP_URL")
-            or "http://127.0.0.1:8766"
-        )
-        # Normalize by stripping whitespace and trailing slashes.
-        self.base_url = url.strip().rstrip("/")
-
-        token = (
-            self.bearer_token
-            or os.environ.get("NATE_NTM_ACP_TOKEN")
-            or os.environ.get("ACP_TOKEN")
-            or ""
-        )
-        self.bearer_token = token.strip() or None
-
-    # ------------------------------------------------------------------
-    # BaseAcpClient API
-    # ------------------------------------------------------------------
-
-    def ensure_conversation(self, agent_id: str) -> str:
-        """Ensure an ACP thread exists for ``agent_id``.
-
-        The conversation identifier is the ACP ``thread_id``. It is derived
-        deterministically from the runtime configuration and ``agent_id`` so
-        that repeated calls – even across processes – return the same
-        identifier, while the ACP ``ThreadCreate.if_exists`` flag is used to
-        make thread creation idempotent on the server.
-        """
-
-        if agent_id in self._conversations:
-            return self._conversations[agent_id]
-
-        # Derive a stable, per-agent thread UUID based on the project path
-        # and swarm ID. This avoids a separate lookup step when resuming a
-        # runtime: the same inputs yield the same thread ID.
-        project_path = str(self.config.project_path)
-        basis = f"{self.config.swarm_id}:{project_path}:{agent_id}"
-        thread_uuid = uuid.uuid5(self._thread_namespace, basis)
-        thread_id = str(thread_uuid)
-
-        body = {
-            "thread_id": thread_id,
-            "metadata": {
-                "nate_ntm_swarm_id": self.config.swarm_id,
-                "nate_ntm_project_path": project_path,
-                "nate_ntm_agent_id": agent_id,
-            },
-            "if_exists": "do_nothing",
-        }
-
-        response = self._request(
-            "POST",
-            "/threads",
-            body=body,
-            request_name=f"ACP create_thread({agent_id})",
-        )
-
-        conv_id = thread_id
-        if isinstance(response, Mapping):
-            returned = str(response.get("thread_id") or "").strip()
-            if returned:
-                conv_id = returned
-
-        self._conversations[agent_id] = conv_id
-        return conv_id
-
-    def start_agent(self, agent_id: str, *, metadata: AgentMetadata) -> None:
-        """Legacy HTTP adapter does not manage a local subprocess.
-
-        This method is provided for API compatibility with the expanded
-        :class:`BaseAcpClient` contract and currently acts as a no-op beyond
-        ensuring that a conversation exists for the agent.
-        """
-
-        self.ensure_conversation(agent_id)
-
-    def start_turn(self, agent_id: str, prompt: str | None = None) -> str:
-        """Start a new stateful ACP run for ``agent_id``.
-
-        This creates a background run on the agent's thread using
-        ``POST /threads/{thread_id}/runs`` and returns the ``run_id`` from the
-        ACP ``RunStateful`` response. The optional ``prompt`` parameter is
-        accepted for API compatibility but is not currently sent over the
-        wire.
-        """
-
-        thread_id = self.ensure_conversation(agent_id)
-
-        body = {
-            # We rely on the server's default agent configuration. Runtime
-            # metadata is attached so operators can correlate runs.
-            "metadata": {
-                "nate_ntm_swarm_id": self.config.swarm_id,
-                "nate_ntm_agent_id": agent_id,
-            }
-        }
-
-        path = f"/threads/{thread_id}/runs"
-        response = self._request(
-            "POST",
-            path,
-            body=body,
-            request_name=f"ACP create_thread_run({agent_id})",
-        )
-
-        run_id: str | None = None
-        if isinstance(response, Mapping):
-            raw = response.get("run_id")
-            if raw:
-                run_id = str(raw).strip()
-            else:
-                # Some implementations may wrap the run object.
-                run = response.get("run")
-                if isinstance(run, Mapping):
-                    raw = run.get("run_id")
-                    if raw:
-                        run_id = str(raw).strip()
-
-        if not run_id:
-            raise AcpClientError("ACP create_thread_run: missing run_id in response")
-
-        return run_id
-
-    def stop_agent(self, agent_id: str, *, timeout: float) -> None:
-        """Legacy HTTP adapter has no local process to stop.
-
-        This method is provided for API compatibility with the expanded
-        :class:`BaseAcpClient` contract and currently acts as a no-op.
-        """
-
-        return None
-
-    def get_status(self, agent_id: str) -> AcpAgentStatus:
-        """Return a minimal adapter-level status for ``agent_id``.
-
-        The OpenHands HTTP adapter does not expose a local subprocess, so it
-        reports a simple ``"unknown"`` state; higher layers may derive richer
-        status via other mechanisms.
-        """
-
-        return AcpAgentStatus(agent_id=agent_id, state="unknown")
-
-    # ------------------------------------------------------------------
-    # Agent-lifecycle async API shims
-    # ------------------------------------------------------------------
-
-    async def start_agent_async(self, agent_id: str, *, metadata: AgentMetadata) -> None:
-        """Async shim for :meth:`start_agent`.
-
-        The HTTP adapter does not manage a local subprocess, so this
-        helper simply delegates to :meth:`start_agent` (which is a
-        no-op beyond ensuring a conversation exists).
-        """
-
-        self.start_agent(agent_id, metadata=metadata)
-
-    async def stop_agent_async(self, agent_id: str, *, timeout: float) -> None:
-        """Async shim for :meth:`stop_agent`.
-
-        This helper delegates directly to :meth:`stop_agent`.
-        """
-
-        self.stop_agent(agent_id, timeout=timeout)
-
-    async def prompt(self, agent_id: str, prompt: str | None = None) -> str | None:
-        """Start a new run for ``agent_id`` and return its run ID.
-
-        This async helper delegates to :meth:`start_turn` so that new
-        runtime code can use the agent-lifecycle API while the underlying
-        adapter continues to use the thread/run HTTP surface.
-        """
-
-        return self.start_turn(agent_id, prompt=prompt)
-
-    async def interrupt(self, agent_id: str) -> None:
-        """Best-effort interrupt for in-flight work.
-
-        The legacy HTTP adapter does not currently expose an explicit
-        interrupt surface, so this helper is a no-op.
-        """
-
-        return None
-
-
-    # ------------------------------------------------------------------
-    # Low-level HTTP helpers
-    # ------------------------------------------------------------------
-
-    def _request(
-        self,
-        method: str,
-        path: str,
-        *,
-        body: Mapping[str, Any] | None = None,
-        request_name: str,
-    ) -> Any:
-        """Perform an HTTP JSON request against the ACP server.
-
-        Responses are decoded as JSON. Network errors, HTTP error statuses,
-        and invalid JSON payloads are wrapped in :class:`AcpClientError` so
-        callers see a consistent error surface.
-        """
-
-        url = f"{self.base_url}/{path.lstrip('/')}"
-
-        data: bytes | None = None
-        headers = {"Accept": "application/json"}
-        if body is not None:
-            data = json.dumps(body).encode("utf-8")
-            headers["Content-Type"] = "application/json"
-
-        if self.bearer_token:
-            headers["Authorization"] = f"Bearer {self.bearer_token}"
-
-        req = Request(url, data=data, headers=headers, method=method)
-
-        try:
-            with urlopen(req, timeout=self.timeout) as resp:
-                raw = resp.read()
-        except HTTPError as exc:  # pragma: no cover - network/HTTP error
-            raise AcpClientError(
-                f"{request_name}: HTTP {exc.code} error from ACP server"
-            ) from exc
-        except URLError as exc:  # pragma: no cover - network error
-            raise AcpClientError(
-                f"{request_name}: failed to reach ACP server"
-            ) from exc
-
-        text = raw.decode("utf-8") if raw else ""
-        if not text:
-            return {}
-
-        try:
-            decoded: Any = json.loads(text)
-        except ValueError as exc:  # pragma: no cover - defensive
-            raise AcpClientError(
-                f"{request_name}: invalid JSON response from ACP server"
-            ) from exc
-
-        return decoded
 
 
 @dataclass(slots=True)
@@ -848,7 +378,6 @@ class NateOhaAcpClient(BaseAcpClient):
     _session_contexts: Dict[str, Any] = field(default_factory=dict, init=False)
 
     # Cache of per-agent conversation identifiers for this adapter instance.
-    _conversations: Dict[str, str] = field(default_factory=dict, init=False)
 
     # Per-agent subscribers for async event streaming. Each entry is a set of
     # queues, one per active subscription created by :meth:`subscribe_events`.
@@ -1051,73 +580,10 @@ class NateOhaAcpClient(BaseAcpClient):
 
     # Namespace used to derive deterministic conversation IDs from runtime
     # context (swarm_id + project path + agent_id).
-    _conversation_namespace = uuid.UUID("2ac0d2d3-76c5-4589-b000-4e50a0c759f9")
 
     # ------------------------------------------------------------------
     # BaseAcpClient API
     # ------------------------------------------------------------------
-
-    def ensure_conversation(self, agent_id: str) -> str:
-        """Ensure a control-protocol conversation exists for ``agent_id``.
-
-        For nate_OHA-backed agents the conversation identifier is a stable,
-        per-agent string derived from the runtime configuration (swarm_id,
-        project path) and ``agent_id``. This method is required to be:
-
-        * **Deterministic** – the same inputs always yield the same ID.
-        * **Idempotent** – repeated calls, even across processes, return the
-          same ID.
-        * **Metadata-aware** – when per-agent metadata already records a
-          non-empty ``conversation_id``, that value is reused and not
-          replaced.
-        """
-
-        # Fast path: reuse any ID cached in memory for this adapter instance.
-        cached = self._conversations.get(agent_id)
-        if cached:
-            return cached
-
-        store: MetadataStore | None = None
-        metadata: AgentMetadata | None = None
-
-        # Try to load existing per-agent metadata so that we can reuse or
-        # persist the conversation identifier in a durable way.
-        try:
-            store = MetadataStore(config=self.config)
-            metadata = store.load_agent_metadata(agent_id)
-        except FileNotFoundError:
-            # It is valid for metadata to be missing when ensure_conversation is
-            # called before an AgentMetadata record has been created.
-            store = None
-            metadata = None
-
-        if metadata is not None:
-            existing = (metadata.conversation_id or "").strip()
-            if existing:
-                self._conversations[agent_id] = existing
-                return existing
-
-        # Derive a stable, per-agent UUID based on the project path, swarm ID,
-        # and agent identifier. This mirrors the approach used by
-        # OpenHandsAcpClient while remaining independent of any remote ACP
-        # server.
-        project_path = str(self.config.project_path)
-        basis = f"{self.config.swarm_id}:{project_path}:{agent_id}"
-        conv_uuid = uuid.uuid5(self._conversation_namespace, basis)
-        conv_id = str(conv_uuid)
-
-        self._conversations[agent_id] = conv_id
-
-        # When metadata already exists but was missing a conversation_id,
-        # persist the allocated value so that future resume flows can rely on
-        # it. We deliberately do not create new AgentMetadata records here;
-        # that remains the responsibility of higher-level orchestration
-        # (RuntimeDaemon).
-        if metadata is not None and store is not None:
-            updated = replace(metadata, conversation_id=conv_id)
-            store.save_agent_metadata(updated)
-
-        return conv_id
 
     def start_agent(self, agent_id: str, *, metadata: AgentMetadata) -> None:
         """Launch the nate_OHA ACP process backing ``agent_id``.
@@ -1329,10 +795,6 @@ class NateOhaAcpClient(BaseAcpClient):
             updated_meta = replace(existing_meta, conversation_id=conversation_id)
             store.save_agent_metadata(updated_meta)
 
-            # Keep the adapter's in-memory cache aligned with the persisted
-            # value so that :meth:`ensure_conversation` observes the ACP ID on
-            # subsequent calls.
-            self._conversations[agent_id] = conversation_id
 
         self._sessions[agent_id] = AcpAgentSession(
             agent_id=agent_id,

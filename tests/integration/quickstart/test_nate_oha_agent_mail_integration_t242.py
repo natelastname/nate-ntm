@@ -13,11 +13,11 @@ The goal is to confirm that, in an environment with a real
 ``mcp_agent_mail`` server and a working ``nate_OHA`` installation,
 runtime startup can:
 
-* create a swarm using REAL adapters,
-* allocate Agent Mail project + per-agent identity + token,
-* allocate an ACP conversation ID via ``NateOhaAcpClient.ensure_conversation``,
-* launch a nate_OHA subprocess with Agent Mail integration enabled, and
-* cleanly shut that subprocess down again.
+    * create a swarm using REAL adapters,
+    * allocate Agent Mail project + per-agent identity + token,
+    * persist per-agent metadata suitable for establishing an ACP session,
+    * launch a nate_OHA subprocess with Agent Mail integration enabled, and
+    * cleanly shut that subprocess down again.
 
 These tests are **opt-in** and skipped by default so that normal CI does
 not require a live Agent Mail server or nate_OHA. To run them locally,
@@ -83,8 +83,8 @@ def test_real_agent_mail_and_nate_oha_smoke(
 
     1. Configure REAL adapters for both Agent Mail and ACP.
     2. Call :meth:`RuntimeDaemon.create` with ``agent_count=1`` so that the
-       runtime allocates an Agent Mail project, per-agent identity + token,
-       and an ACP conversation ID via :class:`NateOhaAcpClient`.
+       runtime allocates an Agent Mail project and per-agent identity +
+       token, persisting them into runtime metadata.
     3. Launch a real ``nate_OHA`` subprocess for the agent using
        ``start_agent`` and confirm that the adapter reports it as running.
     4. Perform a lightweight Agent Mail call (``get_unread_mail_flags``)
@@ -113,8 +113,9 @@ def test_real_agent_mail_and_nate_oha_smoke(
     assert isinstance(adapters.acp, NateOhaAcpClient)
 
     # Create a new swarm with a single agent. This allocates the Agent Mail
-    # project + identity and the ACP conversation ID, persisting them into
-    # SwarmMetadata and per-agent metadata files under .nate_ntm/.
+    # project + identity and persists them into SwarmMetadata and per-agent
+    # metadata files under .nate_ntm/. Any ACP session identifiers are
+    # established lazily by the async ACP lifecycle helpers in Epic 005.
     daemon = RuntimeDaemon.create(config, agent_count=1, adapters=adapters)
 
     # Basic sanity checks on the created metadata.
@@ -129,7 +130,9 @@ def test_real_agent_mail_and_nate_oha_smoke(
     agent_meta = daemon.metadata_store.load_agent_metadata("agent-1")
     assert agent_meta.agent_mail_identity
     assert agent_meta.agent_mail_credentials_ref
-    assert agent_meta.conversation_id
+    # ACP session identifiers are established lazily by async helpers;
+    # at this stage we only require that the field exists (it may be empty).
+    assert isinstance(agent_meta.conversation_id, str)
 
     # Launch a real nate_OHA process for the agent using the metadata
     # produced above. Any configuration errors (for example, missing Agent

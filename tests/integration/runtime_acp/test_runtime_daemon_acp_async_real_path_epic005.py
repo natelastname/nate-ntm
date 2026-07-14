@@ -9,11 +9,11 @@ production implementations:
 * The async ACP lifecycle on :class:`NateOhaAcpClient` via
   :meth:`start_agent_async` / :meth:`stop_agent_async`.
 
-The goal is to exercise the real ACP SDK wiring for Epic 005 and to
-validate that the opaque ``session_id`` returned by ``session/new`` is
-persisted into :class:`AgentMetadata.conversation_id` and reused via
-:meth:`ensure_conversation` and
-:meth:`RuntimeDaemon.get_agent_detail`.
+    The goal is to exercise the real ACP SDK wiring for Epic 005 and to
+    validate that the opaque ``session_id`` returned by ``session/new`` is
+    persisted into :class:`AgentMetadata.conversation_id` and reused across
+    runs via :meth:`NateOhaAcpClient.start_agent_async` and
+    :meth:`RuntimeDaemon.get_agent_detail`.
 
 Unlike the focused unit tests in
 ``tests/unit/runtime/test_nate_oha_acp_client_async.py``, this test does
@@ -135,8 +135,8 @@ async def test_runtime_daemon_acp_async_persists_session_id_and_exposes_via_deta
       :class:`AgentMetadata.conversation_id` on disk and cached in the
       adapter's in-memory session map.
     * A fresh :class:`NateOhaAcpClient` instance with the same
-      :class:`RuntimeConfig` reuses the same identifier via
-      :meth:`ensure_conversation`.
+      :class:`RuntimeConfig` reuses the same identifier when
+      :meth:`start_agent_async` is invoked with the persisted metadata.
     * :meth:`RuntimeDaemon.get_agent_detail` surfaces the persisted
       conversation identifier even when no live runtime state entry
       exists for the agent yet.
@@ -268,13 +268,10 @@ async def test_runtime_daemon_acp_async_persists_session_id_and_exposes_via_deta
             if payload_session is not None:
                 assert payload_session == session_id
 
-        # A fresh NateOhaAcpClient with the same configuration must reuse
-        # that identifier via ensure_conversation, reflecting the Epic 005
-        # invariant that ACP's opaque ``session_id`` is the canonical
-        # conversation identifier.
+        # Construct a fresh NateOhaAcpClient with the same configuration for
+        # the second run. The async lifecycle helpers will reuse the
+        # persisted ACP ``session_id`` via ``start_agent_async``.
         fresh_client = NateOhaAcpClient(config=config, executable="nate-oha")
-        conv2 = fresh_client.ensure_conversation(meta.agent_id)
-        assert conv2 == session_id
 
         # Second run: resume the existing ACP session from persisted
         # metadata using the async lifecycle. This exercises the
@@ -291,10 +288,6 @@ async def test_runtime_daemon_acp_async_persists_session_id_and_exposes_via_deta
             # Collect a short burst of ACP events from the resumed session.
             await collect_events_for(events2, events_run2, duration=0.5)
 
-        # ensure_conversation on the fresh adapter should also observe
-        # the same ACP-owned identifier.
-        conv3 = fresh_client.ensure_conversation(meta.agent_id)
-        assert conv3 == session_id
 
         # All ACP events observed during the resumed run should reference
         # the same session identifier when they carry one.
@@ -355,8 +348,8 @@ async def test_runtime_daemon_acp_async_with_agent_mail_real_path_epic005(tmp_pa
       session for the agent, obtaining an opaque ``session_id`` that is
       persisted into :class:`AgentMetadata.conversation_id`.
     * A fresh :class:`NateOhaAcpClient` instance with the same
-      :class:`RuntimeConfig` reuses the same identifier via
-      :meth:`ensure_conversation`.
+      :class:`RuntimeConfig` reuses the same identifier when
+      :meth:`start_agent_async` is invoked with the persisted metadata.
     * :meth:`RuntimeDaemon.get_agent_detail` surfaces the persisted
       ``conversation_id`` even when no live runtime state entry exists
       yet for the agent.
@@ -508,13 +501,10 @@ async def test_runtime_daemon_acp_async_with_agent_mail_real_path_epic005(tmp_pa
             if payload_session is not None:
                 assert payload_session == session_id
 
-        # A fresh NateOhaAcpClient with the same configuration must
-        # reuse the same identifier via ensure_conversation, reflecting
-        # the Epic 005 invariant that ACP's opaque ``session_id`` is the
-        # canonical conversation identifier.
+        # Construct a fresh NateOhaAcpClient with the same configuration for
+        # the second run. The async lifecycle helpers will reuse the
+        # persisted ACP ``session_id`` via ``start_agent_async``.
         fresh_client = NateOhaAcpClient(config=config, executable="nate-oha")
-        conv2 = fresh_client.ensure_conversation(agent_id)
-        assert conv2 == session_id
 
         # Second async run: resume the existing ACP session from
         # persisted metadata using the async lifecycle. This exercises
@@ -531,8 +521,6 @@ async def test_runtime_daemon_acp_async_with_agent_mail_real_path_epic005(tmp_pa
             # Collect a short burst of ACP events from the resumed session.
             await collect_events_for(events2, events_run2, duration=0.5)
 
-        conv3 = fresh_client.ensure_conversation(agent_id)
-        assert conv3 == session_id
 
         # All ACP events observed during the resumed run should
         # reference the same session identifier when they carry one.

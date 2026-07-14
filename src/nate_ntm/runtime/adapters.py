@@ -20,12 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ..config.runtime_config import AdapterKind, RuntimeConfig
-from .acp_client import (
-    BaseAcpClient,
-    FakeAcpClient,
-    NateOhaAcpClient,
-    OpenHandsAcpClient,
-)
+from .acp_client import BaseAcpClient, NateOhaAcpClient
 from .agent_mail_client import BaseAgentMailClient, FakeAgentMailClient, McpAgentMailClient
 
 __all__ = ["RuntimeAdapters", "create_runtime_adapters"]
@@ -64,10 +59,10 @@ def create_runtime_adapters(config: RuntimeConfig) -> RuntimeAdapters:
     """Construct :class:`RuntimeAdapters` for ``config``.
 
     This helper inspects the adapter selection fields on ``config`` and
-    constructs the appropriate concrete adapter implementations. For the
-    T100/T101/T102 baseline the ``AdapterKind.FAKE`` branch is implemented
-    for both Agent Mail and ACP, and ``AdapterKind.REAL`` is implemented
-    for both integrations as well.
+    constructs the appropriate concrete adapter implementations. Agent Mail
+    continues to support both ``AdapterKind.FAKE`` and ``AdapterKind.REAL``,
+    while ACP now always uses :class:`NateOhaAcpClient` as the canonical
+    implementation regardless of adapter mode.
     """
 
     mail_kind = _select_adapter_kind(config.adapter_mode, config.agent_mail_adapter)
@@ -82,12 +77,7 @@ def create_runtime_adapters(config: RuntimeConfig) -> RuntimeAdapters:
         raise ValueError(f"Unsupported Agent Mail adapter kind: {mail_kind!r}")
 
     # ACP adapter --------------------------------------------------------
-    if acp_kind is AdapterKind.FAKE:
-        acp: BaseAcpClient = FakeAcpClient(config=config)
-    elif acp_kind is AdapterKind.REAL:
-        # nate_OHA-backed ACP adapter is the canonical REAL implementation.
-        acp = NateOhaAcpClient(config=config)
-    else:  # pragma: no cover - defensive
-        raise ValueError(f"Unsupported ACP adapter kind: {acp_kind!r}")
+    # NateOhaAcpClient is the canonical ACP implementation in all modes.
+    acp: BaseAcpClient = NateOhaAcpClient(config=config)
 
     return RuntimeAdapters(agent_mail=agent_mail, acp=acp)

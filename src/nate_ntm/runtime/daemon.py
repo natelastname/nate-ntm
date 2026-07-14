@@ -266,8 +266,10 @@ class RuntimeDaemon:
         acp_client: BaseAcpClient = adapters.acp
 
         # Optionally create a small set of initial agents with Agent Mail
-        # identities and ACP conversations allocated through the selected
-        # adapters.
+        # identities allocated through the selected adapters. ACP
+        # conversations/sessions are established lazily when an ACP
+        # lifecycle operation (for example, ``start_agent_async``) is
+        # invoked for the agent.
         agents: dict[str, "AgentMetadata"] = {}
         if agent_count is not None and agent_count > 0:
             from .metadata_store import AgentMetadata  # local import to avoid cycles
@@ -279,14 +281,11 @@ class RuntimeDaemon:
                 agent_mail_identity, agent_mail_credentials_ref = (
                     agent_mail_client.ensure_agent_identity_with_credentials(agent_id)
                 )
-                conversation_id = acp_client.ensure_conversation(agent_id)
-
                 agents[agent_id] = AgentMetadata(
                     agent_id=agent_id,
                     display_name=display_name,
                     agent_mail_identity=agent_mail_identity,
                     agent_mail_credentials_ref=agent_mail_credentials_ref or "",
-                    conversation_id=conversation_id,
                 )
 
         now = datetime.utcnow()
@@ -493,24 +492,6 @@ class RuntimeDaemon:
                         f"metadata has {meta.agent_mail_identity!r}"
                     )
 
-            if meta.conversation_id:
-                conv_id = acp_client.ensure_conversation(agent_id)
-                if conv_id != meta.conversation_id:
-                    logger.error(
-                        "runtime_resume_acp_conversation_mismatch",
-                        extra={
-                            "swarm_id": swarm.swarm_id,
-                            "project_path": str(swarm.project_path),
-                            "agent_id": agent_id,
-                            "expected_conversation_id": meta.conversation_id,
-                            "actual_conversation_id": conv_id,
-                        },
-                    )
-                    raise RuntimeStartupError(
-                        "ACP conversation ID mismatch on resume for "
-                        f"agent {agent_id!r}: adapter returned {conv_id!r}, "
-                        f"metadata has {meta.conversation_id!r}"
-                    )
 
         return cls(
             config=config,

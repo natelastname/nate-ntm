@@ -396,3 +396,27 @@ For each result:
   Verify it is resolved rather than merely ignored.
 -
   Remove obsolete helper code made unnecessary by the new event-stream architecture.
+
+### Current Status (2026-07-14)
+
+- [x] Phase 1 
+  — Subscription infrastructure implemented in `NateOhaAcpClient` (`subscribe_events`, per-subscriber queues, `_emit_event` as single emission path).
+- [x] Phase 2 
+  — `next_matching_event(...)` helper implemented in `nate_ntm.runtime.acp_client` and used by Epic 005 async tests.
+- [x] Phase 3 
+  — Epic 005 REAL-path async ACP tests refactored to use `subscribe_events` + `next_matching_event` with no event-related `asyncio.sleep`.
+- [ ] Phase 4 
+  — Repository-wide migration of other event-waiting patterns still pending; some usages have been reviewed but not all are migrated yet.
+- [x] Phase 5 
+  — All ACP events continue to flow through `_emit_event`, which broadcasts to subscribers and forwards to `AgentSupervisor`.
+- [ ] Phase 6 
+  — `on_event` is treated as an internal bridge (daemon → `AgentSupervisor`), but full encapsulation/removal is not yet complete.
+- [x] Phase 7 
+  — Stream lifecycle semantics implemented (`_close_event_subscribers`, sentinel-based termination, and tests for timeout/cancellation/agent stop).
+- [x] Phase 8 
+  — Bounded per-subscriber queues with a deliberate overflow policy (drop-oldest + warnings) are in place.
+- [x] Phase 9 
+  — Validation criteria satisfied for Epic 005: prompt/replay tests are event-driven, multiple subscribers see the same events, and real ACP integration tests are passing.
+- [x] Phase 10 
+  — `aclose(): asynchronous generator is already running` warning investigated; current `RuntimeSession.disconnect()` scheme (cancel tasks before `aclose()`) shows no such warnings under `-W error::RuntimeWarning`. Obsolete test-local helpers have been removed where they were superseded by the shared event-stream API.
+

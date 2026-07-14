@@ -124,11 +124,11 @@ def test_runtime_daemon_create_with_real_acp_persists_nate_oha_metadata(tmp_path
     assert meta.agent_mail_identity
     assert meta.agent_mail_identity == meta.agent_mail_identity.strip()
 
-    # The conversation ID must come from nate-oha via the ACP client and be
-    # recorded into AgentMetadata.conversation_id.
-    assert meta.conversation_id
-    conv_from_acp = daemon.acp_client.ensure_conversation("agent-1")
-    assert conv_from_acp == meta.conversation_id
+    # At create-time no ACP conversation/session has been established yet,
+    # so the conversation_id field should still be empty. It will be filled
+    # in by async ACP lifecycle helpers (for example,
+    # ``start_agent_async``) once a real ACP session is created.
+    assert meta.conversation_id == ""
 
 
 
@@ -137,10 +137,14 @@ def test_runtime_daemon_create_and_resume_with_real_acp_and_agent_mail(tmp_path:
 
     This verifies that:
 
-    * RuntimeDaemon.create, when using REAL adapters, persists Nate OHA
-      conversation IDs and Agent Mail identities into metadata, and
+    * RuntimeDaemon.create, when using REAL adapters, persists Agent Mail
+      identities into metadata, and
     * RuntimeDaemon.resume, when invoked with the same REAL configuration,
       reuses those identifiers rather than allocating new ones.
+
+    ACP conversation/session identifiers are established lazily by the async
+    ACP lifecycle helpers (for example, ``start_agent_async``) and are not
+    exercised by this unit test.
     """
 
     project = tmp_path / "project"
@@ -159,7 +163,9 @@ def test_runtime_daemon_create_and_resume_with_real_acp_and_agent_mail(tmp_path:
     meta_before = store.load_agent_metadata("agent-1")
 
     assert meta_before.agent_mail_identity
-    assert meta_before.conversation_id
+    # No ACP conversation/session has been created yet, so the
+    # conversation_id field is expected to be empty at this stage.
+    assert meta_before.conversation_id == ""
 
     # Fresh resume with the same REAL configuration should not change
     # identifiers.
@@ -168,10 +174,6 @@ def test_runtime_daemon_create_and_resume_with_real_acp_and_agent_mail(tmp_path:
 
     assert meta_after.agent_mail_identity == meta_before.agent_mail_identity
     assert meta_after.conversation_id == meta_before.conversation_id
-
-    # The resumed ACP client must agree with the persisted conversation ID.
-    conv_from_acp = daemon_resume.acp_client.ensure_conversation("agent-1")
-    assert conv_from_acp == meta_after.conversation_id
 
 
 

@@ -4,7 +4,6 @@ These tests implement T219 from ``specs/002-nate-oha-acp-adapter/tasks.md``.
 They exercise the production :class:`NateOhaAcpClient` adapter against a real
 ``nate_OHA`` installation in a minimal way:
 
-* ``ensure_conversation`` behaves deterministically and idempotently.
 * A simple ``start_agent`` → ``stop_agent`` roundtrip succeeds without
   leaking subprocess handles.
 
@@ -56,28 +55,6 @@ def _make_runtime_config(project_path: Path) -> RuntimeConfig:
         metadata_dir=project_path / ".nate_ntm",
         adapter_mode=AdapterKind.REAL,
     )
-
-
-def test_ensure_conversation_is_idempotent(tmp_path: Path) -> None:
-    """Real NateOhaAcpClient returns stable conversation IDs per agent.
-
-    This mirrors the unit tests in ``tests/unit/runtime/test_acp_client.py``
-    but runs through the real ``RuntimeConfig`` construction path to ensure
-    that nothing in configuration resolution interferes with the
-    conversation-derivation logic when ``AdapterKind.REAL`` is used.
-    """
-
-    config = _make_runtime_config(tmp_path)
-    client = NateOhaAcpClient(config=config)
-
-    a1_first = client.ensure_conversation("agent-1")
-    a1_second = client.ensure_conversation("agent-1")
-    a2_conv = client.ensure_conversation("agent-2")
-
-    assert a1_first
-    assert a1_first == a1_second
-    assert a2_conv
-    assert a2_conv != a1_first
 
 
 def test_start_and_stop_agent_roundtrip(tmp_path: Path) -> None:
