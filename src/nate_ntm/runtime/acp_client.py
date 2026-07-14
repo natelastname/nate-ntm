@@ -22,7 +22,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from datetime import datetime
-from typing import Any, Callable, Dict, Mapping, Optional, Literal
+import asyncio
+from typing import Any, AsyncIterator, Callable, Dict, Mapping, Optional, Literal, Set
 
 import json
 import os
@@ -796,7 +797,93 @@ class NateOhaAcpClient(BaseAcpClient):
     # Cache of per-agent conversation identifiers for this adapter instance.
     _conversations: Dict[str, str] = field(default_factory=dict, init=False)
 
+    # Per-agent subscribers for async event streaming. Each entry is a set of
+    # queues, one per active subscription created by :meth:`iter_events`.
+    _event_subscribers: Dict[str, Set[asyncio.Queue[AgentEvent]]] = field(
+        default_factory=dict,
+        init=False,
+    )
+
     # Cached result of the version/compatibility check (FR-013).
+
+    # ------------------------------------------------------------------
+    # Event emission and async streaming helpers
+    # ------------------------------------------------------------------
+
+    def _emit_event(self, event: AgentEvent) -> None:
+        """Deliver an AgentEvent to subscribers and the legacy callback.
+
+        This is the single emission path used for both ACP session updates
+        (via :func:`open_nate_oha_acp_client`) and local process-lifecycle
+        events emitted by this adapter.
+        """
+
+        # Broadcast to per-agent subscriber queues.
+        queues = self._event_subscribers.get(event.agent_id)
+        if queues:
+            for queue in list(queues):
+                try:
+                    queue.put_nowait(event)
+                except asyncio.QueueFull:  # pragma: no cover - defensive
+                    # Queues are unbounded today; if we introduce size limits in
+                    # future work we prefer dropping excess events over failing
+                    # the entire adapter.
+                    continue
+
+        # Preserve the existing on_event callback semantics.
+        if self.on_event is not None:
+            self.on_event(event)
+
+    async def iter_events(self, agent_id: str) -> AsyncIterator[AgentEvent]:
+        """Yield AgentEvent objects for ``agent_id`` as they arrive.
+
+        Each call registers an independent subscription that receives a copy
+        of every subsequent event for the given agent. Iteration continues
+        until the caller breaks out of the loop or the generator is cancelled,
+        at which point the underlying subscription is removed.
+        """
+
+        queue: asyncio.Queue[AgentEvent] = asyncio.Queue()
+        subscribers = self._event_subscribers.setdefault(agent_id, set())
+        subscribers.add(queue)
+
+        try:
+            while True:
+                event = await queue.get()
+                yield event
+        finally:
+            subscribers = self._event_subscribers.get(agent_id)
+            if subscribers is not None:
+                subscribers.discard(queue)
+                if not subscribers:
+                    self._event_subscribers.pop(agent_id, None)
+
+    async def wait_for_event(
+        self,
+        agent_id: str,
+        predicate: Callable[[AgentEvent], bool],
+        *,
+        timeout: float | None = None,
+    ) -> AgentEvent:
+        """Wait for the first event for ``agent_id`` matching ``predicate``.
+
+        When ``timeout`` is provided and expires before a matching event is
+        observed, :class:`asyncio.TimeoutError` is raised.
+        """
+
+        async def _runner() -> AgentEvent:
+            async for event in self.iter_events(agent_id):
+                if predicate(event):
+                    return event
+
+            raise RuntimeError("event stream closed before predicate matched")
+
+        if timeout is None:
+            return await _runner()
+
+        return await asyncio.wait_for(_runner(), timeout=timeout)
+
+
     _version_checked: bool = field(default=False, init=False)
     _detected_version: str | None = field(default=None, init=False)
 
@@ -931,15 +1018,14 @@ class NateOhaAcpClient(BaseAcpClient):
         self._processes[agent_id] = record
         self._process_handles[agent_id] = proc
 
-        # Emit a simple process-started event when a callback is configured.
-        if self.on_event is not None:
-            self.on_event(
-                self._make_process_event(
-                    agent_id=agent_id,
-                    event_type="nate_oha_process_started",
-                    payload={"pid": proc.pid},
-                )
+        # Emit a simple process-started event.
+        self._emit_event(
+            self._make_process_event(
+                agent_id=agent_id,
+                event_type="nate_oha_process_started",
+                payload={"pid": proc.pid},
             )
+        )
 
         # Minimal readiness check: if the process has already exited, treat
         # startup as failed; otherwise consider it running.
@@ -949,28 +1035,26 @@ class NateOhaAcpClient(BaseAcpClient):
             record.last_exit_code = retcode
             record.last_error = f"nate_OHA exited during startup with code {retcode}"
 
-            if self.on_event is not None:
-                self.on_event(
-                    self._make_process_event(
-                        agent_id=agent_id,
-                        event_type="nate_oha_process_start_failed",
-                        payload={"exit_code": retcode},
-                    )
+            self._emit_event(
+                self._make_process_event(
+                    agent_id=agent_id,
+                    event_type="nate_oha_process_start_failed",
+                    payload={"exit_code": retcode},
                 )
+            )
 
             raise AcpClientError(
                 f"nate_OHA process for agent {agent_id!r} exited during startup with code {retcode}"
             )
 
         record.status = "running"
-        if self.on_event is not None:
-            self.on_event(
-                self._make_process_event(
-                    agent_id=agent_id,
-                    event_type="nate_oha_process_ready",
-                    payload={"pid": proc.pid},
-                )
+        self._emit_event(
+            self._make_process_event(
+                agent_id=agent_id,
+                event_type="nate_oha_process_ready",
+                payload={"pid": proc.pid},
             )
+        )
 
     # ------------------------------------------------------------------
     # Agent-lifecycle async API (ACP SDK-backed)
@@ -1011,7 +1095,7 @@ class NateOhaAcpClient(BaseAcpClient):
             env=env,
             cwd=self.config.project_path,
             agent_id=agent_id,
-            event_sink=self.on_event or (lambda _e: None),
+            event_sink=self._emit_event,
             capabilities=NATE_NTM_CLIENT_CAPABILITIES,
         )
 
@@ -1222,17 +1306,16 @@ class NateOhaAcpClient(BaseAcpClient):
 
             self._process_handles.pop(agent_id, None)
 
-            if self.on_event is not None:
-                event_type = (
-                    "nate_oha_process_exited" if retcode == 0 else "nate_oha_process_crashed"
+            event_type = (
+                "nate_oha_process_exited" if retcode == 0 else "nate_oha_process_crashed"
+            )
+            self._emit_event(
+                self._make_process_event(
+                    agent_id=agent_id,
+                    event_type=event_type,
+                    payload={"exit_code": retcode},
                 )
-                self.on_event(
-                    self._make_process_event(
-                        agent_id=agent_id,
-                        event_type=event_type,
-                        payload={"exit_code": retcode},
-                    )
-                )
+            )
             return
 
         record.status = "stopping"
@@ -1246,14 +1329,13 @@ class NateOhaAcpClient(BaseAcpClient):
         except OSError as exc:  # pragma: no cover - defensive
             record.status = "failed"
             record.last_error = f"Failed to stop nate_OHA process: {exc}"
-            if self.on_event is not None:
-                self.on_event(
-                    self._make_process_event(
-                        agent_id=agent_id,
-                        event_type="nate_oha_process_stop_failed",
-                        payload={"error": str(exc)},
-                    )
+            self._emit_event(
+                self._make_process_event(
+                    agent_id=agent_id,
+                    event_type="nate_oha_process_stop_failed",
+                    payload={"error": str(exc)},
                 )
+            )
             raise AcpClientError(
                 f"Failed to stop nate_OHA process for agent {agent_id!r}: {exc}"
             ) from exc
@@ -1265,15 +1347,14 @@ class NateOhaAcpClient(BaseAcpClient):
 
         self._process_handles.pop(agent_id, None)
 
-        if self.on_event is not None:
-            event_type = "nate_oha_process_exited" if retcode == 0 else "nate_oha_process_crashed"
-            self.on_event(
-                self._make_process_event(
-                    agent_id=agent_id,
-                    event_type=event_type,
-                    payload={"exit_code": retcode},
-                )
+        event_type = "nate_oha_process_exited" if retcode == 0 else "nate_oha_process_crashed"
+        self._emit_event(
+            self._make_process_event(
+                agent_id=agent_id,
+                event_type=event_type,
+                payload={"exit_code": retcode},
             )
+        )
 
     def get_status(self, agent_id: str) -> AcpAgentStatus:
         """Return a lightweight status snapshot for ``agent_id``.

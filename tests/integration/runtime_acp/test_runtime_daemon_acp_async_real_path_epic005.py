@@ -66,6 +66,27 @@ def _extract_text_payloads(events: list[AgentEvent]) -> list[str]:
     return texts
 
 
+
+async def _wait_for_text(
+    client: NateOhaAcpClient,
+    agent_id: str,
+    expected: str,
+    *,
+    timeout: float = 5.0,
+) -> AgentEvent:
+    """Wait for a single AgentEvent whose text content contains ``expected``.
+
+    This helper uses the NateOhaAcpClient's async event stream instead of
+    relying on shared mutable lists and arbitrary sleep intervals.
+    """
+
+    def _predicate(event: AgentEvent) -> bool:
+        texts = _extract_text_payloads([event])
+        return any(expected in text for text in texts)
+
+    return await client.wait_for_event(agent_id, _predicate, timeout=timeout)
+
+
 @pytest.mark.asyncio
 async def test_runtime_daemon_acp_async_persists_session_id_and_exposes_via_detail(
     tmp_path: Path,
@@ -600,10 +621,15 @@ async def test_runtime_daemon_acp_async_prompt_echo_and_replay_real_path(tmp_pat
     await acp_client.start_agent_async(agent_id, metadata=meta)
 
     prompt_text1 = "hello from async epic005"
-    await acp_client.prompt(agent_id, prompt_text1)
 
-    # Allow ACP updates (including echo) to be delivered.
-    await asyncio.sleep(0.5)
+    # Subscribe to the async event stream before issuing the prompt so we
+    # do not race nate-oha's echo response.
+    wait_task1 = asyncio.create_task(
+        _wait_for_text(acp_client, agent_id, prompt_text1, timeout=5.0)
+    )
+
+    await acp_client.prompt(agent_id, prompt_text1)
+    await wait_task1
 
     reloaded_meta = store.load_agent_metadata(agent_id)
     session_id = reloaded_meta.conversation_id
@@ -619,6 +645,10 @@ async def test_runtime_daemon_acp_async_prompt_echo_and_replay_real_path(tmp_pat
     texts_run1 = _extract_text_payloads(events_run1)
     assert any(prompt_text1 in text for text in texts_run1)
 
+    # Use the first echoed text containing the prompt as the canonical
+    # conversation fragment we expect to be replayed on resume.
+    canonical_echo1 = next(text for text in texts_run1 if prompt_text1 in text)
+
     # ------------------------------
     # Stop and resume: replay history
     # ------------------------------
@@ -633,23 +663,25 @@ async def test_runtime_daemon_acp_async_prompt_echo_and_replay_real_path(tmp_pat
     assert resume_meta.conversation_id == session_id
 
     await fresh_client.start_agent_async(agent_id, metadata=resume_meta)
+
+    # Allow nate-oha to replay prior conversation history on resume.
     await asyncio.sleep(0.5)
 
-    # On resume, Nate OHA should replay prior conversation history.
     texts_run2_before = _extract_text_payloads(events_run2)
-    for text in texts_run1:
-        assert text in texts_run2_before
+    assert canonical_echo1 in texts_run2_before
 
     # ------------------------------
     # New prompt after replay
     # ------------------------------
 
     prompt_text2 = "second prompt after replay"
-    await fresh_client.prompt(agent_id, prompt_text2)
-    await asyncio.sleep(0.5)
 
-    texts_run2_after = _extract_text_payloads(events_run2)
-    assert any(prompt_text2 in text for text in texts_run2_after)
+    wait_task2 = asyncio.create_task(
+        _wait_for_text(fresh_client, agent_id, prompt_text2, timeout=5.0)
+    )
+
+    await fresh_client.prompt(agent_id, prompt_text2)
+    await wait_task2
 
     # Session ID invariants across both runs.
     for ev in events_run1 + events_run2:
