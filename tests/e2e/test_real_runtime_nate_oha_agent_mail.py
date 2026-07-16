@@ -162,17 +162,17 @@ def test_real_runtime_nate_oha_agent_mail_create_start_resume(tmp_path: Path, mo
 
     # Create a new swarm with a single agent. This allocates the Agent
     # Mail project + identity/credentials and the ACP conversation ID,
-    # persisting them into SwarmMetadata and per-agent metadata files
-    # under .nate_ntm/.
+    # persisting them into SwarmState/AgentState records under
+    # .nate_ntm/swarm.json.
     daemon = RuntimeDaemon.create(config, agent_count=1, adapters=adapters)
 
     # Basic sanity checks on the created metadata.
-    swarm = daemon.swarm_metadata
+    swarm = daemon.swarm_state
     assert swarm.agent_mail_project_id
     assert swarm.agent_mail_project_id == project_key
     assert set(swarm.agents.keys()) == {"agent-1"}
 
-    agent_meta = daemon.metadata_store.load_agent_metadata("agent-1")
+    agent_meta = daemon.metadata_store.load_agent_state("agent-1")
     assert agent_meta.agent_mail_identity
     assert agent_meta.agent_mail_credentials_ref
     assert agent_meta.conversation_id
@@ -241,11 +241,11 @@ def test_real_runtime_nate_oha_agent_mail_create_start_resume(tmp_path: Path, mo
     daemon2 = RuntimeDaemon.resume(config2, adapters=adapters2)
     assert daemon2.startup_mode is StartupMode.RESUME
 
-    swarm2 = daemon2.swarm_metadata
+    swarm2 = daemon2.swarm_state
     assert swarm2.agent_mail_project_id == swarm.agent_mail_project_id
     assert set(swarm2.agents.keys()) == {"agent-1"}
 
-    agent_meta2 = daemon2.metadata_store.load_agent_metadata("agent-1")
+    agent_meta2 = daemon2.metadata_store.load_agent_state("agent-1")
 
     # Agent Mail and ACP identifiers must be reused on resume.
     assert agent_meta2.agent_mail_identity == agent_meta.agent_mail_identity

@@ -487,7 +487,60 @@ class RuntimeDaemon:
 
 
         for agent_id, meta in swarm.agents.items():
-            if meta.agent_mail_identity:
+            # Prefer config-driven Agent Mail invariants when a persisted
+            # NateOhaConfig with an enabled Agent Mail feature is available for
+            # this agent. This keeps NateOhaConfig as the single source of
+            # truth for launch-time behaviour (see ConfigOverhaul.md) while
+            # still preserving backwards compatibility with older metadata
+            # that relied on separate per-agent Agent Mail fields.
+            cfg = getattr(meta, "nate_oha_config", None)
+            features = getattr(cfg, "features", None) if cfg is not None else None
+            agent_mail_cfg = getattr(features, "agent_mail", None) if features is not None else None
+
+            if agent_mail_cfg is not None:
+                # Config-driven Agent Mail. When the feature is disabled we do
+                # not impose any FR-009 identity invariant for this agent.
+                if not getattr(agent_mail_cfg, "enabled", False):
+                    continue
+
+                expected_identity = (getattr(agent_mail_cfg, "agent_identity", "") or "").strip()
+                # An empty identity in a config-driven Agent Mail section is
+                # treated as "no binding present" for the purposes of resume
+                # invariants. Earlier phases and the ACP client enforce
+                # non-empty identities when launching nate_OHA.
+                if not expected_identity:
+                    continue
+
+                credentials_hint_raw = getattr(agent_mail_cfg, "credentials_ref", "")
+                credentials_hint = (credentials_hint_raw or "").strip() or None
+
+                identity, _credentials = agent_mail_client.ensure_agent_identity_with_credentials(
+                    agent_id, credentials_hint
+                )
+                if identity != expected_identity:
+                    logger.error(
+                        "runtime_resume_agent_mail_identity_mismatch",
+                        extra={
+                            "swarm_id": swarm.swarm_id,
+                            "project_path": str(swarm.project_path),
+                            "agent_id": agent_id,
+                            "expected_identity": expected_identity,
+                            "actual_identity": identity,
+                            "source": "nate_oha_config",
+                        },
+                    )
+                    raise RuntimeStartupError(
+                        "Agent Mail identity mismatch on resume for "
+                        f"agent {agent_id!r}: adapter returned {identity!r}, "
+                        "NateOhaConfig.features.agent_mail.agent_identity has "
+                        f"{expected_identity!r}"
+                    )
+
+                # When no config-driven Agent Mail section is present, fall back
+                # to the legacy metadata fields for older swarms. This path is
+                # intentionally limited to backwards-compatibility scenarios and
+                # will be removed once all persisted state uses NateOhaConfig.
+            elif meta.agent_mail_identity:
                 identity, _credentials = agent_mail_client.ensure_agent_identity_with_credentials(
                     agent_id, meta.agent_mail_credentials_ref or None
                 )
@@ -500,6 +553,7 @@ class RuntimeDaemon:
                             "agent_id": agent_id,
                             "expected_identity": meta.agent_mail_identity,
                             "actual_identity": identity,
+                            "source": "legacy_metadata",
                         },
                     )
                     raise RuntimeStartupError(

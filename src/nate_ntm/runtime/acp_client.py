@@ -360,6 +360,22 @@ class NateOhaAcpClient(BaseAcpClient):
     startup_timeout: float = 15.0
 
     #: Default timeout for graceful shutdown requests.
+
+    def __post_init__(self) -> None:
+        """Initialise adapter defaults from :class:`RuntimeConfig`.
+
+        The Nate OHA executable used for launches is always taken from the
+        associated :class:`RuntimeConfig` so that tests and deployments can
+        override it via ``nate_oha_executable`` or the corresponding
+        environment variable.
+        """
+
+        # Align the launch executable with the resolved runtime configuration.
+        # Callers may still override ``self.executable`` after construction if
+        # needed for advanced scenarios.
+        self.executable = self.config.nate_oha_executable
+
+
     shutdown_timeout: float = 10.0
 
     # Internal process supervision state, keyed by ``agent_id``.
@@ -1159,7 +1175,8 @@ class NateOhaAcpClient(BaseAcpClient):
             if not getattr(agent_mail_cfg, "enabled", False):
                 return env
 
-            project = (getattr(agent_mail_cfg, "project", "") or "").strip()
+            project_value = getattr(agent_mail_cfg, "project", None)
+            project = str(project_value).strip() if project_value is not None else ""
             if not project:
                 raise AcpClientError(
                     "Agent Mail project is not configured in NateOhaConfig.features.agent_mail.project; "

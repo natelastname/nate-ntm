@@ -33,6 +33,29 @@ from nate_ntm.runtime.daemon import RuntimeDaemon, RuntimeStartupError
 from nate_ntm.runtime.state import RuntimeStatus
 
 
+def _get_persisted_identity_and_conversation(meta: object) -> Tuple[str, str]:
+    """Return the persisted Agent Mail identity and conversation ID for ``meta``.
+
+    The authoritative source of Agent Mail configuration is the effective
+    NateOhaConfig attached to :class:`AgentState`. When available, we read the
+    ``agent_identity`` from ``features.agent_mail``; otherwise we fall back to
+    the legacy ``AgentState.agent_mail_identity`` field for older swarms that
+    pre-date the embedded NateOhaConfig model.
+    """
+
+    cfg = getattr(meta, "nate_oha_config", None)
+    features = getattr(cfg, "features", None) if cfg is not None else None
+    agent_mail_cfg = getattr(features, "agent_mail", None) if features is not None else None
+
+    if agent_mail_cfg is not None:
+        identity = (getattr(agent_mail_cfg, "agent_identity", "") or "").strip()
+    else:
+        identity = (getattr(meta, "agent_mail_identity", "") or "").strip()
+
+    conversation_id = (getattr(meta, "conversation_id", "") or "")
+    return identity, conversation_id
+
+
 def _create_swarm_with_agents(tmp_path: Path, agent_count: int) -> Tuple[RuntimeConfig, Dict[str, Tuple[str, str]]]:
     """Create a new swarm with ``agent_count`` agents via RuntimeDaemon.create.
 
@@ -51,12 +74,12 @@ def _create_swarm_with_agents(tmp_path: Path, agent_count: int) -> Tuple[Runtime
     daemon.start()
 
     # Capture the persisted Agent Mail identities and ACP conversation IDs
-    # from the swarm metadata. These are expected to be durable across
+    # from the swarm state. These are expected to be durable across
     # resume and must not be regenerated.
-    swarm = daemon.swarm_metadata
+    swarm = daemon.swarm_state
     identities: Dict[str, Tuple[str, str]] = {}
     for agent_id, meta in swarm.agents.items():
-        identities[agent_id] = (meta.agent_mail_identity, meta.conversation_id)
+        identities[agent_id] = _get_persisted_identity_and_conversation(meta)
 
     # Drive a clean, in-process shutdown to mirror the quickstart flow.
     daemon.request_shutdown()
@@ -93,10 +116,10 @@ def _create_swarm_with_agents_real_acp(tmp_path: Path, agent_count: int) -> Tupl
 
     daemon.start()
 
-    swarm = daemon.swarm_metadata
+    swarm = daemon.swarm_state
     identities: Dict[str, Tuple[str, str]] = {}
     for agent_id, meta in swarm.agents.items():
-        identities[agent_id] = (meta.agent_mail_identity, meta.conversation_id)
+        identities[agent_id] = _get_persisted_identity_and_conversation(meta)
 
     daemon.request_shutdown()
     daemon.mark_stopped()
@@ -123,12 +146,12 @@ def test_resume_swarm_us2_reuses_agent_identities_and_conversations(tmp_path: Pa
     # The resumed daemon should report ``Running`` at the runtime level.
     assert daemon.state.status is RuntimeStatus.RUNNING
 
-    # The swarm metadata loaded on resume must contain the same agents and
+    # The swarm state loaded on resume must contain the same agents and
     # the same identity/conversation tuples as at creation time.
-    swarm_after = daemon.swarm_metadata
+    swarm_after = daemon.swarm_state
     identities_after: Dict[str, Tuple[str, str]] = {}
     for agent_id, meta in swarm_after.agents.items():
-        identities_after[agent_id] = (meta.agent_mail_identity, meta.conversation_id)
+        identities_after[agent_id] = _get_persisted_identity_and_conversation(meta)
 
     assert identities_after == identities_before
 
@@ -172,10 +195,10 @@ def test_resume_swarm_us2_reuses_identities_and_conversations_with_real_acp(tmp_
     assert isinstance(daemon.acp_client, NateOhaAcpClient)
     assert isinstance(daemon.agent_mail_client, FakeAgentMailClient)
 
-    swarm_after = daemon.swarm_metadata
+    swarm_after = daemon.swarm_state
     identities_after: Dict[str, Tuple[str, str]] = {}
     for agent_id, meta in swarm_after.agents.items():
-        identities_after[agent_id] = (meta.agent_mail_identity, meta.conversation_id)
+        identities_after[agent_id] = _get_persisted_identity_and_conversation(meta)
 
     assert identities_after == identities_before
 

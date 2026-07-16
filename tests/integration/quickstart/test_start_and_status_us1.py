@@ -4,7 +4,7 @@ These tests correspond to T020 in ``tasks.md`` and exercise a thin
 end-to-end path from a project directory on disk through:
 
 * ``RuntimeConfig`` resolution for that project.
-* ``MetadataStore`` / ``SwarmMetadata`` / ``AgentMetadata`` persistence
+* ``MetadataStore`` / ``SwarmState`` / ``AgentState`` persistence
   under ``.nate_ntm/``.
 * ``RuntimeDaemon.resume`` startup semantics.
 * ``RuntimeApiServer`` handlers for ``runtime.get_status`` and
@@ -40,7 +40,7 @@ def _make_started_daemon_with_agents(
     configured external services" setup from US1:
 
     * A project directory exists on disk.
-    * Swarm and agent metadata are written under ``.nate_ntm/``.
+    * Swarm and agent metadata are written under ``.nate_ntm/swarm.json``.
     * The runtime is started in ``resume`` mode, loading that metadata.
     * In-memory agent runtime state reflects a mix of lifecycle states.
     """
@@ -205,10 +205,10 @@ def test_start_and_status_us1_swarm_overview_returns_agent_summaries(
 
 
 def test_scheduler_launches_agents_from_swarm_metadata(tmp_path: Path) -> None:
-    """US1 dev-mode: scheduler launches agents based on SwarmMetadata.
+    """US1 dev-mode: scheduler launches agents based on SwarmState.
 
     This test exercises the path where agent runtime state is derived from
-    persisted swarm metadata via RuntimeDaemon.resume() and the
+    persisted swarm state via RuntimeDaemon.resume() and the
     RuntimeScheduler/AgentSupervisor wiring, rather than being manually
     seeded in tests. It validates that, in dev-mode, configured agents are
     treated as launched (Idle) once the runtime has started.
@@ -222,10 +222,10 @@ def test_scheduler_launches_agents_from_swarm_metadata(tmp_path: Path) -> None:
 
     now = datetime(2026, 7, 3, 12, 0, 0)
 
-    a1 = AgentMetadata(agent_id="nav-1", display_name="Navigator 1")
-    a2 = AgentMetadata(agent_id="nav-2", display_name="Navigator 2")
+    a1 = AgentState(agent_id="nav-1", display_name="Navigator 1")
+    a2 = AgentState(agent_id="nav-2", display_name="Navigator 2")
 
-    swarm = SwarmMetadata(
+    swarm = SwarmState(
         swarm_id=config.swarm_id,
         project_path=config.project_path,
         agent_mail_project_id="mail-project-1",
@@ -237,12 +237,10 @@ def test_scheduler_launches_agents_from_swarm_metadata(tmp_path: Path) -> None:
         },
     )
 
-    # Persist swarm and agent metadata to mirror the create-then-resume
-    # layout. RuntimeDaemon.resume() will load the swarm metadata and
-    # construct RuntimeState/scheduler wiring.
-    store.save_swarm_metadata(swarm)
-    store.save_agent_metadata(a1)
-    store.save_agent_metadata(a2)
+    # Persist swarm state to mirror the create-then-resume layout.
+    # RuntimeDaemon.resume() will load the swarm state and construct
+    # RuntimeState/scheduler wiring.
+    store.save_swarm_state(swarm)
 
     daemon = RuntimeDaemon.resume(config)
 

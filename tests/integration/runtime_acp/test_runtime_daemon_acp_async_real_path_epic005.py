@@ -11,7 +11,7 @@ production implementations:
 
     The goal is to exercise the real ACP SDK wiring for Epic 005 and to
     validate that the opaque ``session_id`` returned by ``session/new`` is
-    persisted into :class:`AgentMetadata.conversation_id` and reused across
+    persisted into :class:`AgentState.conversation_id` and reused across
     runs via :meth:`NateOhaAcpClient.start_agent_async` and
     :meth:`RuntimeDaemon.get_agent_detail`.
 
@@ -39,7 +39,8 @@ from nate_ntm.runtime.adapters import create_runtime_adapters
 from nate_ntm.runtime.agent_mail_client import McpAgentMailClient
 from nate_ntm.runtime.daemon import RuntimeDaemon
 from nate_ntm.runtime.events import AgentEvent
-from nate_ntm.runtime.metadata_store import AgentMetadata, MetadataStore, SwarmMetadata
+from nate_ntm.runtime.metadata_store import MetadataStore
+from nate_ntm.runtime.swarm_state import AgentState, SwarmState
 from nate_ntm.runtime.nate_oha_launch import build_effective_nate_oha_config
 
 
@@ -132,7 +133,7 @@ async def test_runtime_daemon_acp_async_persists_session_id_and_exposes_via_deta
     * :meth:`NateOhaAcpClient.start_agent_async` establishes an ACP
       session and receives an opaque ``session_id`` from the server.
     * That ``session_id`` is persisted into
-      :class:`AgentMetadata.conversation_id` on disk and cached in the
+      :class:`AgentState.conversation_id` on disk and cached in the
       adapter's in-memory session map.
     * A fresh :class:`NateOhaAcpClient` instance with the same
       :class:`RuntimeConfig` reuses the same identifier when
@@ -187,7 +188,7 @@ async def test_runtime_daemon_acp_async_persists_session_id_and_exposes_via_deta
 
     # Seed a single agent with no pre-existing ACP conversation
     # identifier so that start_agent_async must call ``session/new``.
-    base_meta = AgentMetadata(
+    base_meta = AgentState(
         agent_id="nav-async-1",
         display_name="Navigator Async 1",
         agent_mail_identity="",  # Agent Mail is optional for this test.
@@ -195,7 +196,7 @@ async def test_runtime_daemon_acp_async_persists_session_id_and_exposes_via_deta
     )
     nate_oha_cfg = build_effective_nate_oha_config(config=config, metadata=base_meta)
 
-    meta = AgentMetadata(
+    meta = AgentState(
         agent_id="nav-async-1",
         display_name="Navigator Async 1",
         agent_mail_identity="",  # Agent Mail is optional for this test.
@@ -203,7 +204,7 @@ async def test_runtime_daemon_acp_async_persists_session_id_and_exposes_via_deta
         nate_oha_config=nate_oha_cfg,
     )
 
-    swarm = SwarmMetadata(
+    swarm = SwarmState(
         swarm_id=config.swarm_id,
         project_path=config.project_path,
         # For REAL adapters the Agent Mail project identifier used by the
@@ -218,8 +219,7 @@ async def test_runtime_daemon_acp_async_persists_session_id_and_exposes_via_deta
         last_updated_at=now,
         agents={meta.agent_id: meta},
     )
-    store.save_swarm_metadata(swarm)
-    store.save_agent_metadata(meta)
+    store.save_swarm_state(swarm)
 
     # Construct REAL adapters (McpAgentMailClient + NateOhaAcpClient) and
     # hand them to RuntimeDaemon so the daemon owns the integration
@@ -259,10 +259,10 @@ async def test_runtime_daemon_acp_async_persists_session_id_and_exposes_via_deta
 
     try:
         # After async start, the canonical conversation identifier is the
-        # value persisted into :class:`AgentMetadata.conversation_id` on disk.
+        # value persisted into :class:`AgentState.conversation_id` on disk.
         # For Nate OHA / ACP this must be the opaque ``session_id`` assigned
         # by the server.
-        reloaded_meta = store.load_agent_metadata(meta.agent_id)
+        reloaded_meta = store.load_agent_state(meta.agent_id)
         session_id = reloaded_meta.conversation_id
         assert isinstance(session_id, str) and session_id
 
@@ -285,7 +285,7 @@ async def test_runtime_daemon_acp_async_persists_session_id_and_exposes_via_deta
         # OHA instance.
         events_run2: list[AgentEvent] = []
 
-        resume_meta = store.load_agent_metadata(meta.agent_id)
+        resume_meta = store.load_agent_state(meta.agent_id)
         assert resume_meta.conversation_id == session_id
 
         async with fresh_client.subscribe_events(meta.agent_id) as events2:
@@ -352,7 +352,7 @@ async def test_runtime_daemon_acp_async_with_agent_mail_real_path_epic005(tmp_pa
       adapter, enforcing FR-009.
     * :meth:`NateOhaAcpClient.start_agent_async` establishes a real ACP
       session for the agent, obtaining an opaque ``session_id`` that is
-      persisted into :class:`AgentMetadata.conversation_id`.
+      persisted into :class:`AgentState.conversation_id`.
     * A fresh :class:`NateOhaAcpClient` instance with the same
       :class:`RuntimeConfig` reuses the same identifier when
       :meth:`start_agent_async` is invoked with the persisted metadata.
@@ -428,13 +428,13 @@ async def test_runtime_daemon_acp_async_with_agent_mail_real_path_epic005(tmp_pa
 
     # Allocate an Agent Mail identity + credentials for this agent via
     # the REAL adapter. The returned values are persisted into
-    # AgentMetadata so that later resume flows and ACP launches can
+    # AgentState so that later resume flows and ACP launches can
     # reuse them.
     identity, token = agent_mail_client.ensure_agent_identity_with_credentials(agent_id)
     assert identity
     assert token
 
-    base_meta = AgentMetadata(
+    base_meta = AgentState(
         agent_id=agent_id,
         display_name="Navigator Async Mail 1",
         agent_mail_identity=identity,
@@ -443,7 +443,7 @@ async def test_runtime_daemon_acp_async_with_agent_mail_real_path_epic005(tmp_pa
     )
     nate_oha_cfg = build_effective_nate_oha_config(config=config, metadata=base_meta)
 
-    meta = AgentMetadata(
+    meta = AgentState(
         agent_id=agent_id,
         display_name="Navigator Async Mail 1",
         agent_mail_identity=identity,
@@ -452,7 +452,7 @@ async def test_runtime_daemon_acp_async_with_agent_mail_real_path_epic005(tmp_pa
         nate_oha_config=nate_oha_cfg,
     )
 
-    swarm = SwarmMetadata(
+    swarm = SwarmState(
         swarm_id=config.swarm_id,
         project_path=config.project_path,
         agent_mail_project_id=agent_mail_project_id,
@@ -461,8 +461,7 @@ async def test_runtime_daemon_acp_async_with_agent_mail_real_path_epic005(tmp_pa
         agents={meta.agent_id: meta},
     )
 
-    store.save_swarm_metadata(swarm)
-    store.save_agent_metadata(meta)
+    store.save_swarm_state(swarm)
 
     # Reuse the already-constructed REAL adapters when resuming the
     # runtime so that :meth:`RuntimeDaemon.resume` can rebind Agent Mail
@@ -488,7 +487,7 @@ async def test_runtime_daemon_acp_async_with_agent_mail_real_path_epic005(tmp_pa
     # First async run: establish a real ACP session for the agent using
     # the async lifecycle. This launches ``nate-oha acp`` via the ACP
     # SDK with Agent Mail integration enabled.
-    start_meta = store.load_agent_metadata(agent_id)
+    start_meta = store.load_agent_state(agent_id)
     async with acp_client.subscribe_events(agent_id) as events:
         await acp_client.start_agent_async(agent_id, metadata=start_meta)
 
@@ -499,10 +498,10 @@ async def test_runtime_daemon_acp_async_with_agent_mail_real_path_epic005(tmp_pa
 
     try:
         # The canonical conversation identifier is the value persisted
-        # into :class:`AgentMetadata.conversation_id` on disk. For Nate
+        # into :class:`AgentState.conversation_id` on disk. For Nate
         # OHA / ACP this must be the opaque ``session_id`` assigned by
         # the server.
-        reloaded_meta = store.load_agent_metadata(agent_id)
+        reloaded_meta = store.load_agent_state(agent_id)
         session_id = reloaded_meta.conversation_id
         assert isinstance(session_id, str) and session_id
 
@@ -531,7 +530,7 @@ async def test_runtime_daemon_acp_async_with_agent_mail_real_path_epic005(tmp_pa
         # Nate OHA instance with Agent Mail enabled.
         events_run2: list[AgentEvent] = []
 
-        resume_meta = store.load_agent_metadata(agent_id)
+        resume_meta = store.load_agent_state(agent_id)
         assert resume_meta.conversation_id == session_id
 
         async with fresh_client.subscribe_events(agent_id) as events2:
@@ -620,7 +619,7 @@ async def test_runtime_daemon_acp_async_prompt_echo_and_replay_real_path(tmp_pat
 
     agent_id = "nav-async-echo-replay-1"
 
-    base_meta = AgentMetadata(
+    base_meta = AgentState(
         agent_id=agent_id,
         display_name="Navigator Async Echo Replay",
         agent_mail_identity="",  # Agent Mail not required for this scenario.
@@ -628,7 +627,7 @@ async def test_runtime_daemon_acp_async_prompt_echo_and_replay_real_path(tmp_pat
     )
     nate_oha_cfg = build_effective_nate_oha_config(config=config, metadata=base_meta)
 
-    meta = AgentMetadata(
+    meta = AgentState(
         agent_id=agent_id,
         display_name="Navigator Async Echo Replay",
         agent_mail_identity="",  # Agent Mail not required for this scenario.
@@ -636,7 +635,7 @@ async def test_runtime_daemon_acp_async_prompt_echo_and_replay_real_path(tmp_pat
         nate_oha_config=nate_oha_cfg,
     )
 
-    swarm = SwarmMetadata(
+    swarm = SwarmState(
         swarm_id=config.swarm_id,
         project_path=config.project_path,
         agent_mail_project_id=str(config.project_path),
@@ -644,8 +643,7 @@ async def test_runtime_daemon_acp_async_prompt_echo_and_replay_real_path(tmp_pat
         last_updated_at=now,
         agents={meta.agent_id: meta},
     )
-    store.save_swarm_metadata(swarm)
-    store.save_agent_metadata(meta)
+    store.save_swarm_state(swarm)
 
     adapters = create_runtime_adapters(config)
     assert isinstance(adapters.acp, NateOhaAcpClient)
@@ -671,7 +669,7 @@ async def test_runtime_daemon_acp_async_prompt_echo_and_replay_real_path(tmp_pat
         await acp_client.prompt(agent_id, prompt_text1)
         await _wait_for_text(events1, prompt_text1, timeout=5.0, sink=events_run1)
 
-    reloaded_meta = store.load_agent_metadata(agent_id)
+    reloaded_meta = store.load_agent_state(agent_id)
     session_id = reloaded_meta.conversation_id
     assert isinstance(session_id, str) and session_id
 
@@ -698,7 +696,7 @@ async def test_runtime_daemon_acp_async_prompt_echo_and_replay_real_path(tmp_pat
     fresh_client = NateOhaAcpClient(config=config, executable="nate-oha")
     events_run2: list[AgentEvent] = []
 
-    resume_meta = store.load_agent_metadata(agent_id)
+    resume_meta = store.load_agent_state(agent_id)
     assert resume_meta.conversation_id == session_id
 
     try:

@@ -11,7 +11,7 @@ stable and easy to assert on.
 from pathlib import Path
 
 from nate_ntm.config.runtime_config import load_runtime_config
-from nate_ntm.runtime.metadata_store import AgentMetadata
+from nate_ntm.runtime.swarm_state import AgentState
 from nate_ntm.runtime.nate_oha_launch import (
     NateOhaLaunchSpec,
     build_effective_nate_oha_config,
@@ -227,7 +227,7 @@ def test_build_nate_oha_launch_spec_minimal(tmp_path: Path) -> None:
     """Minimal config produces a basic launch spec without resume or Agent Mail.
 
     This covers the core mapping from :class:`RuntimeConfig` and
-    :class:`AgentMetadata` into :class:`NateOhaLaunchSpec` for the case
+    :class:`AgentState` into :class:`NateOhaLaunchSpec` for the case
     where only the executable, base config, and runtime mode are
     configured.
     """
@@ -249,7 +249,7 @@ def test_build_nate_oha_launch_spec_minimal(tmp_path: Path) -> None:
 
     config = load_runtime_config(env=env)
 
-    meta = AgentMetadata(agent_id="agent-1", display_name="Agent One")
+    meta = AgentState(agent_id="agent-1", display_name="Agent One")
 
     spec = build_nate_oha_launch_spec(config=config, metadata=meta)
     assert isinstance(spec, NateOhaLaunchSpec)
@@ -293,7 +293,7 @@ def test_build_nate_oha_launch_spec_with_conversation_and_agent_mail(tmp_path: P
 
     This exercises the mapping for the common case where:
 
-    * a conversation ID has been persisted in :class:`AgentMetadata`,
+    * a conversation ID has been persisted in :class:`AgentState`,
     * LLM and prompt overrides are configured,
     * Agent Mail integration is explicitly enabled for the swarm.
     """
@@ -318,7 +318,7 @@ def test_build_nate_oha_launch_spec_with_conversation_and_agent_mail(tmp_path: P
 
     config = load_runtime_config(env=env)
 
-    meta = AgentMetadata(
+    meta = AgentState(
         agent_id="agent-1",
         display_name="Agent One",
         agent_mail_identity="agent-mail-identity",
@@ -412,7 +412,7 @@ def test_build_effective_nate_oha_config_uses_launch_spec_overrides(
     }
 
     config = load_runtime_config(env=env)
-    meta = AgentMetadata(
+    meta = AgentState(
         agent_id="agent-1",
         display_name="Agent One",
         agent_mail_identity="agent-mail-identity",

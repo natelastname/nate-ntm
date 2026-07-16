@@ -113,13 +113,13 @@ def test_real_agent_mail_and_nate_oha_smoke(
     assert isinstance(adapters.acp, NateOhaAcpClient)
 
     # Create a new swarm with a single agent. This allocates the Agent Mail
-    # project + identity and persists them into SwarmMetadata and per-agent
-    # metadata files under .nate_ntm/. Any ACP session identifiers are
+    # project + identity and persists them into SwarmState/AgentState
+    # records under .nate_ntm/swarm.json. Any ACP session identifiers are
     # established lazily by the async ACP lifecycle helpers in Epic 005.
     daemon = RuntimeDaemon.create(config, agent_count=1, adapters=adapters)
 
     # Basic sanity checks on the created metadata.
-    swarm = daemon.swarm_metadata
+    swarm = daemon.swarm_state
     assert swarm.agent_mail_project_id
     # For REAL adapters the Agent Mail project ID recorded in swarm metadata
     # must be the same key that the runtime was configured with. In this
@@ -127,7 +127,7 @@ def test_real_agent_mail_and_nate_oha_smoke(
     assert swarm.agent_mail_project_id == project_key
     assert "agent-1" in swarm.agents
 
-    agent_meta = daemon.metadata_store.load_agent_metadata("agent-1")
+    agent_meta = daemon.metadata_store.load_agent_state("agent-1")
     assert agent_meta.agent_mail_identity
     assert agent_meta.agent_mail_credentials_ref
     # ACP session identifiers are established lazily by async helpers;
