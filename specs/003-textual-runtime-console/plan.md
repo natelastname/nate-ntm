@@ -12,7 +12,7 @@ Implement a Textual-based terminal console application that connects to a single
 
 ## Technical Context
 
-**Language/Version**: Python 3.12 (project requires `>=3.12,<3.14.1`)
+**Language/Version**: Python 3.13 (project requires `>=3.13,<3.14.1`)
 
 **Primary Dependencies**:
 - `textual` for the terminal UI application and layout

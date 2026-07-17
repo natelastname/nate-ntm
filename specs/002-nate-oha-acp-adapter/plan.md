@@ -12,7 +12,7 @@ This plan describes how to implement the NateOhaAcpClient as the canonical produ
 
 ## Technical Context
 
-**Language/Version**: Python 3.12 (project requires `>=3.12,<3.14.1`)
+**Language/Version**: Python 3.13 (project requires `>=3.13,<3.14.1`)
 
 **Primary Dependencies**:
 - `nate_ntm` runtime components (`runtime.acp_client`, `runtime.adapters`, `runtime.daemon`, `runtime.events`, `runtime.metadata_store`)
@@ -34,7 +34,7 @@ This plan describes how to implement the NateOhaAcpClient as the canonical produ
   - Event propagation from `nate_OHA` into `AgentEventStream`
 
 **Target Platform**:
-- Linux server environment running Python 3.12
+- Linux server environment running Python 3.13
 - `nate_OHA` executable available on PATH (or otherwise discoverable) on the same host as the `nate_ntm` runtime
 
 **Project Type**:

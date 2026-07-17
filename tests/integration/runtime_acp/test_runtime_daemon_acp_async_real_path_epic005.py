@@ -40,8 +40,8 @@ from nate_ntm.runtime.agent_mail_client import McpAgentMailClient
 from nate_ntm.runtime.daemon import RuntimeDaemon
 from nate_ntm.runtime.events import AgentEvent
 from nate_ntm.runtime.metadata_store import MetadataStore
-from nate_ntm.runtime.swarm_state import AgentState, SwarmState
 from nate_ntm.runtime.nate_oha_launch import build_effective_nate_oha_config
+from nate_ntm.runtime.swarm_state import AgentState, SwarmState
 
 
 def _extract_text_payloads(events: list[AgentEvent]) -> list[str]:

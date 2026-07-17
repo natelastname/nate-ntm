@@ -26,7 +26,7 @@ At the completion of this epic:
 
 ### Language
 
-Python 3.12 (managed through `uv`).
+Python 3.13 (managed through `uv`).
 
 ### Primary Dependencies
 

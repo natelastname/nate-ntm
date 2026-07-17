@@ -6,7 +6,7 @@ It is **not** an implementation guide; it assumes the runtime and its CLI/API ar
 
 ## 1. Prerequisites
 
-- Python 3.12+ installed and available on `PATH`.
+- Python 3.13+ installed and available on `PATH`.
 - The `nate_ntm` repository cloned locally.
 - Dependencies installed (example):
 

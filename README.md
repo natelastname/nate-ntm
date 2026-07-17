@@ -23,7 +23,7 @@ This repository currently focuses on the MVP described in
 
 ## Installation
 
-Requires **Python 3.12+** and either `uv` or `pip`.
+Requires **Python 3.13+** and either `uv` or `pip`.
 
 ### Using uv (recommended for development)
 

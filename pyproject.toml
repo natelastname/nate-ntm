@@ -7,7 +7,7 @@ name = "nate_ntm"
 version = "0.1.0"
 description = "A python module"
 readme = "README.md"
-requires-python = ">=3.12,<3.14.1"
+requires-python = ">=3.13,<3.14"
 authors = [
   { name = "Nathan Nichols", email = "communications@resultsmotivated.com" },
 ]
@@ -24,6 +24,7 @@ dependencies = [
     "agent-client-protocol>=0.11.0",
     "fastapi>=0.139.0",
     "nate-oha",
+    "remote-pdb>=2.1.0",
 ]
 
 [project.scripts]
