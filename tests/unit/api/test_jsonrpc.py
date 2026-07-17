@@ -21,6 +21,7 @@ from nate_ntm.runtime.events import AgentEvent, AgentEventSource, AgentEventStre
 from nate_ntm.runtime.metadata_store import MetadataStore
 from nate_ntm.runtime.swarm_state import AgentState, SwarmState
 from nate_ntm.runtime.state import AgentRuntimeState, AgentStatus, RuntimeState, RuntimeStatus
+from nate_oha.config import build_default_config
 
 
 def _make_daemon(tmp_path: Path) -> RuntimeDaemon:
@@ -80,7 +81,11 @@ def test_agent_get_detail_success_and_unknown_agent_error(tmp_path: Path) -> Non
     # Attach durable state and runtime state for a single agent with an
     # in-memory event stream to exercise serialization.
     base_swarm = daemon.swarm_state
-    agent_meta = AgentState(agent_id="agent-1", display_name="Agent One")
+    agent_meta = AgentState(
+        agent_id="agent-1",
+        display_name="Agent One",
+        nate_oha_config=build_default_config(),
+    )
     daemon.swarm_state = base_swarm.model_copy(update={"agents": {"agent-1": agent_meta}})
 
     stream = AgentEventStream(agent_id="agent-1", max_events=10)

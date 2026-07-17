@@ -24,7 +24,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, ConfigDict
 
 from .nate_oha_config_compat import NateOhaConfig
 
@@ -39,34 +39,69 @@ class AgentState(BaseModel):
 
     The durable representation intentionally keeps only the minimal set of
     per-agent fields that are not already captured inside
-    :class:`NateOhaConfig`. Launch-time behavior is driven by
-    :attr:`nate_oha_config`; identity and ACP conversation identifiers live
-    here alongside a small amount of runtime-owned policy and status.
+    :class:`NateOhaConfig`.
+
+    Launch-time behaviour is driven entirely by :attr:`nate_oha_config`.
+    This model records only the agent's durable identity plus a small
+    amount of runtime-owned policy and status that must survive process
+    restarts but does **not** belong in :class:`NateOhaConfig`:
+
+    * ``role`` – optional descriptive label used by UIs and tooling to
+      distinguish agents within a swarm. This is swarm-local presentation
+      metadata rather than nate-oha configuration.
+    * ``restart_policy`` – swarm-owned policy for how the scheduler
+      should treat failing agents. This is runtime behaviour, not part of
+      the nate-oha process configuration.
+    * ``last_known_status`` – snapshot of the last observed high-level
+      status for this agent (for example, "Idle", "Running", "Failed").
+      This is used by :class:`RuntimeDaemon` to provide meaningful status
+      even when no live runtime state exists.
+    * ``conversation_id`` – opaque ACP-owned session identifier used
+      when resuming nate-oha processes via ``--resume``.
+
+    All Nate OHA configuration, including Agent Mail settings, lives
+    inside :attr:`nate_oha_config`. Legacy per-agent Agent Mail fields
+    such as ``agent_mail_identity`` and ``agent_mail_credentials_ref``
+    have been removed; persisted state that still uses them is treated as
+    invalid and will fail validation.
     """
+
+    # Reject unknown/legacy fields so that on-disk swarm state either
+    # conforms to the current schema or fails validation explicitly.
+    model_config = ConfigDict(extra="forbid")
 
     agent_id: str
     display_name: str
 
+    # Optional descriptive label for this agent's role or specialisation
+    # within the swarm (for example, "navigator" or "implementer"). This
+    # is presentation metadata that UIs can surface across restarts; it
+    # does not influence nate-oha configuration and therefore does not
+    # belong in :class:`NateOhaConfig`.
     role: Optional[str] = None
 
-    agent_mail_identity: str = ""
-    agent_mail_credentials_ref: str = ""
+    # ACP-owned conversation identifier used for ``--resume``. ``None``
+    # (or an empty string in older payloads) is treated as "no binding
+    # present"; the runtime must not invent new identifiers locally.
+    conversation_id: Optional[str] = None
 
-    # ACP-owned conversation identifier used for --resume. When empty,
-    # the runtime should treat this agent as not yet bound to a
-    # persistent ACP session.
-    conversation_id: str = ""
-
+    # Swarm-owned restart policy that future scheduler implementations
+    # may consult when deciding how to handle failing agents. This lives
+    # in durable state so policy survives restarts but remains separate
+    # from nate-oha's own configuration.
     restart_policy: Dict[str, Any] = Field(default_factory=dict)
 
     # Snapshot of last persisted status (e.g. "Idle", "Running",
-    # "Failed"). This mirrors ``AgentMetadata.last_known_status``.
+    # "Failed"). This mirrors ``AgentMetadata.last_known_status`` and is
+    # used by :class:`RuntimeDaemon` when computing agent detail in the
+    # absence of live runtime state.
     last_known_status: str = "Idle"
 
-    # Fully resolved Nate OHA configuration for this agent. This is
-    # optional during the migration period; future revisions may tighten
-    # this to be required once all callers populate it.
-    nate_oha_config: Optional[NateOhaConfig] = None
+    # Fully resolved Nate OHA configuration for this agent. Milestone 2
+    # requires this to be present for all persisted agents; callers are
+    # expected to derive and attach an effective configuration before
+    # saving swarm state.
+    nate_oha_config: NateOhaConfig
 
     @field_validator("agent_id", "display_name")
     @classmethod
@@ -84,6 +119,10 @@ class SwarmState(BaseModel):
     single :class:`SwarmState` instance and the embedded
     :class:`AgentState` entries.
     """
+
+    # Reject unknown/legacy fields so that swarm.json either matches the
+    # current schema or fails validation during load.
+    model_config = ConfigDict(extra="forbid")
 
     # Basic schema version to allow for future, non-breaking evolution
     # of the on-disk representation.

@@ -265,7 +265,7 @@ def build_nate_oha_launch_spec(
     # Conversation identifiers are treated as opaque and passed through
     # exactly as stored in metadata, without generating or inferring
     # values locally.
-    conversation_id = metadata.conversation_id or None
+    conversation_id = getattr(metadata, "conversation_id", "") or None
 
     # LLM and prompt overrides are taken directly from the runtime
     # configuration; unset fields are left as ``None`` so that
@@ -288,8 +288,8 @@ def build_nate_oha_launch_spec(
     if agent_mail_enabled:
         agent_mail_project = config.agent_mail_project
         agent_mail_upstream_url = config.agent_mail_upstream_url
-        agent_mail_agent_identity = metadata.agent_mail_identity or None
-        agent_mail_credentials_ref = metadata.agent_mail_credentials_ref or None
+        agent_mail_agent_identity = getattr(metadata, "agent_mail_identity", "") or None
+        agent_mail_credentials_ref = getattr(metadata, "agent_mail_credentials_ref", "") or None
 
     return NateOhaLaunchSpec(
         executable=executable,

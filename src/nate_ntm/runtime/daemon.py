@@ -274,41 +274,58 @@ class RuntimeDaemon:
         # invoked for the agent.
         agents: dict[str, AgentState] = {}
         if agent_count is not None and agent_count > 0:
+            # Milestone 2 requires that every persisted AgentState carries a
+            # fully resolved NateOhaConfig. When initial agents are requested
+            # we therefore treat the Nate OHA base configuration and runtime
+            # mode as mandatory inputs rather than optional hints.
+            if config.nate_oha_config_path is None or not config.nate_oha_runtime_mode:
+                raise RuntimeStartupError(
+                    "RuntimeConfig.nate_oha_config_path and RuntimeConfig.nate_oha_runtime_mode "
+                    "must be set when creating initial agents; they are required to "
+                    "derive a persisted NateOhaConfig for each agent."
+                )
+
+            from types import SimpleNamespace
+
             for index in range(1, agent_count + 1):
                 agent_id = f"agent-{index}"
                 display_name = f"Agent {index}"
 
+                # Allocate a stable Agent Mail identity + optional credentials
+                # for this agent via the runtime-owned adapter. These values
+                # are then embedded into the derived NateOhaConfig instead of
+                # being stored as separate AgentState fields.
                 agent_mail_identity, agent_mail_credentials_ref = (
                     agent_mail_client.ensure_agent_identity_with_credentials(agent_id)
                 )
-                agents[agent_id] = AgentState(
-                    agent_id=agent_id,
-                    display_name=display_name,
+
+                # Build the effective NateOhaConfig for this agent by reusing
+                # the launch-spec override mapping. We pass a small, ephemeral
+                # metadata object carrying only the Agent Mail identity and
+                # credentials ref plus an empty conversation identifier so that
+                # the resulting configuration can be persisted on
+                # :class:`AgentState`.
+                launch_metadata = SimpleNamespace(
+                    conversation_id="",
                     agent_mail_identity=agent_mail_identity,
                     agent_mail_credentials_ref=agent_mail_credentials_ref or "",
                 )
 
-        # When a Nate OHA base configuration and runtime mode are configured
-        # for the swarm, eagerly resolve the effective Nate OHA configuration
-        # for each newly created agent. The resulting NateOhaConfig is
-        # persisted via SwarmState/AgentState and reused across daemon
-        # restarts instead of being re-derived on every launch.
-        if agents and config.nate_oha_config_path is not None and config.nate_oha_runtime_mode:
-            new_agents: dict[str, AgentState] = {}
-            for agent_id, meta in agents.items():
                 try:
                     nate_oha_config = build_effective_nate_oha_config(
                         config=config,
-                        metadata=meta,
+                        metadata=launch_metadata,  # type: ignore[arg-type]
                     )
                 except ValueError as exc:
                     raise RuntimeStartupError(
                         f"Failed to build Nate OHA configuration for agent {agent_id!r}: {exc}"
                     ) from exc
 
-                new_agents[agent_id] = meta.model_copy(update={"nate_oha_config": nate_oha_config})
-
-            agents = new_agents
+                agents[agent_id] = AgentState(
+                    agent_id=agent_id,
+                    display_name=display_name,
+                    nate_oha_config=nate_oha_config,
+                )
 
 
         now = datetime.utcnow()
@@ -534,32 +551,6 @@ class RuntimeDaemon:
                         f"agent {agent_id!r}: adapter returned {identity!r}, "
                         "NateOhaConfig.features.agent_mail.agent_identity has "
                         f"{expected_identity!r}"
-                    )
-
-                # When no config-driven Agent Mail section is present, fall back
-                # to the legacy metadata fields for older swarms. This path is
-                # intentionally limited to backwards-compatibility scenarios and
-                # will be removed once all persisted state uses NateOhaConfig.
-            elif meta.agent_mail_identity:
-                identity, _credentials = agent_mail_client.ensure_agent_identity_with_credentials(
-                    agent_id, meta.agent_mail_credentials_ref or None
-                )
-                if identity != meta.agent_mail_identity:
-                    logger.error(
-                        "runtime_resume_agent_mail_identity_mismatch",
-                        extra={
-                            "swarm_id": swarm.swarm_id,
-                            "project_path": str(swarm.project_path),
-                            "agent_id": agent_id,
-                            "expected_identity": meta.agent_mail_identity,
-                            "actual_identity": identity,
-                            "source": "legacy_metadata",
-                        },
-                    )
-                    raise RuntimeStartupError(
-                        "Agent Mail identity mismatch on resume for "
-                        f"agent {agent_id!r}: adapter returned {identity!r}, "
-                        f"metadata has {meta.agent_mail_identity!r}"
                     )
 
 
@@ -868,11 +859,23 @@ class RuntimeDaemon:
             last_error = None
             stream = None
 
+        # Agent Mail identity is surfaced via the embedded NateOhaConfig
+        # when present. This keeps the control API aligned with the
+        # persisted configuration model instead of relying on separate
+        # per-agent metadata fields.
+        agent_mail_identity: str = ""
+        if metadata is not None:
+            cfg = getattr(metadata, "nate_oha_config", None)
+            features = getattr(cfg, "features", None) if cfg is not None else None
+            agent_mail_cfg = getattr(features, "agent_mail", None) if features is not None else None
+            if agent_mail_cfg is not None:
+                agent_mail_identity = (getattr(agent_mail_cfg, "agent_identity", "") or "").strip()
+
         agent_payload: dict[str, object] = {
             "agent_id": agent_id,
             "display_name": display_name,
             "status": status_value,
-            "agent_mail_identity": metadata.agent_mail_identity if metadata else "",
+            "agent_mail_identity": agent_mail_identity,
             "conversation_id": metadata.conversation_id if metadata else "",
             "last_error": last_error,
         }

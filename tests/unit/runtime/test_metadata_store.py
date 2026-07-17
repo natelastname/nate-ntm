@@ -47,8 +47,6 @@ def test_swarm_and_agent_state_round_trip_with_default_layout(tmp_path: Path) ->
         agent_id="agent-1",
         display_name="Agent One",
         role="navigator",
-        agent_mail_identity="mail-1",
-        agent_mail_credentials_ref="cred-1",
         conversation_id="conv-1",
         restart_policy={"max_restarts": 3},
         last_known_status="Idle",
@@ -90,11 +88,6 @@ def test_swarm_and_agent_state_round_trip_with_default_layout(tmp_path: Path) ->
     assert loaded_agent.agent_id == agent.agent_id
     assert loaded_agent.display_name == agent.display_name
     assert loaded_agent.role == agent.role
-    assert loaded_agent.agent_mail_identity == agent.agent_mail_identity
-    assert (
-        loaded_agent.agent_mail_credentials_ref
-        == agent.agent_mail_credentials_ref
-    )
     assert loaded_agent.conversation_id == agent.conversation_id
     assert loaded_agent.last_known_status == agent.last_known_status
 
@@ -177,7 +170,10 @@ def test_save_agent_state_overwrites_existing_agent_atomically(tmp_path: Path) -
     )
     store.save_swarm_state(swarm)
 
-    agent = AgentState(agent_id="agent-1", display_name="Agent One")
+    # Provide a minimal NateOhaConfig so that AgentState satisfies the
+    # Milestone 2 invariant that every persisted agent carries configuration.
+    nate_oha_cfg = build_default_config()
+    agent = AgentState(agent_id="agent-1", display_name="Agent One", nate_oha_config=nate_oha_cfg)
 
     # First write
     store.save_agent_state(agent)

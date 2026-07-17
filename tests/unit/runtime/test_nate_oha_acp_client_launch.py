@@ -17,7 +17,7 @@ import pytest
 from nate_ntm.config.runtime_config import RuntimeConfig, load_runtime_config
 from nate_ntm.runtime.acp_client import AcpClientError, NateOhaAcpClient
 from nate_ntm.runtime.swarm_state import AgentState
-from nate_oha.config import AgentMailFeatureConfig, FeaturesConfig, build_default_config
+from nate_oha.config import build_default_config
 
 
 def _make_config(tmp_path: Path) -> RuntimeConfig:
@@ -84,10 +84,24 @@ def test_build_command_requires_persisted_config(tmp_path: Path) -> None:
 
     config = _make_config(tmp_path)
     client = NateOhaAcpClient(config=config)
-    meta = AgentState(agent_id="agent-1", display_name="Agent One")
+
+    @dataclass
+    class MinimalMetadata:
+        agent_id: str
+        display_name: str
+        conversation_id: str = ""
+        # Intentionally omit ``nate_oha_config`` so that _build_command
+        # treats this as missing persisted configuration.
+
+    meta = MinimalMetadata(agent_id="agent-1", display_name="Agent One")
 
     with pytest.raises(AcpClientError) as excinfo:
-        client._build_command("agent-1", meta)
+        # Type hint for ``metadata`` is :class:`AgentState`, but the
+        # implementation only relies on attribute access and rejects any
+        # object lacking ``nate_oha_config``. Using a minimal stub here
+        # allows the test to exercise the failure path without
+        # constructing an invalid AgentState.
+        client._build_command("agent-1", meta)  # type: ignore[arg-type]
 
     msg = str(excinfo.value)
     assert "metadata.nate_oha_config" in msg
@@ -113,6 +127,7 @@ def test_build_env_sets_conversation_id_and_correlation(tmp_path: Path, monkeypa
         agent_id="agent-1",
         display_name="Agent One",
         conversation_id="conv-123",
+        nate_oha_config=build_default_config(),
     )
 
     env = client._build_env("agent-1", meta)
@@ -126,85 +141,9 @@ def test_build_env_sets_conversation_id_and_correlation(tmp_path: Path, monkeypa
     # A default model is always supplied unless explicitly overridden.
     assert env["LLM_MODEL"] == "openai/gpt-4o"
 
-
-def test_build_env_derives_agent_mail_from_persisted_config(tmp_path: Path, monkeypatch) -> None:
-    """Agent Mail env vars are derived from metadata.nate_oha_config.features.
-
-    When the persisted Nate OHA config includes an enabled Agent Mail
-    feature, :meth:`_build_env` must translate it into the corresponding
-    ``AGENT_MAIL_*`` variables regardless of any legacy runtime config or
-    metadata fields.
-    """
-
-    monkeypatch.setattr(os, "environ", {})
-
-    config = _make_config(tmp_path)
-    client = NateOhaAcpClient(config=config)
-
-    # Build a concrete NateOhaConfig with an enabled Agent Mail feature.
-    base_cfg = build_default_config()
-    agent_mail_cfg = AgentMailFeatureConfig(
-        enabled=True,
-        project=Path("proj-1"),
-        agent_identity="agent@example.com",
-        credentials_ref="token-123",
-        upstream_url="https://mail.example.com/mcp",
-    )
-    features_cfg = FeaturesConfig(agent_mail=agent_mail_cfg)
-    nate_oha_cfg = base_cfg.model_copy(update={"features": features_cfg})
-
-    # Legacy Agent Mail hints are intentionally ignored when a config-driven
-    # Agent Mail section is present.
-    meta = AgentState(
-        agent_id="agent-1",
-        display_name="Agent One",
-        agent_mail_identity="legacy-identity",
-        agent_mail_credentials_ref="legacy-token",
-        nate_oha_config=nate_oha_cfg,
-    )
-
-    env = client._build_env("agent-1", meta)
-
-    assert env["AGENT_MAIL_PROJECT"] == "proj-1"
-    assert env["AGENT_MAIL_AGENT"] == "agent@example.com"
-    assert env["AGENT_MAIL_TOKEN"] == "token-123"
-    assert env["AGENT_MAIL_UPSTREAM_URL"] == "https://mail.example.com/mcp"
+    # Milestone 2 removes any Agent Mail environment translation; configuration
+    # must flow via NateOhaConfig instead.
+    assert not any(name.startswith("AGENT_MAIL_") for name in env)
 
 
-def test_build_env_raises_when_legacy_agent_mail_without_config(tmp_path: Path, monkeypatch) -> None:
-    """Legacy Agent Mail hints without a config section are rejected.
 
-    Older persistence formats that relied on RuntimeConfig plus separate
-    per-agent metadata fields without a persisted NateOhaConfig are no
-    longer supported. When such legacy configuration is present,
-    :meth:`_build_env` raises :class:`AcpClientError` instead of
-    attempting a best-effort launch.
-    """
-
-    monkeypatch.setattr(os, "environ", {})
-
-    project_root = tmp_path / "project"
-    project_root.mkdir(parents=True, exist_ok=True)
-
-    env = {
-        "NATE_NTM_PROJECT_DIR": str(project_root),
-        "NATE_NTM_AGENT_MAIL_PROJECT": "legacy-project",
-        "NATE_NTM_AGENT_MAIL_URL": "https://mail.example.com/mcp",
-    }
-    config = load_runtime_config(env=env)
-    client = NateOhaAcpClient(config=config)
-
-    meta = AgentState(
-        agent_id="agent-1",
-        display_name="Agent One",
-        agent_mail_identity="legacy-identity",
-        agent_mail_credentials_ref="legacy-token",
-        # No nate_oha_config.features.agent_mail section.
-    )
-
-    with pytest.raises(AcpClientError) as excinfo:
-        client._build_env("agent-1", meta)
-
-    msg = str(excinfo.value)
-    assert "Agent Mail metadata is present" in msg
-    assert "NateOhaConfig.features.agent_mail" in msg

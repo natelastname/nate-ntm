@@ -19,6 +19,7 @@ from nate_ntm.runtime.metadata_store import MetadataStore
 from nate_ntm.runtime.swarm_state import AgentState, SwarmState
 from nate_ntm.runtime.state import AgentRuntimeState, AgentStatus, RuntimeState, RuntimeStatus
 from nate_ntm.api.server import RuntimeApiServer
+from nate_oha.config import build_default_config
 
 
 def _make_daemon(tmp_path: Path) -> RuntimeDaemon:
@@ -80,7 +81,11 @@ def test_runtime_api_server_get_swarm_overview_delegates_to_daemon(tmp_path: Pat
 
     # Attach durable state and runtime state for a single agent.
     base_swarm = daemon.swarm_state
-    agent_meta = AgentState(agent_id="agent-1", display_name="Agent One")
+    agent_meta = AgentState(
+        agent_id="agent-1",
+        display_name="Agent One",
+        nate_oha_config=build_default_config(),
+    )
     daemon.swarm_state = base_swarm.model_copy(update={"agents": {"agent-1": agent_meta}})
 
     daemon.state.agents = {
@@ -154,12 +159,25 @@ def test_runtime_api_server_get_agent_detail_returns_metadata_and_events(tmp_pat
     # Attach durable state and runtime state for a single agent, including an
     # in-memory event stream with a couple of events.
     base_swarm = daemon.swarm_state
+
+    # Construct an AgentState with an embedded NateOhaConfig that carries the
+    # expected Agent Mail identity ("mail-1"). The RuntimeDaemon surfaces this
+    # value via the control API by reading from the config rather than a
+    # separate ``agent_mail_identity`` field on AgentState.
+    nate_oha_cfg = build_default_config()
+    features = getattr(nate_oha_cfg, "features", None)
+    agent_mail_cfg = getattr(features, "agent_mail", None) if features is not None else None
+    if agent_mail_cfg is not None:
+        setattr(agent_mail_cfg, "enabled", True)
+        setattr(agent_mail_cfg, "agent_identity", "mail-1")
+
     agent_meta = AgentState(
         agent_id="agent-1",
         display_name="Agent One",
-        agent_mail_identity="mail-1",
         conversation_id="conv-1",
+        nate_oha_config=nate_oha_cfg,
     )
+
     daemon.swarm_state = base_swarm.model_copy(update={"agents": {"agent-1": agent_meta}})
 
     stream = AgentEventStream(agent_id="agent-1", max_events=10)

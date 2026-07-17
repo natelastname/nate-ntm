@@ -57,6 +57,25 @@ def _write_minimal_swarm_state(config: RuntimeConfig) -> None:
     store.save_swarm_state(swarm)
 
 
+def _get_agent_mail_identity_from_config(agent: AgentState) -> str:
+    """Extract the Agent Mail identity from an AgentState's NateOhaConfig.
+
+    Helper for tests that need to assert FR-009-style identity stability
+    without relying on legacy AgentState.agent_mail_identity fields.
+    """
+
+    cfg = getattr(agent, "nate_oha_config", None)
+    if cfg is None:
+        return ""
+    features = getattr(cfg, "features", None)
+    agent_mail_cfg = getattr(features, "agent_mail", None) if features is not None else None
+    if agent_mail_cfg is None:
+        return ""
+    identity = getattr(agent_mail_cfg, "agent_identity", "") or ""
+    return identity.strip()
+
+
+
 def test_check_startup_preconditions_create_fails_if_metadata_exists(tmp_path: Path) -> None:
     project = tmp_path / "project"
     config = _make_config(project)
@@ -119,9 +138,14 @@ def test_runtime_daemon_create_with_real_acp_persists_nate_oha_metadata(tmp_path
 
     project.mkdir(parents=True, exist_ok=True)
 
+    repo_root = Path(__file__).resolve().parents[3]
+    base_config = repo_root / "nate-oha-profiles" / "profile1.json"
+
     env = {
         "NATE_NTM_PROJECT_DIR": str(project),
         "NATE_NTM_ADAPTER_MODE": "real",
+        "NATE_NTM_NATE_OHA_CONFIG": str(base_config),
+        "NATE_NTM_NATE_OHA_RUNTIME_MODE": "echo",
     }
     config = load_runtime_config(project_path=project, env=env)
 
@@ -132,15 +156,19 @@ def test_runtime_daemon_create_with_real_acp_persists_nate_oha_metadata(tmp_path
     agent_state = store.load_agent_state("agent-1")
 
     assert agent_state.agent_id == "agent-1"
-    # REAL Agent Mail should assign a stable, non-empty identity.
-    assert agent_state.agent_mail_identity
-    assert agent_state.agent_mail_identity == agent_state.agent_mail_identity.strip()
+
+    # REAL Agent Mail should assign a stable, non-empty identity at the
+    # NateOhaConfig level. The runtime no longer persists a separate
+    # AgentState.agent_mail_identity field.
+    identity = _get_agent_mail_identity_from_config(agent_state)
+    assert identity
+    assert identity == identity.strip()
 
     # At create-time no ACP conversation/session has been established yet,
-    # so the conversation_id field should still be empty. It will be filled
-    # in by async ACP lifecycle helpers (for example,
+    # so the conversation_id field should still be empty/None. It will be
+    # filled in by async ACP lifecycle helpers (for example,
     # ``start_agent_async``) once a real ACP session is created.
-    assert agent_state.conversation_id == ""
+    assert agent_state.conversation_id is None
 
 
 
@@ -170,9 +198,14 @@ def test_runtime_daemon_create_and_resume_with_real_acp_and_agent_mail(tmp_path:
     project = tmp_path / "project"
     project.mkdir(parents=True, exist_ok=True)
 
+    repo_root = Path(__file__).resolve().parents[3]
+    base_config = repo_root / "nate-oha-profiles" / "profile1.json"
+
     env = {
         "NATE_NTM_PROJECT_DIR": str(project),
         "NATE_NTM_ADAPTER_MODE": "real",
+        "NATE_NTM_NATE_OHA_CONFIG": str(base_config),
+        "NATE_NTM_NATE_OHA_RUNTIME_MODE": "echo",
     }
     config = load_runtime_config(project_path=project, env=env)
 
@@ -182,17 +215,20 @@ def test_runtime_daemon_create_and_resume_with_real_acp_and_agent_mail(tmp_path:
     store = MetadataStore(config=config)
     meta_before = store.load_agent_state("agent-1")
 
-    assert meta_before.agent_mail_identity
+    identity_before = _get_agent_mail_identity_from_config(meta_before)
+    assert identity_before
+
     # No ACP conversation/session has been created yet, so the
-    # conversation_id field is expected to be empty at this stage.
-    assert meta_before.conversation_id == ""
+    # conversation_id field is expected to be empty/None at this stage.
+    assert meta_before.conversation_id is None
 
     # Fresh resume with the same REAL configuration should not change
     # identifiers.
     daemon_resume = RuntimeDaemon.resume(config)
     meta_after = daemon_resume.metadata_store.load_agent_state("agent-1")
 
-    assert meta_after.agent_mail_identity == meta_before.agent_mail_identity
+    identity_after = _get_agent_mail_identity_from_config(meta_after)
+    assert identity_after == identity_before
     assert meta_after.conversation_id == meta_before.conversation_id
 
 
@@ -369,8 +405,19 @@ def test_runtime_daemon_get_swarm_overview_joins_metadata_and_runtime_state(tmp_
 
     # Attach durable agent state for two agents.
     base_swarm = daemon.swarm_state
-    a1_state = AgentState(agent_id="a1", display_name="Agent One")
-    a2_state = AgentState(agent_id="a2", display_name="Agent Two")
+
+    from nate_oha.config import build_default_config
+
+    a1_state = AgentState(
+        agent_id="a1",
+        display_name="Agent One",
+        nate_oha_config=build_default_config(),
+    )
+    a2_state = AgentState(
+        agent_id="a2",
+        display_name="Agent Two",
+        nate_oha_config=build_default_config(),
+    )
     daemon.swarm_state = base_swarm.model_copy(
         update={"agents": {"a1": a1_state, "a2": a2_state}}
     )
@@ -524,14 +571,26 @@ def test_runtime_daemon_agent_detail_persists_running_status_from_nate_oha_acp(
     store = MetadataStore(config=config)
     now = datetime(2026, 7, 3, 12, 0, 0)
 
-    base_state = AgentState(
+    # Build a NateOhaConfig for the agent using the same helper used by
+    # RuntimeDaemon.create/resume, but against a minimal metadata stub
+    # rather than a full AgentState. This reflects the Milestone 2 design
+    # where the effective NateOhaConfig is resolved once and then embedded
+    # into AgentState for persistence.
+    from types import SimpleNamespace
+
+    base_metadata = SimpleNamespace(
+        conversation_id="",
+        agent_mail_identity="",
+        agent_mail_credentials_ref="",
+    )
+    nate_oha_cfg = build_effective_nate_oha_config(config=config, metadata=base_metadata)
+
+    agent_state = AgentState(
         agent_id="nav-1",
         display_name="Navigator 1",
         last_known_status="Idle",
+        nate_oha_config=nate_oha_cfg,
     )
-    nate_oha_cfg = build_effective_nate_oha_config(config=config, metadata=base_state)
-
-    agent_state = base_state.model_copy(update={"nate_oha_config": nate_oha_cfg})
     swarm = SwarmState(
         swarm_id=config.swarm_id,
         project_path=config.project_path,
@@ -619,10 +678,14 @@ def test_runtime_daemon_agent_detail_falls_back_to_last_known_status_when_acp_ab
     store = MetadataStore(config=config)
     now = datetime(2026, 7, 3, 12, 0, 0)
 
+    from nate_oha.config import build_default_config
+
+    nate_oha_cfg = build_default_config()
     agent_state = AgentState(
         agent_id="nav-1",
         display_name="Navigator 1",
         last_known_status=AgentStatus.FAILED.value,
+        nate_oha_config=nate_oha_cfg,
     )
     swarm = SwarmState(
         swarm_id=config.swarm_id,
