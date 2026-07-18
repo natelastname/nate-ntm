@@ -101,8 +101,10 @@ def test_real_agent_mail_and_nate_oha_smoke(
     base_url = "http://127.0.0.1:8765/api"
 
     # RuntimeConfig will pick these up via _resolve_agent_mail_project and
-    # _resolve_agent_mail_upstream_url, and NateOhaAcpClient will in turn
-    # propagate them into AGENT_MAIL_* for the child nate_OHA process.
+    # _resolve_agent_mail_upstream_url when constructing its Agent Mail feature
+    # block. The ACP adapter then launches nate_OHA with a materialised
+    # NateOhaConfig JSON file; Agent Mail settings are now driven entirely from
+    # that config instead of AGENT_MAIL_* environment variables.
     monkeypatch.setenv("NATE_NTM_AGENT_MAIL_PROJECT", project_key)
     monkeypatch.setenv("NATE_NTM_AGENT_MAIL_URL", base_url)
 
@@ -128,10 +130,19 @@ def test_real_agent_mail_and_nate_oha_smoke(
     assert "agent-1" in swarm.agents
 
     agent_meta = daemon.metadata_store.load_agent_state("agent-1")
-    assert agent_meta.agent_mail_identity
-    assert agent_meta.agent_mail_credentials_ref
-    # ACP session identifiers are established lazily by async helpers;
-    # at this stage we only require that the field exists (it may be empty).
+
+    # Agent Mail identity and credentials are now stored inside the embedded
+    # NateOhaConfig rather than as separate AgentState fields. Confirm that the
+    # persisted configuration carries a non-empty identity and token.
+    cfg = getattr(agent_meta, "nate_oha_config", None)
+    features = getattr(cfg, "features", None) if cfg is not None else None
+    agent_mail_cfg = getattr(features, "agent_mail", None) if features is not None else None
+    assert agent_mail_cfg is not None
+    assert (agent_mail_cfg.agent_identity or "").strip()
+    assert (agent_mail_cfg.credentials_ref or "")
+
+    # ACP session identifiers are established lazily by async helpers; at this
+    # stage we only require that the field exists (it may be empty).
     assert isinstance(agent_meta.conversation_id, str)
 
     # Launch a real nate_OHA process for the agent using the metadata

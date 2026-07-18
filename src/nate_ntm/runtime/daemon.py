@@ -494,12 +494,26 @@ class RuntimeDaemon:
                     continue
 
                 expected_identity = (getattr(agent_mail_cfg, "agent_identity", "") or "").strip()
-                # An empty identity in a config-driven Agent Mail section is
-                # treated as "no binding present" for the purposes of resume
-                # invariants. Earlier phases and the ACP client enforce
-                # non-empty identities when launching nate-oha.
+                # Under the ConfigOverhaul MS2 model an enabled Agent Mail
+                # feature *must* carry a non-empty agent identity. Treating an
+                # empty string as "no binding present" would allow partially
+                # configured agents to slip through resume checks, so we surface
+                # this as an explicit startup error.
                 if not expected_identity:
-                    continue
+                    logger.error(
+                        "runtime_resume_agent_mail_identity_missing",
+                        extra={
+                            "swarm_id": swarm.swarm_id,
+                            "project_path": str(swarm.project_path),
+                            "agent_id": agent_id,
+                            "source": "nate_oha_config",
+                        },
+                    )
+                    raise RuntimeStartupError(
+                        "Agent Mail identity is missing or empty in NateOhaConfig for "
+                        f"agent {agent_id!r} while Agent Mail is enabled; "
+                        "please ensure features.agent_mail.agent_identity is configured."
+                    )
 
                 credentials_hint_raw = getattr(agent_mail_cfg, "credentials_ref", "")
                 credentials_hint = (credentials_hint_raw or "").strip() or None

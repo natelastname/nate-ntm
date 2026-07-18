@@ -173,22 +173,23 @@ Do not introduce `ManagedSwarm` or `ManagedAgent` in this task.
 
 ## Implementation Checklist
 
-- [ ] Tighten `AgentState` model
-  - [ ] Make `nate_oha_config` required
-  - [ ] Remove `agent_mail_identity` and `agent_mail_credentials_ref`
-  - [ ] Enable strict Pydantic validation with `extra="forbid"`
-  - [ ] Retain only still-needed runtime-owned durable fields (e.g., restart policy, last-known status)
-- [ ] Remove Agent Mail environment translation from `NateOhaAcpClient._build_env()`
-  - [ ] Remove construction of `AGENT_MAIL_PROJECT`, `AGENT_MAIL_AGENT`, `AGENT_MAIL_TOKEN`, `AGENT_MAIL_UPSTREAM_URL`
-  - [ ] Remove legacy checks for `agent_state.agent_mail_identity`, `agent_state.agent_mail_credentials_ref`, `RuntimeConfig.agent_mail_project`, `RuntimeConfig.agent_mail_upstream_url`
-  - [ ] Ensure `_build_env()` only retains unrelated, still-needed process-correlation variables
+- [x] Tighten `AgentState` model
+  - [x] Make `nate_oha_config` required
+  - [x] Remove `agent_mail_identity` and `agent_mail_credentials_ref`
+  - [x] Enable strict Pydantic validation with `extra="forbid"`
+  - [x] Retain only still-needed runtime-owned durable fields (e.g., restart policy, last-known status)
+- [x] Remove Agent Mail environment translation from `NateOhaAcpClient._build_env()`
+  - [x] Remove construction of `AGENT_MAIL_PROJECT`, `AGENT_MAIL_AGENT`, `AGENT_MAIL_TOKEN`, `AGENT_MAIL_UPSTREAM_URL`
+  - [x] Remove legacy checks for `agent_state.agent_mail_identity`, `agent_state.agent_mail_credentials_ref`, `RuntimeConfig.agent_mail_project`, `RuntimeConfig.agent_mail_upstream_url`
+  - [x] Ensure `_build_env()` only retains unrelated, still-needed process-correlation variables
 - [ ] Update tests for new config semantics
   - [x] `tests/integration/quickstart/test_resume_swarm_us2.py` reads Agent Mail identity directly from embedded `NateOhaConfig`
   - [x] Remove `_get_persisted_identity_and_conversation()` fallback behavior
   - [x] Ensure tests fail if an `AgentState` lacks a valid effective config
+  - [x] Treat empty `features.agent_mail.agent_identity` as invalid when Agent Mail is enabled
 - [ ] Rewrite legacy runtime-mail fixtures and tests
-  - [ ] Update `tests/integration/runtime_mail/test_resume_error_paths_us2.py` fixtures to always include valid `NateOhaConfig`
-  - [ ] Delete or rewrite the "incomplete legacy metadata" test to drop legacy persisted state support
+  - [x] Update `tests/integration/runtime_mail/test_resume_error_paths_us2.py` fixtures to always include valid `NateOhaConfig`
+  - [x] Delete or rewrite the "incomplete legacy metadata" test to drop legacy persisted state support
 - [ ] Verify conversation ID behavior
   - [ ] Ensure `conversation_id` is passed unchanged to `--resume`
   - [ ] Confirm ACP attempts to load the same session
