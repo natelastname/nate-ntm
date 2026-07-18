@@ -284,8 +284,6 @@ class RuntimeDaemon:
                     "derive a persisted NateOhaConfig for each agent."
                 )
 
-            from types import SimpleNamespace
-
             for index in range(1, agent_count + 1):
                 agent_id = f"agent-{index}"
                 display_name = f"Agent {index}"
@@ -298,22 +296,11 @@ class RuntimeDaemon:
                     agent_mail_client.ensure_agent_identity_with_credentials(agent_id)
                 )
 
-                # Build the effective NateOhaConfig for this agent by reusing
-                # the launch-spec override mapping. We pass a small, ephemeral
-                # metadata object carrying only the Agent Mail identity and
-                # credentials ref plus an empty conversation identifier so that
-                # the resulting configuration can be persisted on
-                # :class:`AgentState`.
-                launch_metadata = SimpleNamespace(
-                    conversation_id="",
-                    agent_mail_identity=agent_mail_identity,
-                    agent_mail_credentials_ref=agent_mail_credentials_ref or "",
-                )
-
                 try:
                     nate_oha_config = build_effective_nate_oha_config(
                         config=config,
-                        metadata=launch_metadata,  # type: ignore[arg-type]
+                        agent_mail_identity=agent_mail_identity,
+                        agent_mail_credentials_ref=agent_mail_credentials_ref,
                     )
                 except ValueError as exc:
                     raise RuntimeStartupError(

@@ -33,7 +33,7 @@ from .acp_connection import open_nate_oha_acp_client
 from .acp_protocol_client import NATE_NTM_CLIENT_CAPABILITIES
 from .events import AgentEvent, AgentEventSource
 from .metadata_store import MetadataStore
-from .nate_oha_launch import build_nate_oha_launch_spec, materialize_nate_oha_config
+from .nate_oha_launch import materialize_nate_oha_config
 from .swarm_state import AgentState
 
 __all__ = [

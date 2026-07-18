@@ -28,7 +28,12 @@ from pathlib import Path
 import tempfile
 from typing import Mapping, MutableMapping, Sequence
 
-__all__ = ["NateOhaLaunchSpec", "build_nate_oha_launch_spec"]
+__all__ = [
+    "NateOhaLaunchSpec",
+    "build_nate_oha_launch_spec",
+    "build_effective_nate_oha_config",
+    "materialize_nate_oha_config",
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,8 +50,6 @@ class NateOhaLaunchSpec:
     * Selecting the runtime mode (for example, ``"echo"`` or ``"agent"``).
     * Providing an optional ACP-owned conversation identifier to resume.
     * Supplying optional model, API key, and prompt overrides.
-    * Supplying optional Agent Mail overrides when the integration is
-      enabled for a swarm.
 
     The :meth:`to_argv` helper renders this specification into a concrete
     ``argv`` sequence suitable for :class:`subprocess.Popen` without going
@@ -87,12 +90,6 @@ class NateOhaLaunchSpec:
     # Optional prompt soul content override.
     prompt_soul_content: str | None = None
 
-    # Agent Mail integration flags and overrides.
-    agent_mail_enabled: bool | None = None
-    agent_mail_project: str | None = None
-    agent_mail_agent_identity: str | None = None
-    agent_mail_credentials_ref: str | None = None
-    agent_mail_upstream_url: str | None = None
 
     # Additional, low-level ``--set`` overrides. These are applied on top of
     # the well-known fields above and can be used to support new configuration
@@ -101,7 +98,7 @@ class NateOhaLaunchSpec:
     #
     # ``extra_overrides`` MUST NOT attempt to replace values derived from the
     # structured fields on this dataclass (such as ``runtime.mode`` or
-    # ``features.agent_mail.enabled``); callers should set the corresponding
+    # ``llm.model``); callers should set the corresponding
     # typed fields instead. :meth:`to_argv` enforces this by raising
     # :class:`ValueError` when a conflicting key is provided.
     extra_overrides: Mapping[str, str] = field(default_factory=dict)
@@ -131,22 +128,6 @@ class NateOhaLaunchSpec:
         if self.prompt_soul_content is not None:
             # Allow empty-string souls but still distinguish from "unset".
             sets["prompt.soul_content"] = self.prompt_soul_content
-
-        # Agent Mail configuration: when agent_mail_enabled is explicitly set,
-        # emit a corresponding ``features.agent_mail.enabled`` override. When
-        # True, also propagate any supplied project/identity/credentials fields.
-        if self.agent_mail_enabled is not None:
-            sets["features.agent_mail.enabled"] = "true" if self.agent_mail_enabled else "false"
-
-            if self.agent_mail_enabled:
-                if self.agent_mail_project:
-                    sets["features.agent_mail.project"] = self.agent_mail_project
-                if self.agent_mail_agent_identity:
-                    sets["features.agent_mail.agent_identity"] = self.agent_mail_agent_identity
-                if self.agent_mail_credentials_ref:
-                    sets["features.agent_mail.credentials_ref"] = self.agent_mail_credentials_ref
-                if self.agent_mail_upstream_url:
-                    sets["features.agent_mail.upstream_url"] = self.agent_mail_upstream_url
 
         # Record the set of configuration paths derived from typed fields so
         # that ``extra_overrides`` cannot silently replace them.
@@ -234,11 +215,6 @@ def build_nate_oha_launch_spec(
     * LLM and prompt overrides are taken from
       :attr:`RuntimeConfig.llm_model`, :attr:`RuntimeConfig.llm_api_key`,
       and :attr:`RuntimeConfig.prompt_soul_content`.
-    * Agent Mail configuration is derived from
-      :attr:`RuntimeConfig.agent_mail_enabled`,
-      :attr:`RuntimeConfig.agent_mail_project`,
-      :attr:`RuntimeConfig.agent_mail_upstream_url`, and the per-agent
-      identity and credentials ref stored in :class:`AgentState`.
     """
 
     if config.nate_oha_config_path is None:
@@ -274,58 +250,6 @@ def build_nate_oha_launch_spec(
     api_key = config.llm_api_key
     prompt_soul_content = config.prompt_soul_content
 
-    # Agent Mail integration.
-    #
-    # When ``agent_mail_enabled`` is explicitly ``False`` we always treat the
-    # feature as disabled for this launch regardless of any per-agent
-    # metadata. When it is explicitly ``True`` we trust the caller and emit
-    # whatever project/identity/credentials values are present in the
-    # configuration + metadata; validation of those values is then handled by
-    # :mod:`nate_oha.config`.
-    #
-    # For the common REAL-path tests (for example the quickstart T242 and the
-    # full runtime + Agent Mail e2e) we also support a conservative
-    # auto-enable behaviour: when ``agent_mail_enabled`` is :data:`None` but
-    # *both* a project key and upstream URL are configured **and** per-agent
-    # metadata carries a non-empty Agent Mail identity, we treat the feature as
-    # enabled for this launch and propagate all four fields into the overrides.
-    #
-    # This keeps tests and simple deployments ergonomic (they only need to set
-    # ``NATE_NTM_AGENT_MAIL_PROJECT`` / ``NATE_NTM_AGENT_MAIL_URL`` and rely on
-    # the adapters to allocate identities) while avoiding accidental
-    # partial-configuration when only one side is present (for example, an
-    # upstream URL leaking in from the environment without a bound identity).
-    agent_mail_enabled = config.agent_mail_enabled
-
-    # Normalise any per-agent Agent Mail metadata up-front so we can reuse it
-    # in the explicit and auto-enabled paths.
-    metadata_agent_identity = getattr(metadata, "agent_mail_identity", "") or None
-    metadata_credentials_ref = getattr(metadata, "agent_mail_credentials_ref", "") or None
-
-    agent_mail_project = None
-    agent_mail_agent_identity = None
-    agent_mail_credentials_ref = None
-    agent_mail_upstream_url = None
-
-    if agent_mail_enabled is None:
-        # Only auto-enable Agent Mail when we have the minimal set of fields
-        # required to build a valid NateOHAConfig: project key, upstream URL,
-        # and a non-empty per-agent identity. Credentials are expected to be
-        # supplied by REAL adapters (for example McpAgentMailClient) but are
-        # not required for the auto-enable decision itself.
-        if (
-            config.agent_mail_project is not None
-            and config.agent_mail_upstream_url is not None
-            and metadata_agent_identity is not None
-        ):
-            agent_mail_enabled = True
-
-    if agent_mail_enabled:
-        agent_mail_project = config.agent_mail_project
-        agent_mail_upstream_url = config.agent_mail_upstream_url
-        agent_mail_agent_identity = metadata_agent_identity
-        agent_mail_credentials_ref = metadata_credentials_ref
-
     return NateOhaLaunchSpec(
         executable=executable,
         base_config=base_config,
@@ -335,15 +259,15 @@ def build_nate_oha_launch_spec(
         model=model,
         api_key=api_key,
         prompt_soul_content=prompt_soul_content,
-        agent_mail_enabled=agent_mail_enabled,
-        agent_mail_project=agent_mail_project,
-        agent_mail_agent_identity=agent_mail_agent_identity,
-        agent_mail_credentials_ref=agent_mail_credentials_ref,
-        agent_mail_upstream_url=agent_mail_upstream_url,
     )
 
 
-def build_effective_nate_oha_config(*, config: RuntimeConfig, metadata: AgentState) -> NateOHAConfig:
+def build_effective_nate_oha_config(
+    *,
+    config: RuntimeConfig,
+    agent_mail_identity: str | None = None,
+    agent_mail_credentials_ref: str | None = None,
+) -> NateOHAConfig:
     """Build the effective :class:`NateOHAConfig` for an agent.
 
     This helper mirrors the base-config-plus-overrides model used by
@@ -356,19 +280,80 @@ def build_effective_nate_oha_config(*, config: RuntimeConfig, metadata: AgentSta
     The resulting configuration is derived as follows:
 
     * ``config.nate_oha_config_path`` provides the base JSON file.
-    * Overrides are taken from :class:`NateOhaLaunchSpec._build_override_mapping`,
-      which corresponds exactly to the ``--set path=value`` arguments that
-      would be passed to the nate-oha CLI.
+    * ``config.nate_oha_runtime_mode`` selects ``runtime.mode``.
+    * Optional LLM and prompt overrides are taken from
+      :attr:`RuntimeConfig.llm_model`, :attr:`RuntimeConfig.llm_api_key`,
+      and :attr:`RuntimeConfig.prompt_soul_content`.
+    * When Agent Mail is enabled, feature flags and per-agent binding
+      information are encoded into ``features.agent_mail.*`` based on the
+      global runtime configuration and the supplied identity/credentials
+      arguments.
     * The ACP-owned conversation/session identifier is **not** embedded in
       the configuration; it remains a separate field on
       :class:`AgentState`.
     """
 
-    spec = build_nate_oha_launch_spec(config=config, metadata=metadata)
-    overrides = list(spec.iter_overrides())
+    if config.nate_oha_config_path is None:
+        raise ValueError(
+            "RuntimeConfig.nate_oha_config_path must be set to build a NateOhaConfig"
+        )
 
-    # Delegate validation and override application to nate_oha.config.
-    return load_nate_oha_config(spec.base_config, overrides=overrides)
+    if not config.nate_oha_runtime_mode:
+        raise ValueError(
+            "RuntimeConfig.nate_oha_runtime_mode must be set to build a NateOhaConfig"
+        )
+
+    overrides: dict[str, str] = {}
+
+    # Always set runtime.mode explicitly so behaviour is driven entirely by
+    # configuration rather than by separate launch paths.
+    overrides["runtime.mode"] = config.nate_oha_runtime_mode
+
+    # Optional LLM and prompt overrides.
+    if config.llm_model:
+        overrides["llm.model"] = config.llm_model
+    if config.llm_api_key:
+        overrides["llm.api_key"] = config.llm_api_key
+    if config.prompt_soul_content is not None:
+        overrides["prompt.soul_content"] = config.prompt_soul_content
+
+    # Agent Mail integration mirrors the semantics previously implemented in
+    # :func:`build_nate_oha_launch_spec`, but derives its inputs explicitly
+    # from RuntimeConfig and the per-agent identity/credentials arguments
+    # instead of reaching into generic metadata.
+    agent_mail_enabled = config.agent_mail_enabled
+
+    if agent_mail_enabled is None:
+        # Only auto-enable Agent Mail when we have the minimal set of fields
+        # required to build a valid NateOHAConfig: project key, upstream URL,
+        # and a non-empty per-agent identity. Credentials are expected to be
+        # supplied by REAL adapters (for example McpAgentMailClient) but are
+        # not required for the auto-enable decision itself.
+        if (
+            config.agent_mail_project is not None
+            and config.agent_mail_upstream_url is not None
+            and agent_mail_identity
+        ):
+            agent_mail_enabled = True
+
+    if agent_mail_enabled is not None:
+        overrides["features.agent_mail.enabled"] = "true" if agent_mail_enabled else "false"
+
+        if agent_mail_enabled:
+            if config.agent_mail_project is not None:
+                overrides["features.agent_mail.project"] = config.agent_mail_project
+            if agent_mail_identity:
+                overrides["features.agent_mail.agent_identity"] = agent_mail_identity
+            if agent_mail_credentials_ref:
+                overrides["features.agent_mail.credentials_ref"] = agent_mail_credentials_ref
+            if config.agent_mail_upstream_url is not None:
+                overrides["features.agent_mail.upstream_url"] = config.agent_mail_upstream_url
+
+    # Apply overrides via nate_oha.config. Sorting keys keeps behaviour stable
+    # for tests while remaining a valid nate-oha configuration override set.
+    override_list = [f"{key}={value}" for key, value in sorted(overrides.items())]
+
+    return load_nate_oha_config(config.nate_oha_config_path, overrides=override_list)
 
 
 

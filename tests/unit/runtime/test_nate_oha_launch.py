@@ -102,58 +102,6 @@ def test_to_argv_includes_model_api_key_and_prompt(tmp_path: Path) -> None:
     assert "prompt.soul_content=Hello, world!" in argv
 
 
-def test_to_argv_agent_mail_disabled_sets_flag_false(tmp_path: Path) -> None:
-    """Explicitly disabled Agent Mail emits a false-enabled flag only."""
-
-    cwd, base_config = _make_base_paths(tmp_path)
-
-    spec = NateOhaLaunchSpec(
-        executable="nate-oha",
-        base_config=base_config,
-        cwd=cwd,
-        runtime_mode="echo",
-        agent_mail_enabled=False,
-    )
-
-    argv = list(spec.to_argv())
-
-    # Agent Mail must be explicitly disabled.
-    assert "features.agent_mail.enabled=false" in argv
-
-    # No other Agent Mail configuration paths should be present.
-    assert all(
-        not item.startswith("features.agent_mail.")
-        or item == "features.agent_mail.enabled=false"
-        for item in argv
-    )
-
-
-def test_to_argv_agent_mail_enabled_sets_all_fields(tmp_path: Path) -> None:
-    """Enabled Agent Mail emits project, identity, credentials, and upstream."""
-
-    cwd, base_config = _make_base_paths(tmp_path)
-
-    spec = NateOhaLaunchSpec(
-        executable="nate-oha",
-        base_config=base_config,
-        cwd=cwd,
-        runtime_mode="agent",
-        agent_mail_enabled=True,
-        agent_mail_project="proj-1",
-        agent_mail_agent_identity="agent@example.com",
-        agent_mail_credentials_ref="cred-ref-1",
-        agent_mail_upstream_url="https://mail.example.com/mcp",
-    )
-
-    argv = list(spec.to_argv())
-
-    assert "features.agent_mail.enabled=true" in argv
-    assert "features.agent_mail.project=proj-1" in argv
-    assert "features.agent_mail.agent_identity=agent@example.com" in argv
-    assert "features.agent_mail.credentials_ref=cred-ref-1" in argv
-    assert "features.agent_mail.upstream_url=https://mail.example.com/mcp" in argv
-
-
 def test_to_argv_extra_overrides_reject_conflicts_with_structured_fields(tmp_path: Path) -> None:
     """extra_overrides must not silently override structured configuration paths."""
 
@@ -226,7 +174,7 @@ def test_to_argv_is_deterministic(tmp_path: Path) -> None:
 
 
 def test_build_nate_oha_launch_spec_minimal(tmp_path: Path) -> None:
-    """Minimal config produces a basic launch spec without resume or Agent Mail.
+    """Minimal config produces a basic launch spec without resume.
 
     This covers the core mapping from :class:`RuntimeConfig` and
     :class:`AgentState` into :class:`NateOhaLaunchSpec` for the case
@@ -262,14 +210,8 @@ def test_build_nate_oha_launch_spec_minimal(tmp_path: Path) -> None:
     assert spec.cwd == project_dir.resolve()
     assert spec.runtime_mode == "echo"
 
-    # No conversation ID or Agent Mail configuration when metadata and
-    # config do not supply them.
+    # No conversation ID when metadata does not supply one.
     assert spec.conversation_id is None
-    assert spec.agent_mail_enabled is None
-    assert spec.agent_mail_project is None
-    assert spec.agent_mail_agent_identity is None
-    assert spec.agent_mail_credentials_ref is None
-    assert spec.agent_mail_upstream_url is None
 
     argv = list(spec.to_argv())
 
@@ -290,14 +232,13 @@ def test_build_nate_oha_launch_spec_minimal(tmp_path: Path) -> None:
     assert argv[4:] == ["--set", "runtime.mode=echo"]
 
 
-def test_build_nate_oha_launch_spec_with_conversation_and_agent_mail(tmp_path: Path) -> None:
-    """Full config yields resume flag and Agent Mail overrides.
+def test_build_nate_oha_launch_spec_with_conversation_and_overrides(tmp_path: Path) -> None:
+    """Full config yields resume flag and LLM/prompt overrides.
 
     This exercises the mapping for the common case where:
 
-    * a conversation ID has been persisted in :class:`AgentState`,
-    * LLM and prompt overrides are configured,
-    * Agent Mail integration is explicitly enabled for the swarm.
+    * a conversation ID has been persisted in :class:`AgentState`, and
+    * LLM and prompt overrides are configured.
     """
 
     project_dir = tmp_path / "project_full"
@@ -313,9 +254,6 @@ def test_build_nate_oha_launch_spec_with_conversation_and_agent_mail(tmp_path: P
         "NATE_NTM_LLM_MODEL": "gpt-test-1",
         "NATE_NTM_LLM_API_KEY": "secret-key",
         "NATE_NTM_PROMPT_SOUL_CONTENT": "Hello from test",
-        "NATE_NTM_AGENT_MAIL_ENABLED": "true",
-        "NATE_NTM_AGENT_MAIL_PROJECT": "test-project",
-        "NATE_NTM_AGENT_MAIL_URL": "https://agent-mail.invalid/mcp",
     }
 
     config = load_runtime_config(env=env)
@@ -323,21 +261,13 @@ def test_build_nate_oha_launch_spec_with_conversation_and_agent_mail(tmp_path: P
     meta = SimpleNamespace(
         agent_id="agent-1",
         display_name="Agent One",
-        agent_mail_identity="agent-mail-identity",
-        agent_mail_credentials_ref="secret-token-ref",
         conversation_id="conv-123",
     )
 
     spec = build_nate_oha_launch_spec(config=config, metadata=meta)
 
-    # Conversation and Agent Mail fields should be propagated into the
-    # launch spec.
+    # Conversation should be propagated into the launch spec.
     assert spec.conversation_id == "conv-123"
-    assert spec.agent_mail_enabled is True
-    assert spec.agent_mail_project == "test-project"
-    assert spec.agent_mail_agent_identity == "agent-mail-identity"
-    assert spec.agent_mail_credentials_ref == "secret-token-ref"
-    assert spec.agent_mail_upstream_url == "https://agent-mail.invalid/mcp"
 
     # LLM and prompt configuration come from the runtime config.
     assert spec.model == "gpt-test-1"
@@ -357,20 +287,10 @@ def test_build_nate_oha_launch_spec_with_conversation_and_agent_mail(tmp_path: P
     ]
 
     # The remaining arguments should be a deterministic sequence of
-    # --set path=value pairs covering runtime.mode, LLM, prompt, and
-    # Agent Mail configuration. The order is defined by sorting the
-    # configuration paths lexicographically.
+    # --set path=value pairs covering runtime.mode, LLM, and prompt
+    # configuration. The order is defined by sorting the configuration
+    # paths lexicographically.
     expected_tail = [
-        "--set",
-        "features.agent_mail.agent_identity=agent-mail-identity",
-        "--set",
-        "features.agent_mail.credentials_ref=secret-token-ref",
-        "--set",
-        "features.agent_mail.enabled=true",
-        "--set",
-        "features.agent_mail.project=test-project",
-        "--set",
-        "features.agent_mail.upstream_url=https://agent-mail.invalid/mcp",
         "--set",
         "llm.api_key=secret-key",
         "--set",
@@ -384,15 +304,16 @@ def test_build_nate_oha_launch_spec_with_conversation_and_agent_mail(tmp_path: P
     assert argv[6:] == expected_tail
 
 
-def test_build_effective_nate_oha_config_uses_launch_spec_overrides(
+def test_build_effective_nate_oha_config_applies_expected_overrides(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    """build_effective_nate_oha_config reuses the launch-spec override mapping.
+    """build_effective_nate_oha_config applies runtime and Agent Mail overrides.
 
     This ensures that the effective nate-oha configuration seen by the
-    runtime is derived from the same base-config-plus-overrides contract
-    that drives the CLI argv construction.
+    runtime is derived from the base-config-plus-overrides contract
+    using explicit Agent Mail identity/credentials inputs rather than
+    generic metadata.
     """
 
     project_dir = tmp_path / "project_effective_config"
@@ -414,16 +335,6 @@ def test_build_effective_nate_oha_config_uses_launch_spec_overrides(
     }
 
     config = load_runtime_config(env=env)
-    meta = SimpleNamespace(
-        agent_id="agent-1",
-        display_name="Agent One",
-        agent_mail_identity="agent-mail-identity",
-        agent_mail_credentials_ref="secret-token-ref",
-        conversation_id="conv-123",
-    )
-
-    spec = build_nate_oha_launch_spec(config=config, metadata=meta)
-    expected_overrides = sorted(spec.iter_overrides())
 
     calls: dict[str, object] = {}
     sentinel = object()
@@ -438,12 +349,35 @@ def test_build_effective_nate_oha_config_uses_launch_spec_overrides(
         fake_load_nate_oha_config,
     )
 
-    result = build_effective_nate_oha_config(config=config, metadata=meta)
+    result = build_effective_nate_oha_config(
+        config=config,
+        agent_mail_identity="agent-mail-identity",
+        agent_mail_credentials_ref="secret-token-ref",
+    )
 
     assert result is sentinel
     assert "base_config_path" in calls
     assert "overrides" in calls
-    assert Path(calls["base_config_path"]) == spec.base_config
-    assert calls["overrides"] is not None
-    assert sorted(calls["overrides"]) == expected_overrides
+    assert Path(calls["base_config_path"]) == base_config.resolve()
+
+    overrides = calls["overrides"]
+    assert overrides is not None
+
+    # The exact set of overrides should cover runtime.mode, LLM/prompt
+    # settings, and Agent Mail feature/binding configuration.
+    expected_overrides = sorted(
+        [
+            "features.agent_mail.agent_identity=agent-mail-identity",
+            "features.agent_mail.credentials_ref=secret-token-ref",
+            "features.agent_mail.enabled=true",
+            "features.agent_mail.project=test-project",
+            "features.agent_mail.upstream_url=https://agent-mail.invalid/mcp",
+            "llm.api_key=secret-key",
+            "llm.model=gpt-test-1",
+            "prompt.soul_content=Hello from test",
+            "runtime.mode=agent",
+        ]
+    )
+
+    assert sorted(overrides) == expected_overrides
 

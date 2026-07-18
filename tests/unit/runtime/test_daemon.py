@@ -629,18 +629,10 @@ def test_runtime_daemon_agent_detail_persists_running_status_from_nate_oha_acp(
     now = datetime(2026, 7, 3, 12, 0, 0)
 
     # Build a NateOhaConfig for the agent using the same helper used by
-    # RuntimeDaemon.create/resume, but against a minimal metadata stub
-    # rather than a full AgentState. This reflects the Milestone 2 design
-    # where the effective NateOhaConfig is resolved once and then embedded
-    # into AgentState for persistence.
-    from types import SimpleNamespace
-
-    base_metadata = SimpleNamespace(
-        conversation_id="",
-        agent_mail_identity="",
-        agent_mail_credentials_ref="",
-    )
-    nate_oha_cfg = build_effective_nate_oha_config(config=config, metadata=base_metadata)
+    # RuntimeDaemon.create, but without any Agent Mail overrides. This
+    # reflects the Milestone 2 design where the effective NateOhaConfig
+    # is resolved once and then embedded into AgentState for persistence.
+    nate_oha_cfg = build_effective_nate_oha_config(config=config)
 
     agent_state = AgentState(
         agent_id="nav-1",
