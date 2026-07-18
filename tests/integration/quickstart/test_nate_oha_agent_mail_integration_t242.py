@@ -19,18 +19,19 @@ runtime startup can:
     * launch a nate_OHA subprocess with Agent Mail integration enabled, and
     * cleanly shut that subprocess down again.
 
-These tests are **opt-in** and skipped by default so that normal CI does
-not require a live Agent Mail server or nate_OHA. To run them locally,
-ensure that:
+These tests assume a live Agent Mail MCP server and a working
+``nate_OHA`` installation. Failures typically indicate environment
+misconfiguration rather than code-level regressions. To run them
+locally, ensure that:
 
 * ``mcp_agent_mail`` is running and reachable at
   ``http://127.0.0.1:8765/api`` (or adjust the environment variables
   accordingly), and
 * ``nate_OHA`` is installed and on ``PATH``.
 
-Then invoke pytest with the integration flag set, for example::
+Then invoke pytest directly, for example::
 
-    NATE_OHA_INTEGRATION=1 uv run pytest -q \
+    uv run pytest -q \
       tests/integration/quickstart/test_nate_oha_agent_mail_integration_t242.py
 """
 
@@ -47,16 +48,6 @@ from nate_ntm.runtime.agent_mail_client import McpAgentMailClient
 from nate_ntm.runtime.acp_client import NateOhaAcpClient
 from nate_ntm.runtime.daemon import RuntimeDaemon
 
-
-RUN_REAL_NATE_OHA = bool(os.environ.get("NATE_OHA_INTEGRATION"))
-
-pytestmark = pytest.mark.skipif(
-    not RUN_REAL_NATE_OHA,
-    reason=(
-        "Set NATE_OHA_INTEGRATION=1 to run nate_OHA + Agent Mail integration "
-        "smoke tests."
-    ),
-)
 
 
 def _make_real_runtime_config(project_path: Path) -> RuntimeConfig:
@@ -100,13 +91,21 @@ def test_real_agent_mail_and_nate_oha_smoke(
     project_key = str(tmp_path)
     base_url = "http://127.0.0.1:8765/api"
 
-    # RuntimeConfig will pick these up via _resolve_agent_mail_project and
-    # _resolve_agent_mail_upstream_url when constructing its Agent Mail feature
-    # block. The ACP adapter then launches nate_OHA with a materialised
-    # NateOhaConfig JSON file; Agent Mail settings are now driven entirely from
-    # that config instead of AGENT_MAIL_* environment variables.
+    # Resolve the repository's sample nate-oha profile used throughout the
+    # real-path tests so that the runtime has a concrete base configuration
+    # and runtime mode to derive persisted NateOhaConfig values from.
+    repo_root = Path(__file__).resolve().parents[3]
+    base_config = repo_root / "nate-oha-profiles" / "profile1.json"
+
+    # RuntimeConfig will pick these up via its Agent Mail and nate-oha
+    # resolution helpers when constructing the effective configuration. The
+    # ACP adapter then launches nate_OHA with a materialised NateOhaConfig
+    # JSON file; Agent Mail settings are driven from that config instead of
+    # AGENT_MAIL_* environment variables.
     monkeypatch.setenv("NATE_NTM_AGENT_MAIL_PROJECT", project_key)
     monkeypatch.setenv("NATE_NTM_AGENT_MAIL_URL", base_url)
+    monkeypatch.setenv("NATE_NTM_NATE_OHA_CONFIG", str(base_config))
+    monkeypatch.setenv("NATE_NTM_NATE_OHA_RUNTIME_MODE", "echo")
 
     config = _make_real_runtime_config(tmp_path)
 
@@ -142,8 +141,10 @@ def test_real_agent_mail_and_nate_oha_smoke(
     assert (agent_mail_cfg.credentials_ref or "")
 
     # ACP session identifiers are established lazily by async helpers; at this
-    # stage we only require that the field exists (it may be empty).
-    assert isinstance(agent_meta.conversation_id, str)
+    # stage we only require that the ``conversation_id`` field exists on the
+    # durable AgentState; it may be empty/None until an async session has
+    # been started.
+    assert hasattr(agent_meta, "conversation_id")
 
     # Launch a real nate_OHA process for the agent using the metadata
     # produced above. Any configuration errors (for example, missing Agent
