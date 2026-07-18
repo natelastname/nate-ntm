@@ -1,200 +1,146 @@
-# Quickstart: SwarmACPMux (Feature 008)
+# Quickstart / Validation Scenario: SwarmACPMux (Feature 008)
 
-This quickstart describes how to exercise the SwarmACPMux behavior end-to-end once the feature is implemented.
+This document describes how to validate SwarmACPMux behavior **via tests** once the feature is implemented. It is aligned with the existing runtime orchestrator quickstart (spec 001) and the project’s `uv`/pytest workflow.
 
-It assumes the nate_ntm Swarm Runtime Orchestrator (spec 001) is already implemented and working according to its own quickstart, and focuses specifically on the path where an external ACP client talks to the swarm via the mux.
-
-> This is **not** an implementation guide; it assumes the runtime, ACP integrations, and Swarm ACP server adapter have been implemented according to the spec, plan, and contracts.
+It does **not** introduce new CLI commands; instead, it focuses on integration tests under `tests/integration/runtime_acp/`.
 
 ## 1. Prerequisites
 
-- Python 3.11+ installed and available on `PATH`.
-- The `nate_ntm` repository cloned locally and installed in editable mode:
+- Python 3.13+ on `PATH`.
+- `nate_ntm` repository cloned locally.
+- Dependencies installed using `uv` (per `.specify/memory/constitution.md`):
 
   ```bash
   cd /path/to/nate_ntm
-  uv run pip install -e .
+  uv sync
   ```
 
-  (Adjust commands if the project provides a dedicated install script; the key requirement is that the `nate-ntm` CLI entrypoint is available.)
+- Ability to run tests:
+
+  ```bash
+  uv run pytest -q
+  ```
 
 - External services available (real or mocked):
-  - OpenHands agent server (for ACP/conversation handling).
-  - Agent Mail service (for mailbox coordination).
-- Any necessary credentials configured via environment variables or config files, per project documentation.
+  - OpenHands agent server for ACP/conversation handling.
+  - Agent Mail service for mailbox coordination.
 
-- The Swarm Runtime Orchestrator (spec 001) working end-to-end:
-  - You can start the runtime daemon in `create` and `resume` modes.
-  - `runtime.get_status`, `swarm.get_overview`, and `agent.get_detail` work via the runtime control API.
+  (These are the same prerequisites as spec 001; see its quickstart for details.)
 
-- A Swarm ACP server adapter that:
-  - Accepts ACP connections from external clients.
-  - Creates a `SwarmACPMux` instance per external ACP session.
-  - Routes reserved swarm-control operations (`_attach`, `_detach`, `_swarm_status`, `_agent_detail`, ...) to mux/runtime helpers.
-  - Forwards ordinary ACP requests to the currently attached agent.
+## 2. Relevant Tests
 
-- An ACP-capable client or test harness able to:
-  - Establish an ACP session to the Swarm ACP server.
-  - Send `SessionUpdate` messages with named updates and JSON payloads.
-  - Receive and display `SessionUpdate` messages from the server.
+Once SwarmACPMux and its adapter integration are implemented, you should be able to validate behavior using tests such as:
 
-## 2. Start the Runtime and Swarm
+- `tests/integration/runtime_acp/test_runtime_daemon_acp_async_real_path_epic005.py`
+  - Existing baseline for the async ACP event path without the mux.
+- `tests/integration/runtime_acp/test_swarm_acp_mux_real_path.py`
+  - New real-path test that exercises the same scenario through the mux and Swarm ACP server adapter.
+- `tests/integration/runtime_acp/test_reserved_swarm_controls.py`
+  - New test focusing on `_attach`, `_detach`, `_swarm_status`, `_agent_detail` behavior and error codes.
 
-1. **Start the runtime daemon** (create or resume a swarm) as in the orchestrator quickstart. For example:
-
-   ```bash
-   nate-ntm runtime start \
-     --project /abs/path/to/your/project \
-     --mode create \
-     --agents 1 \
-     --with-control-api
-   ```
-
-   Leave this running in one terminal.
-
-2. **Confirm runtime status** from another terminal:
-
-   ```bash
-   nate-ntm api call runtime.get_status
-   ```
-
-   You should see the runtime in `Running` state with at least one agent.
-
-## 3. Start the Swarm ACP Server Adapter
-
-In a new terminal, start the Swarm ACP server adapter that integrates with the runtime and exposes ACP over (for example) a WebSocket endpoint:
+Use `uv run pytest` to run these tests:
 
 ```bash
-nate-ntm acp server start \
-  --project /abs/path/to/your/project \
-  --runtime-api ws://127.0.0.1:<runtime-port> \
-  --bind 127.0.0.1:<acp-port>
+uv run pytest tests/integration/runtime_acp/test_swarm_acp_mux_real_path.py -vv
+uv run pytest tests/integration/runtime_acp/test_reserved_swarm_controls.py -vv
 ```
 
-The concrete command-line shape will depend on the adapter implementation; the important behaviors are:
+## 3. High-Level Scenario: Real-Path with Mux
 
-- Each external ACP connection results in a new `SwarmACPMux` instance.
-- The adapter decodes `SessionUpdate` messages from the client, detects reserved updates, and calls into mux/runtime helpers as described in the contracts.
+The `test_swarm_acp_mux_real_path.py` test should perform roughly the following steps:
 
-## 4. Attach to an Agent and Replay Events
+1. **Start the runtime daemon** (create or resume) using the existing CLI, as in spec 001 quickstart:
 
-1. **Connect an ACP client** to the Swarm ACP server (for example, using an ACP test harness or a CLI tool).
+   - `nate-ntm runtime start --project ... --mode create --agents N --with-control-api`
+   - The test harness will typically start this as a subprocess or fixture.
 
-2. **Request swarm status** via a reserved update (shape approximated):
+2. **Start the Swarm ACP server adapter** bound to the runtime’s control API.
 
-   ```jsonc
-   // Client -> Server
-   {
-     "session": "s-001",
-     "update": {
-       "name": "_swarm_status",
-       "payload": {}
-     }
-   }
-   ```
+   - The adapter creates a `SwarmACPMux` per incoming ACP session.
+   - The details (host/port, transport type) are test-fixture specific.
 
-   **Expected outcome:**
-   - You receive a `SessionUpdate` describing the current swarm: runtime status, agent counts, and a list of agents.
+3. **Connect an ACP-capable client** (test harness) to the Swarm ACP server.
 
-3. **Choose an `agent_id`** from the status response.
+4. **Call the logical `_swarm_status` operation** via the ACP extension mechanism.
 
-4. **Attach to that agent** via `_attach`:
+   - Expect a payload equivalent to `swarm.get_overview` (spec 001), wrapped with `attached_agent_id` from the mux.
 
-   ```jsonc
-   // Client -> Server
-   {
-     "session": "s-001",
-     "update": {
-       "name": "_attach",
-       "payload": {
-         "agent_id": "agent-1",
-         "max_events": 50
-       }
-     }
-   }
-   ```
+5. **Choose an `agent_id`** from the status response.
 
-   **Expected outcome:**
-   - The mux validates that `agent-1` exists and is attachable.
-   - The mux subscribes to that agent's `AgentEventStream` with a replay limit of ~50 events.
-   - You receive a sequence of `SessionUpdate` messages corresponding to recent events for `agent-1`, followed by live events.
+6. **Attach to that agent** via `_attach`.
 
-## 5. Send Work and Observe Updates
+   - Expect:
+     - a successful attach response identifying the attached agent; and
+     - subsequent replay of that agent’s recent events, followed by live events.
 
-1. **Send a normal ACP request** (for example, a prompt or tool call) to the attached agent:
+7. **Send ordinary ACP requests** to the attached agent.
 
-   ```jsonc
-   // Client -> Server
-   {
-     "session": "s-001",
-     "update": {
-       "name": "user_message",
-       "payload": {
-         "content": "Summarize the current project status." }
-     }
-   }
-   ```
+   - The client issues prompts/tool calls using the existing ACP methods.
+   - The mux forwards these via `SwarmAgentClient`.
+   - The test asserts that the resulting ACP updates appear on the same external session, and that corresponding `AgentEvent`s are published.
 
-   (The exact update name and payload depend on the ACP schema you use; this is illustrative.)
+8. **Optionally, inspect the same agent via the runtime control API**.
 
-2. **Observe responses and intermediate updates** over the same ACP session:
+   - Use `agent.get_detail` (runtime control API) to confirm that `events` align with what the ACP client saw.
 
-   - Turn start / completion notifications.
-   - Tool calls and results (if any).
-   - Error updates if the agent or tools fail.
+9. **Detach** using `_detach`.
 
-3. **Optionally, attach a second observer** using the runtime control API:
+   - Expect:
+     - a success response `{ "detached": true }` regardless of current attachment (idempotent);
+     - cessation of new events on the external session, while the agent itself continues to run.
 
-   - Call `agent.get_detail` via the runtime API for the same `agent_id`.
-   - Optionally, subscribe via an events/streaming API if available.
+10. **Shut down** the ACP client, adapter, and runtime daemon cleanly.
 
-   **Expected outcome:**
-   - Both the SwarmACPMux-driven ACP client and the runtime API observer see a consistent sequence of events for the agent (within the bounds of their respective APIs).
+The test should verify that the sequence and content of updates matches expectations from the baseline epic005 test, modulo the mux’s additional responsibilities.
 
-## 6. Detach and Clean Up
+## 4. Reserved Swarm-Control Behavior
 
-1. **Detach from the agent** using `_detach`:
+The `test_reserved_swarm_controls.py` test should focus on logical reserved operations and error conditions.
 
-   ```jsonc
-   // Client -> Server
-   {
-     "session": "s-001",
-     "update": {
-       "name": "_detach",
-       "payload": {}
-     }
-   }
-   ```
+### 4.1 `_swarm_status`
 
-   **Expected outcome:**
-   - The mux cancels its event subscription and forwarding task for `agent-1`.
-   - The external session is no longer associated with any agent.
-   - The agent itself continues running in the runtime.
+- Send the logical `_swarm_status` operation via ACP.
+- Assert that:
+  - The payload’s `swarm` field matches `swarm.get_overview` from the runtime control API.
+  - `attached_agent_id` reflects the current mux attachment (or `null`).
 
-2. **Verify swarm status again** with `_swarm_status`:
+### 4.2 `_agent_detail`
 
-   - The swarm status should still show the agent as present and running.
+- For a chosen `agent_id`:
+  - Send `_agent_detail(agent_id, max_events=K)`.
+  - Assert that:
+    - The `agent` and `events` fields match `agent.get_detail` results (bounded by `max_events`).
+    - The `attached` flag is `true` iff the mux is currently attached to that agent.
 
-3. **Close the ACP session** and shut down the Swarm ACP server adapter and runtime daemon when finished.
+### 4.3 `_attach`
 
-## 7. Validation Checklist (Mapped to Spec 008 Goals)
+- Attempt `_attach` with a valid `agent_id`:
+  - Assert that the response includes `attached_agent_id`.
+  - Assert that the attach acknowledgment is observed **before** any replayed events for the new attachment.
 
-- **SC-008-01 (Attachment & Replay)**:
-  - [ ] After `_attach`, the client receives a bounded replay of recent events for the chosen agent, followed by live events.
+- Attempt `_attach` with an unknown `agent_id`:
+  - Assert that the adapter returns an error with code `MUX_UNKNOWN_AGENT`.
 
-- **SC-008-02 (Forwarding of Agent Updates)**:
-  - [ ] Ordinary ACP updates sent by the client (e.g., prompts) are routed to the attached agent and result in corresponding updates on the same ACP session.
+### 4.4 `_detach`
 
-- **SC-008-03 (Reserved Control Routing)**:
-  - [ ] `_swarm_status` and `_agent_detail` are handled by the mux/runtime and do **not** appear as tool calls or messages inside the agent conversation.
+- Call `_detach` twice in a row:
+  - Assert that both calls succeed and return `{ "detached": true }`.
 
-- **SC-008-04 (Multiple Subscribers)**:
-  - [ ] With a runtime observer (e.g., `agent.get_detail` or an events subscription) watching the same agent, both observers see consistent sequences of events.
+## 5. Error Handling Behavior
 
-- **SC-008-05 (Detach Semantics)**:
-  - [ ] `_detach` stops further events being delivered to the ACP session, but the agent remains running and visible in swarm status.
+Tests should also cover mux-level error conditions and their ACP-visible manifestations:
 
-## 8. Notes
+- Sending an agent-directed operation with no attachment returns an error with code `MUX_NO_ATTACHED_AGENT`.
+- Unknown reserved operation names (if surfaced at all) are mapped to a stable error (e.g., `MUX_INVALID_REQUEST` or a specific `UnsupportedReservedUpdate` code), depending on adapter design.
+- Internal runtime or adapter failures produce `MUX_INTERNAL_ERROR` with sufficient logging on the server side.
 
-- This quickstart assumes a single Runtime instance and a single Swarm ACP server per project. Running multiple independent swarms or ACP servers requires separate processes.
-- Error codes and detailed payload shapes are defined in the contracts under `specs/008-swarm-acp-mux/contracts/` and may evolve over time; always consult the contract documents when writing new tests or clients.
+## 6. Checklist for Feature 008
+
+When SwarmACPMux is implemented and these tests pass, you should be able to say:
+
+- [ ] A client can attach to any durable swarm agent and receive a bounded replay of recent events followed by live updates.
+- [ ] Reserved swarm-control operations `_swarm_status` and `_agent_detail` mirror the shapes from the runtime control API.
+- [ ] Reserved operations are handled at the adapter/mux boundary and never appear as tool calls or messages inside the agent conversation.
+- [ ] Detach is idempotent and does not stop the agent.
+- [ ] Agent-directed operations with no attachment fail with `MUX_NO_ATTACHED_AGENT`.
+- [ ] The real-path ACP test through the mux (epic005-style) behaves consistently with the baseline runtime ACP path.

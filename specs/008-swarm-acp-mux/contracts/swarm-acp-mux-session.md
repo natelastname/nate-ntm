@@ -1,164 +1,172 @@
 # Contract: SwarmACPMux ACP Session Behavior (Feature 008)
 
-This document defines the **MVP contract** for how the SwarmACPMux and Swarm ACP server adapter expose the nate_ntm swarm to external ACP clients.
+This contract defines how SwarmACPMux and the Swarm ACP server adapter expose the nate_ntm swarm to external ACP clients at the **logical operation** level.
 
-The goal is to:
+It builds on:
 
-- Provide a clear mapping between ACP `SessionUpdate` messages and runtime/mux behavior.
-- Define a small set of **reserved swarm-control operations** handled by the adapter/mux instead of individual agents.
-- Ensure a consistent replay-then-live event stream for an attached agent over a single ACP session.
+- the runtime control API contracts in
+  `specs/001-swarm-runtime-orchestrator/contracts/runtime-api.md` (for swarm and agent views);
+- the SwarmACPMux class and methods defined in `specs/008-swarm-acp-mux/spec.md`.
 
-> NOTE: The underlying ACP schema (including the precise `SessionUpdate` type) is defined by the ACP SDK and is not re-specified here. This contract describes conventions and responsibilities *on top of* that schema.
+The goal is to specify:
+
+- the logical swarm-control operations (`_swarm_status`, `_agent_detail`, `_attach`, `_detach`);
+- how those map to mux methods and runtime behavior;
+- error codes and ordering guarantees;
+- without over-committing to a specific ACP SDK representation (e.g., `SessionUpdate` vs. method objects).
 
 ---
 
-## 1. General Conventions
+## 1. General Model
 
-- One **SwarmACPMux instance** is created per external ACP session.
+- One **SwarmACPMux** is created per external ACP session.
 - Each mux is attached to **at most one agent at a time**.
-- The external ACP session is identified by a `session_id` (or equivalent) in the ACP SDK; the mux treats this as an opaque string.
-- Messages between the client and server are modeled as `SessionUpdate` objects.
-- Certain `SessionUpdate.name` values are **reserved** for swarm-level control.
-- All other updates are treated as **ordinary agent-directed updates** and forwarded to the currently attached agent.
+- The Swarm ACP server adapter owns the concrete ACP connection and protocol:
+  - it decodes ACP requests/notifications into **logical operations**;
+  - it calls mux methods and runtime helpers;
+  - it encodes results/errors back into ACP responses.
 
-### 1.1 Error Handling
+### 1.1 Error Codes (Logical)
 
-- Errors are returned as ACP error updates (or equivalent in the SDK), with:
-  - a machine-readable `code` (integer or string, depending on SDK conventions);
-  - a human-readable `message`;
-  - optional `data` with additional context (e.g., `agent_id`, `reason`).
-- The adapter/mux is responsible for mapping internal exceptions into stable error codes.
+The adapter maps mux/domain errors to a small set of stable, string-valued error codes:
 
-Recommended (non-exhaustive) error classes for mux-related failures:
+- `"MUX_NO_ATTACHED_AGENT"`
+  - Client attempted an agent-directed operation (prompt, interrupt, etc.) with no attached agent.
+- `"MUX_UNKNOWN_AGENT"`
+  - Requested `agent_id` is not part of the durable swarm membership.
+- `"MUX_INVALID_REQUEST"`
+  - Malformed or missing fields in a reserved-operation request.
+- `"MUX_INTERNAL_ERROR"`
+  - Unexpected failure in mux or adapter; details logged server-side.
 
-- `MUX_NO_ATTACHED_AGENT` – client attempted an agent-directed operation with no attached agent.
-- `MUX_UNKNOWN_AGENT` – requested `agent_id` does not exist.
-- `MUX_AGENT_UNAVAILABLE` – agent exists but is not in a state that can be attached to (e.g., `Failed`).
-- `MUX_INVALID_REQUEST` – malformed payload for a reserved operation.
-- `MUX_INTERNAL_ERROR` – unexpected internal failure; should be logged in detail on the server side.
+The on-the-wire error encoding (e.g., JSON-RPC error object vs. ACP-specific error envelope) is determined by the ACP SDK; this contract fixes only the **logical codes and meanings**.
 
 ---
 
 ## 2. Reserved Swarm-Control Operations
 
-Reserved operations are identified by the `name` field of a `SessionUpdate`. The `payload` field is a JSON object whose structure is defined below.
-
-Reserved operations are **handled entirely by the adapter/mux + runtime** and MUST NOT be forwarded to agent conversations.
+The following operations are **reserved swarm-level controls** that the adapter must recognize and route to SwarmACPMux and/or RuntimeDaemon. On the wire, they MAY be expressed as ACP extension methods or notifications; this contract describes them in terms of logical requests and responses.
 
 ### 2.1 `_swarm_status`
 
-Return high-level status of the swarm and its agents.
+Return swarm-level status and mux attachment information for the current session.
 
-**Request:**
+**Logical request:**
 
 ```jsonc
 {
-  "name": "_swarm_status",
+  "op": "_swarm_status",
   "payload": {}
 }
 ```
 
-**Result (payload shape, approximate):**
+**Mux behavior:**
+
+- Call `mux.get_swarm_status()`.
+- This in turn calls `daemon.get_swarm_status()` (or equivalent) and wraps the result.
+
+**Logical response payload:**
 
 ```jsonc
 {
-  "swarm_id": "default",
-  "project_path": "/abs/path/to/project",
-  "runtime_status": "Running",   // RuntimeStatus
-  "agent_counts": {
-    "total": 4,
-    "starting": 0,
-    "idle": 3,
-    "running": 1,
-    "waiting": 0,
-    "failed": 0
-  },
-  "agents": [
-    {
-      "agent_id": "nav-1",
-      "display_name": "Navigator 1",
-      "status": "Running",       // AgentStatus
-      "has_unread_mail": true,
-      "last_error": null
-    }
-    // ...
-  ]
-}
-```
-
-Errors are returned if the runtime is not running or the swarm cannot be queried.
-
-### 2.2 `_agent_detail`
-
-Return detailed information for a single agent, including recent events.
-
-**Request:**
-
-```jsonc
-{
-  "name": "_agent_detail",
-  "payload": {
-    "agent_id": "nav-1",
-    "max_events": 100 // optional, default determined by server
+  "attached_agent_id": "agent-1" | null,
+  "swarm": {
+    // Exactly the shape of swarm.get_overview result
+    "swarm_id": "default",
+    "project_path": "/abs/path/to/project",
+    "runtime_status": "RuntimeStatus",
+    "agent_counts": { /* see spec 001 */ },
+    "agents": [ /* AgentSummary[] as in spec 001 */ ]
   }
 }
 ```
 
-**Result (payload shape, approximate):**
+Errors (logical):
+
+- `MUX_INTERNAL_ERROR` if `get_swarm_status` fails.
+
+### 2.2 `_agent_detail`
+
+Return detailed information for a single agent, plus whether this mux is currently attached to that agent.
+
+**Logical request:**
 
 ```jsonc
 {
+  "op": "_agent_detail",
+  "payload": {
+    "agent_id": "nav-1",
+    "max_events": 100  // optional; default server value
+  }
+}
+```
+
+**Mux behavior:**
+
+- Validate `agent_id` via mux.
+- Call `mux.get_agent_detail(agent_id, max_events=max_events)`.
+- This reuses the runtime’s `agent.get_detail` view and adds an `attached` flag.
+
+**Logical response payload:**
+
+```jsonc
+{
+  "attached": true | false,
   "agent": {
+    // Exactly the shape of agent.get_detail.agent from spec 001
     "agent_id": "nav-1",
     "display_name": "Navigator 1",
-    "status": "Running",
+    "status": "AgentStatus",
     "agent_mail_identity": "...",
     "conversation_id": "...",
     "last_error": null
   },
   "events": [
+    // AgentEvent[] as defined in spec 001, bounded by max_events
     {
       "event_id": "e-123",
-      "timestamp": "2026-07-18T12:34:56Z",
+      "timestamp": "ISO-8601",
       "agent_id": "nav-1",
       "source": "ACP",
       "type": "TurnStarted",
       "payload": { "turn_id": "t-001" }
     }
-    // ... up to max_events
   ]
 }
 ```
 
-Errors are returned if `agent_id` is unknown or if the runtime cannot provide details.
+Errors (logical):
+
+- `MUX_UNKNOWN_AGENT` if `agent_id` is not a member of the durable swarm.
+- `MUX_INVALID_REQUEST` if the payload is malformed.
+- `MUX_INTERNAL_ERROR` for unexpected failures.
 
 ### 2.3 `_attach`
 
-Attach this external ACP session to a specific agent and begin streaming that agent's events.
+Attach this external ACP session to a specific agent and begin streaming that agent’s events.
 
-**Request:**
+**Logical request:**
 
 ```jsonc
 {
-  "name": "_attach",
+  "op": "_attach",
   "payload": {
-    "agent_id": "nav-1",
-    "max_events": 50 // optional, replay bound for initial events
+    "agent_id": "nav-1"
   }
 }
 ```
 
-**Server behavior:**
+**Mux behavior:**
 
-1. Validate `agent_id` against runtime state.
-2. If the mux is currently attached to a different agent:
-   - Cancel the existing event subscription / forwarding task.
-3. Subscribe to the target agent's `AgentEventStream` with the requested replay bound.
-4. Start a forwarding task that:
-   - replays up to `max_events` past events; then
-   - delivers live events as they occur.
+- Ensure mux is open.
+- Validate `agent_id` via durable swarm membership.
+- If already attached to `agent_id` with a live forwarding task, treat as a no-op and return success.
+- Otherwise:
+  - `await mux.detach()`;
+  - `await mux.attach(agent_id)`;
+  - the mux starts a new `_forward_agent_events(agent_id)` task internally.
 
-**Result (payload shape, approximate):**
+**Logical response payload:**
 
 ```jsonc
 {
@@ -166,34 +174,36 @@ Attach this external ACP session to a specific agent and begin streaming that ag
 }
 ```
 
-After a successful `_attach`, the client should expect to receive a sequence of `SessionUpdate` messages corresponding to the agent's replayed and live events.
+**Ordering guarantee:**
 
-Common error cases:
+- The adapter MUST send the `_attach` success response **before** any replayed events for the new attachment are delivered to the client.
+- Events delivered after this acknowledgment belong to the new attachment.
 
-- `MUX_UNKNOWN_AGENT` – the requested `agent_id` does not exist.
-- `MUX_AGENT_UNAVAILABLE` – the agent exists but is not attachable.
+Errors (logical):
+
+- `MUX_UNKNOWN_AGENT` if `agent_id` is not in durable `SwarmState.agents`.
+- `MUX_INVALID_REQUEST` if the payload is malformed.
+- `MUX_INTERNAL_ERROR` if the attach flow fails unexpectedly.
 
 ### 2.4 `_detach`
 
-Detach the current external ACP session from any agent.
+Detach this external ACP session from its current agent.
 
-**Request:**
+**Logical request:**
 
 ```jsonc
 {
-  "name": "_detach",
+  "op": "_detach",
   "payload": {}
 }
 ```
 
-**Server behavior:**
+**Mux behavior:**
 
-1. If the mux is attached to an agent:
-   - Cancel the forwarding task and event subscription.
-   - Clear `attached_agent_id`.
-2. The underlying agent remains running; only the external attachment is removed.
+- Call `await mux.detach()`.
+- This is **idempotent**: detaching when there is no attachment succeeds and has no effect.
 
-**Result (payload shape, approximate):**
+**Logical response payload:**
 
 ```jsonc
 {
@@ -201,20 +211,22 @@ Detach the current external ACP session from any agent.
 }
 ```
 
-Errors may be omitted when detaching an already-detached session (idempotent behavior is acceptable), or a specific `MUX_NO_ATTACHED_AGENT` error may be returned depending on design preference.
+Errors (logical):
+
+- `MUX_INTERNAL_ERROR` only if detach fails unexpectedly.
 
 ---
 
-## 3. Ordinary Agent-Directed Updates
+## 3. Ordinary Agent-Directed Operations
 
-All `SessionUpdate` messages whose `name` is **not** one of the reserved swarm-control operations are treated as **agent-directed updates**.
+All other operations (ACP-level requests that are **not** `_swarm_status`, `_agent_detail`, `_attach`, or `_detach`) are treated as agent-directed operations.
 
 ### 3.1 Preconditions
 
-- The mux MUST have a non-`null` `attached_agent_id`.
-- The runtime must consider the attached agent to be running or otherwise able to process requests.
+- The mux must be **open** (not closed).
+- `mux.attached_agent_id` must be non-null.
 
-If these preconditions are not met, the server returns an error, for example:
+If either precondition is not met, the adapter returns:
 
 ```jsonc
 {
@@ -226,51 +238,47 @@ If these preconditions are not met, the server returns an error, for example:
 }
 ```
 
-### 3.2 Forwarding Rules
+### 3.2 Forwarding Behavior
 
-- The adapter forwards the update to the underlying per-agent ACP client session corresponding to `attached_agent_id`.
-- The agent's responses and intermediate ACP updates (tool calls, logs, etc.) are observed by the runtime and converted into `AgentEvent` objects.
-- Each such event with a `SessionUpdate` is forwarded back to the external client via the mux's forwarding task.
+- The adapter forwards the ACP request to the per-agent ACP client session corresponding to `mux.attached_agent_id`.
+- The runtime observes ACP responses and intermediate updates, converts them into `AgentEvent` objects, and publishes them to the agent’s `AgentEventStream`.
+- SwarmACPMux receives these events via its subscription, converts them back to ACP-level updates, and writes them to the external session.
 
-This ensures:
-
-- the external client observes a **single ordered stream** of updates for the attached agent;
-- the same underlying events can also be consumed by other runtime subscribers (dashboards, logs, etc.).
+Result: the client observes a **single ordered stream** of events for the attached agent, including replayed history and all subsequent live updates.
 
 ---
 
-## 4. Lifecycle & Shutdown Semantics
+## 4. Lifecycle & Shutdown
 
-- When the external ACP session closes:
-  - The corresponding `SwarmACPMux` instance is torn down.
-  - Any event subscriptions and forwarding tasks are cancelled.
+### 4.1 External Session Closure
 
-- When the runtime shuts down:
-  - All mux instances are eventually torn down.
-  - The adapter should surface a clear error or close the ACP connections.
+When the external ACP session closes:
 
-- Mux teardown should be **best-effort graceful**:
-  - Cancel tasks.
-  - Log any final errors.
-  - Avoid leaking resources or leaving dangling subscriptions.
+- The Swarm ACP server adapter:
+  - signals the mux to `await mux.close()`;
+  - tears down the concrete ACP transport.
+- The mux:
+  - marks itself `_closed = True`;
+  - detaches from any attached agent (cancelling the forwarding task);
+  - frees connection-local resources.
+
+### 4.2 Runtime Shutdown
+
+When the runtime shuts down:
+
+- SwarmACPMux instances are eventually closed.
+- The adapter should:
+  - return a clear error or close all ACP connections;
+  - avoid leaving dangling mux instances.
 
 ---
 
 ## 5. Alignment with Specs 001 and 008
 
-- SwarmACPMux builds on the runtime orchestrator's data model and contracts (spec 001), especially the concepts of:
-  - `RuntimeStatus` and `AgentStatus`.
-  - `AgentEvent` and `AgentEventStream`.
-  - Swarm and agent inspection views.
-
+- SwarmACPMux uses the **same swarm and agent views** as the runtime control API (spec 001) for `_swarm_status` and `_agent_detail`.
 - Feature 008 adds:
-  - A connection-scoped mux per external ACP session.
-  - Reserved swarm-control operations handled at the ACP boundary.
-  - Replay-capable, per-agent event delivery into ACP `SessionUpdate` streams.
+  - a connection-scoped mux per external ACP session;
+  - logical reserved operations handled at the ACP boundary;
+  - replay-capable, per-agent event delivery into ACP-facing streams.
 
-Implementations should adhere to the shapes and behaviors described here closely enough that:
-
-- ACP clients can be written against this document; and
-- tests can assert on the presence and semantics of reserved operations and error codes,
-
-while still allowing for additive fields and non-breaking refinements as the ACP SDK and runtime evolve.
+This contract is intentionally ACP-SDK-agnostic at the wire level; it focuses on the logical operations, payloads, and ordering guarantees needed to write tests and clients that behave correctly across runtime and ACP integration changes.

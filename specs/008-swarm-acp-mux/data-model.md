@@ -1,198 +1,266 @@
 # Data Model: SwarmACPMux and Agent Event Streams (Feature 008)
 
-This document extracts and structures the core entities, fields, relationships, and state transitions implied by the SwarmACPMux spec (`specs/008-swarm-acp-mux/spec.md`) and the existing runtime orchestrator.
+This document describes the core data structures and relationships introduced or constrained by SwarmACPMux, aligned with the existing runtime orchestrator (spec 001).
 
-The goal is to clarify **what data the mux and runtime own for this feature**, how it is represented in memory, and how it changes over time, without over-constraining implementation details.
+The focus is on **in-memory state** for connection-scoped muxes and replay-capable agent event streams; persistent swarm and agent state remains owned by `RuntimeDaemon` / `SwarmState` and documented in spec 001.
 
-## 1. Overview
+## 1. Core In-Memory Entities
 
-Feature 008 introduces a small, connection-scoped component (`SwarmACPMux`) that sits between an external ACP client session and the nate_ntm runtime. Rather than adding new persistent state, it organizes and exposes *existing* runtime state via:
+### 1.1 AgentEvent (runtime-level)
 
-- a replay-capable **AgentEventStream** per agent;
-- a connection-scoped **SwarmACPMux** instance per external ACP session; and
-- a small set of **reserved swarm-control operations** handled at the ACP boundary.
+`AgentEvent` is the normalized event model used throughout the runtime. It remains ACP-agnostic and JSON-serializable.
 
-All new data introduced by this feature is **in-memory only**; durable state remains owned by the runtime as described in the orchestrator data model.
+Conceptual shape (matching spec 001 `runtime-api.md`):
 
-## 2. Core In-Memory Entities
+```python
+@dataclass(slots=True)
+class AgentEvent:
+    event_id: str
+    timestamp: datetime
+    agent_id: str
+    source: Literal["ACP", "AgentMail", "Runtime", "Client"]
+    type: str
+    payload: Mapping[str, object]
+```
 
-### 2.1 AgentEvent
+Notes:
 
-Represents an individual event emitted by the runtime for a specific agent. This extends the orchestrator's AgentEvent concept to carry ACP-specific payloads.
+- `payload` is a summarized, structured view of the event; it need not contain the full raw ACP or Agent Mail payload.
+- ACP-specific models (e.g., `SessionUpdate`) are **not** stored directly in `AgentEvent`.
+- The ACP integration code is responsible for converting between ACP SDK types and this normalized representation.
 
-**Fields (conceptual):
+### 1.2 AgentEventStream
 
-- `event_id: str`
-  - Unique identifier for the event within the agent's event stream.
-- `timestamp: datetime`
-  - Time at which the event occurred or was observed by the runtime.
-- `agent_id: str`
-  - Agent associated with the event.
-- `source: str`
-  - Origin of the event (e.g., `"ACP"`, `"AgentMail"`, `"Runtime"`, `"Client"`).
-- `type: str`
-  - Event type (e.g., `"TurnStarted"`, `"TurnCompleted"`, `"TurnFailed"`, `"ToolCall"`, `"Log"`).
-- `payload: dict | object`
-  - Event-specific payload (summarized, not necessarily the full raw data).
-- `acp_update: SessionUpdate | None`
-  - Optional typed ACP `SessionUpdate` associated with this event, if the event corresponds directly to an ACP update.
+Each agent has a single `AgentEventStream` instance that owns both retained history and live subscriber queues.
 
-**Notes:**
+Conceptual structure:
 
-- Not every event has a meaningful `SessionUpdate` (e.g., internal runtime bookkeeping events), so `acp_update` may be `None`.
-- For events that should be visible on the external ACP stream, the runtime is expected to attach the underlying `SessionUpdate` where possible.
+```python
+class AgentEventStream:
+    def publish(self, event: AgentEvent) -> None: ...
 
-### 2.2 AgentEventStream
+    @asynccontextmanager
+    async def subscribe(self) -> AsyncIterator[AsyncIterator[AgentEvent]]:
+        """Yield retained history, then live events, then a closure sentinel."""
+        ...
+```
 
-Represents a bounded, replay-capable, transient stream of recent AgentEvents for a single agent.
+Implementation properties:
 
-**Conceptual structure:**
+- **Retained history**
+  - A bounded deque of recent `AgentEvent`s per agent, ordered oldest→newest.
+  - When full, oldest events are dropped.
 
-- `events: Deque[AgentEvent]`
-  - Ordered sequence of recent events (oldest to newest), capped by a configured maximum length or memory budget.
-- `max_events: int`
-  - Upper bound on the number of events retained.
-- `subscribers: set[SubscriberHandle]`
-  - Registered subscribers that should receive replay and live updates.
+- **Per-subscriber queues**
+  - Each subscriber gets its own bounded queue.
+  - If a subscriber is too slow, the queue drops oldest events to make room for new ones (drop-oldest policy).
+  - This preserves current `NateOhaAcpClient` semantics for live subscribers.
 
-**Behavioral notes:**
+- **Replay-then-live semantics**
+  - On subscription:
+    - capture a replay boundary and enqueue retained events up to that boundary;
+    - then deliver live events through the same queue;
+    - finally yield a closure sentinel when the stream ends.
 
-- When the stream is full and a new event arrives, the oldest event is dropped.
-- A new subscriber receives:
-  - a replay of existing events (up to some limit, possibly filtered by `max_events` or a caller-provided bound), then
-  - live events as they are appended.
-- The stream is not a durability mechanism; it is safe to discard entirely between runtime restarts.
+- **Durability**
+  - Streams are in-memory only; they are rebuilt empty on runtime restart.
+  - Retained history is best-effort context, not a persistence mechanism.
 
-### 2.3 SwarmACPMux
+### 1.3 SwarmACPMux
 
-Represents the connection-scoped mux state for a single external ACP client session.
+`SwarmACPMux` is connection-scoped state for a single external ACP session.
 
-**Fields (conceptual, roughly matching the spec's dataclass outline):**
+Conceptual dataclass (simplified from the spec):
 
-- `runtime: RuntimeDaemon`
-  - Handle to the running runtime instance. Used to query swarm/agent status and to access AgentEventStreams.
+```python
+@dataclass(slots=True)
+class SwarmACPMux:
+    daemon: RuntimeDaemon
+    agent_client: SwarmAgentClient
+    external_connection: ExternalACPConnection
+    external_session_id: str
+
+    attached_agent_id: str | None = None
+    _forwarding_task: asyncio.Task[None] | None = None
+    _closed: bool = False
+```
+
+Fields:
+
+- `daemon: RuntimeDaemon`
+  - Runtime daemon instance; authoritative for swarm metadata and agent detail.
+- `agent_client: SwarmAgentClient`
+  - Narrow interface for per-agent operations (`subscribe_events`, `prompt`, `interrupt`).
+- `external_connection: ExternalACPConnection`
+  - Adapter-owned abstraction for writing ACP messages to the external session.
 - `external_session_id: str`
-  - Identifier for the external ACP session (as seen by the ACP server / client library).
+  - Identifier for the external ACP session.
 - `attached_agent_id: str | None`
-  - Agent currently attached to this external session, if any.
-- `event_subscription: AgentEventSubscription | None`
-  - Handle representing the mux's subscription to the attached agent's AgentEventStream.
-- `forwarding_task: asyncio.Task | None`
-  - Background task responsible for pulling events from the subscription and sending them to the external ACP client.
-- `logger: logging.Logger`
-  - Logger scoped to this mux instance.
+  - Currently attached agent ID, if any.
+- `_forwarding_task: asyncio.Task | None`
+  - Background task consuming a subscription to the attached agent’s events and forwarding them to the external connection.
+- `_closed: bool`
+  - Marks the mux as closed; further operations raise `SwarmACPMuxClosedError`.
 
-**Invariants:**
+Notes:
 
-- At most one `attached_agent_id` per mux at any time.
-- If `attached_agent_id` is not `None`, there should be an active `event_subscription` and `forwarding_task` associated with that agent.
-- Detaching must cancel the forwarding task and subscription cleanly, without affecting other subscribers.
+- There is **no explicit subscription field**; the subscription context is owned by `_forwarding_task` via `agent_client.subscribe_events()`.
+- Detach/shutdown is implemented by cancelling and awaiting `_forwarding_task`.
 
-### 2.4 Reserved Operation Dispatch (Adapter-Level)
+### 1.4 SwarmAgentClient and ExternalACPConnection
 
-While not a separate class in the runtime, the Swarm ACP server adapter effectively maintains a *dispatch table* for reserved `SessionUpdate` names.
+The mux depends on two protocols, defined in the spec:
 
-Conceptually:
+```python
+class SwarmAgentClient(Protocol):
+    def subscribe_events(
+        self,
+        agent_id: str,
+    ) -> AbstractAsyncContextManager[AsyncIterator[AgentEvent]]: ...
 
-- `reserved_handlers: dict[str, Callable[[SwarmACPMux, SessionUpdate], Awaitable[SessionUpdate]]]`
-  - Maps reserved update names (e.g., `"_attach"`, `"_detach"`, `"_swarm_status"`, `"_agent_detail"`) to handler coroutines.
-  - Handlers use the mux and runtime to perform the requested operation and return an appropriate ACP response update.
+    async def prompt(self, agent_id: str, prompt: str) -> str | None: ...
 
-## 3. Swarm and Agent Views for the Mux
+    async def interrupt(self, agent_id: str) -> None: ...
 
-Although SwarmACPMux does not introduce new persisted entities, it relies on and slightly constrains the shapes of existing runtime views.
 
-### 3.1 SwarmStatus View
+class ExternalACPConnection(Protocol):
+    async def session_update(
+        self,
+        *,
+        session_id: str,
+        update: SessionUpdate,
+    ) -> None: ...
+```
 
-Used to answer `_swarm_status` requests.
+- `SwarmAgentClient` can be implemented by `NateOhaAcpClient`.
+- `ExternalACPConnection` is implemented by the Swarm ACP server adapter, which holds the concrete ACP connection object.
 
-**Conceptual shape (aligned with the runtime control API):**
+## 2. Swarm and Agent Views for the Mux
 
-- `swarm_id: str`
-- `project_path: str`
-- `runtime_status: RuntimeStatus`
-- `agent_counts: dict[str, int]`
-  - Counts keyed by agent lifecycle state (e.g., `"starting"`, `"idle"`, `"running"`, `"waiting"`, `"failed"`).
-- `agents: list[AgentSummary]`
-  - Where `AgentSummary` includes at least:
-    - `agent_id: str`
-    - `display_name: str`
-    - `status: AgentStatus`
-    - `has_unread_mail: bool`
-    - `last_error: str | None`
+SwarmACPMux does not introduce new persisted views. It consumes the existing runtime introspection views defined in spec 001.
 
-The mux does not own this structure; it calls into the runtime (e.g., `runtime.get_swarm_status_view()`) to obtain it and wraps it into an ACP `SessionUpdate` when responding to `_swarm_status`.
+### 2.1 Swarm Status View
 
-### 3.2 AgentDetail View
+Source: `swarm.get_overview` (
+`specs/001-swarm-runtime-orchestrator/contracts/runtime-api.md`).
 
-Used to answer `_agent_detail` requests and to provide context for mux attachment.
+Shape (summarized):
 
-**Conceptual shape:**
+```jsonc
+{
+  "swarm_id": "default",
+  "project_path": "/abs/path/to/project",
+  "runtime_status": "RuntimeStatus",
+  "agent_counts": { /* counts by AgentStatus */ },
+  "agents": [AgentSummary, ...]
+}
+```
 
-- `agent: {
-    agent_id: str,
-    display_name: str,
-    status: AgentStatus,
-    agent_mail_identity: str,
-    conversation_id: str,
-    last_error: str | None,
-  }`
-- `events: list[AgentEvent]`
-  - Recent events for the agent, typically constrained by a `max_events` parameter.
+`SwarmACPMux.get_swarm_status()` wraps this as:
 
-As with SwarmStatus, this is produced by the runtime (building on its own data model) and only re-packaged for ACP by the mux/adapter.
+```jsonc
+{
+  "attached_agent_id": "agent-1" | null,
+  "swarm": <swarm.get_overview result>
+}
+```
 
-## 4. State Transitions
+### 2.2 Agent Detail View
 
-### 4.1 Attachment Lifecycle per Mux
+Source: `agent.get_detail` (same contract file).
+
+Shape (summarized):
+
+```jsonc
+{
+  "agent": {
+    "agent_id": "nav-1",
+    "display_name": "Navigator 1",
+    "status": "AgentStatus",
+    "agent_mail_identity": "...",
+    "conversation_id": "...",
+    "last_error": null
+  },
+  "events": [AgentEvent, ...]
+}
+```
+
+`SwarmACPMux.get_agent_detail(agent_id, max_events)` wraps this as:
+
+```jsonc
+{
+  "attached": true | false,
+  "agent": <agent.get_detail result>.agent,
+  "events": <agent.get_detail result>.events  // bounded by max_events
+}
+```
+
+## 3. State Transitions
+
+### 3.1 Attachment Lifecycle per Mux
 
 For a single `SwarmACPMux` instance:
 
-1. **Initial state**
-   - `attached_agent_id = None`
-   - `event_subscription = None`
-   - `forwarding_task = None`
+1. **Initial state (after construction)**
 
-2. **Attach (`_attach`)**
-   - Validate the requested `agent_id` against runtime state (agent exists and is eligible).
-   - If already attached to a different agent:
-     - Cancel existing `forwarding_task` and `event_subscription`.
-   - Obtain an `AgentEventStream` subscription for the new agent (respecting any replay limits).
-   - Spawn `forwarding_task` to read from the subscription and send events to the external ACP client.
-   - Set `attached_agent_id` to the new `agent_id`.
+   ```python
+   attached_agent_id = None
+   _forwarding_task = None
+   _closed = False
+   ```
 
-3. **Forwarding loop**
-   - For each `AgentEvent` received from the subscription:
-     - Ensure a usable `SessionUpdate` is available (`event.acp_update` or via a helper).
-     - Map it into the external ACP session (preserving ordering and session identity).
-   - On subscription cancellation, shutdown, or error, the task should terminate and clear or update mux state appropriately.
+2. **Attach (`attach(agent_id)`)**
 
-4. **Detach (`_detach`)**
-   - Cancel `forwarding_task` and `event_subscription` if present.
-   - Clear `attached_agent_id`.
-   - Ensure the agent itself continues running; only the external attachment is affected.
+   - Ensure mux is open (`_ensure_open`).
+   - Validate `agent_id` via durable swarm membership (`_require_known_agent`).
+   - If already attached to the same agent with a live `_forwarding_task`, return.
+   - Otherwise:
+     - `await detach()` to stop any prior forwarding.
+     - Set `attached_agent_id = agent_id`.
+     - Start `_forwarding_task = asyncio.create_task(_forward_agent_events(agent_id), ...)`.
 
-5. **Shutdown**
-   - On runtime shutdown or external session closure, ensure mux resources are cleaned up:
-     - Cancel forwarding task and subscription.
-     - Remove mux instance from any registries maintained by the adapter.
+3. **Forwarding loop (`_forward_agent_events`)**
 
-### 4.2 EventStream Retention and Replay
+   - Use `agent_client.subscribe_events(agent_id)` to obtain an async iterator of `AgentEvent`.
+   - For each event, call `_forward_external_event(event)`:
+     - Convert normalized `AgentEvent` into an ACP-level update via helper(s) in the ACP adapter/integration layer.
+     - Send via `external_connection.session_update(session_id=external_session_id, update=...)`.
+   - On normal completion:
+     - If this task is still the current `_forwarding_task` for `attached_agent_id`, clear `attached_agent_id` and `_forwarding_task`.
 
-- When a new subscription is created for an agent:
-  - The subscriber may supply a `max_events` or similar hint.
-  - The stream replies with up to that many of the most recent events, in order.
-  - Subsequent events are delivered live until the subscriber unsubscribes or the stream is torn down.
-- When the runtime restarts:
-  - In-memory streams are re-created empty; SwarmACPMux instances are also torn down.
-  - External clients are expected to reconnect and re-attach as needed.
+4. **Detach (`detach()`)**
 
-## 5. Relationships Summary
+   - Capture `task = _forwarding_task`.
+   - Set `_forwarding_task = None` and `attached_agent_id = None`.
+   - If `task is None`, return (idempotent detach).
+   - Cancel `task` and await it, swallowing `asyncio.CancelledError`.
+   - The underlying agent continues running; only mux attachment is removed.
 
-- One **RuntimeDaemon** manages exactly one **Swarm** (per process), as described in the orchestrator spec.
-- One **Swarm** has many **Agents**, each with its own **AgentEventStream**.
-- Each **AgentEventStream** may have multiple subscribers (dashboards, logs, SwarmACPMux instances).
-- Each **SwarmACPMux** is associated with exactly one external ACP session and, at any given time, at most one attached agent.
-- Reserved operations (`_attach`, `_detach`, `_swarm_status`, `_agent_detail`, ...) are dispatched by the Swarm ACP server adapter using a shared dispatch table but executed against the specific mux and runtime instance for that external session.
+5. **Close (`close()`)**
 
-This data model should be treated as a guide rather than a rigid schema. Implementations may adjust field names and internal structures as long as they preserve the semantics required by the spec—especially around connection-scoped mux behavior, replay-capable event delivery, and clear separation between swarm-level control and per-agent ACP conversations.
+   - If `_closed` is already `True`, return.
+   - Set `_closed = True`.
+   - `await detach()`.
+   - Subsequent operations that require an open mux raise `SwarmACPMuxClosedError`.
+
+### 3.2 EventStream Retention and Replay
+
+For each `AgentEventStream`:
+
+- **Publish**: `publish(event)` appends to the retained deque (dropping oldest if full) and enqueues to each subscriber’s bounded queue (dropping oldest per subscriber as needed).
+- **Subscribe**:
+  - A subscriber calls `subscribe()` and receives an async iterator.
+  - The iterator yields:
+    1. retained events up to a capture boundary;
+    2. then all future events until stream closure;
+    3. then a closure sentinel and terminates.
+
+On runtime restart, all in-memory streams and muxes are discarded; external clients are expected to reconnect and reattach as needed.
+
+## 4. Relationships Summary
+
+- One `RuntimeDaemon` instance manages one swarm.
+- Each swarm has many agents; each agent has one `AgentEventStream`.
+- Each `AgentEventStream` may have many subscribers (dashboards, logs, SwarmACPMux instances, etc.).
+- Each `SwarmACPMux` is associated with exactly one external ACP session and, at any given time, at most one attached agent.
+- Swarm and agent views used by the mux (`get_swarm_status`, `get_agent_detail`) reuse the contracts defined in spec 001.
