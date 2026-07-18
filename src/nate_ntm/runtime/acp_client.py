@@ -13,18 +13,17 @@ Concrete implementation in this branch:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from datetime import datetime
 import asyncio
 import logging
-from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator, Callable, Dict, Mapping, Optional, Literal, Set
-
 import os
 import re
 import shutil
 import subprocess
 import uuid
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Any, AsyncIterator, Callable, Dict, Literal, Mapping, Optional, Set
 
 from acp.meta import PROTOCOL_VERSION
 from acp.schema import TextContentBlock
@@ -34,9 +33,8 @@ from .acp_connection import open_nate_oha_acp_client
 from .acp_protocol_client import NATE_NTM_CLIENT_CAPABILITIES
 from .events import AgentEvent, AgentEventSource
 from .metadata_store import MetadataStore
-from .swarm_state import AgentState
-
 from .nate_oha_launch import build_nate_oha_launch_spec, materialize_nate_oha_config
+from .swarm_state import AgentState
 
 __all__ = [
     "AcpClientError",
@@ -354,7 +352,7 @@ class NateOhaAcpClient(BaseAcpClient):
 
     #: Executable used to launch the nate-oha CLI. This may be overridden in
     #: tests or deployment-specific configuration if needed.
-    executable: str = "nate_OHA"
+    executable: str = "nate-oha"
 
     #: Maximum time to wait for initial nate-oha readiness checks.
     startup_timeout: float = 15.0
