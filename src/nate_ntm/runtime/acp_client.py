@@ -31,6 +31,8 @@ from acp.schema import TextContentBlock
 from ..config.runtime_config import RuntimeConfig
 from .acp_connection import open_nate_oha_acp_client
 from .acp_protocol_client import NATE_NTM_CLIENT_CAPABILITIES
+from .acp_types import SessionUpdate
+from .acp_update_stream import AcpSessionUpdateStream, AgentSessionNotActive, ReceivedSessionUpdate, StreamClosedError
 from .events import AgentEvent, AgentEventSource
 from .metadata_store import MetadataStore
 from .nate_oha_launch import materialize_nate_oha_config
@@ -171,13 +173,16 @@ class AcpAgentSession:
     """
 
     protocol_client: Any
-    """Callback client responsible for translating ACP events.
+    """Callback client responsible for handling ACP events.
 
     Concrete implementations are expected to store a
     ``NateNtmAcpProtocolClient``-like object here, which exposes methods
-    such as ``session_update(...)`` and emits :class:`AgentEvent`
-    instances into the runtime.
+    such as ``session_update(...)`` and publishes typed ACP updates into
+    :attr:`update_stream`.
     """
+
+    # Per-session typed ACP update stream owned by this concrete session.
+    update_stream: AcpSessionUpdateStream = field(default_factory=AcpSessionUpdateStream)
 
     status: str = "starting"
     """Adapter-level lifecycle status for this session.
@@ -474,6 +479,55 @@ class NateOhaAcpClient(BaseAcpClient):
                         },
                     )
 
+    def _on_session_update(
+        self,
+        agent_id: str,
+        session_id: str,
+        update: SessionUpdate,
+        received_at: datetime,
+    ) -> None:
+        """Internal hook for typed ACP ``session/update`` notifications.
+
+        This method is wired into :func:`open_nate_oha_acp_client` via
+        :class:`NateNtmAcpProtocolClient` and is responsible for forwarding
+        each typed :class:`SessionUpdate` into the owning
+        :class:`AcpAgentSession`'s :class:`AcpSessionUpdateStream`.
+        """
+
+        session = self._sessions.get(agent_id)
+        if session is None:
+            # The update refers to an agent that no longer has an active
+            # session in this adapter. Log a warning and drop the update.
+            logger.warning(
+                "acp_session_update_for_unknown_agent",
+                extra={"agent_id": agent_id, "session_id": session_id},
+            )
+            raise AgentSessionNotActive(
+                f"Received ACP session update for inactive agent {agent_id!r}"
+            )
+
+        try:
+            session.update_stream.publish(update, received_at=received_at)
+        except StreamClosedError:
+            # The stream has already been closed, typically because the
+            # session is shutting down. Treat this as benign but log at
+            # debug level for diagnostics.
+            logger.debug(
+                "acp_update_after_stream_closed",
+                extra={"agent_id": agent_id, "session_id": session_id},
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            # Any unexpected failure when publishing to the stream is treated
+            # as terminal for that stream so that subscribers observe a
+            # consistent closure signal.
+            session.update_stream.close(exc)
+            logger.error(
+                "acp_update_stream_publish_error",
+                extra={"agent_id": agent_id, "session_id": session_id},
+            )
+            raise
+
+
     def _emit_event(self, event: AgentEvent) -> None:
         """Deliver an AgentEvent to subscribers and the legacy callback.
 
@@ -617,6 +671,45 @@ class NateOhaAcpClient(BaseAcpClient):
 
         return await asyncio.wait_for(_runner(), timeout=timeout)
 
+
+
+    @asynccontextmanager
+    async def subscribe_acp_updates(self, agent_id: str) -> AsyncIterator[AsyncIterator[ReceivedSessionUpdate]]:
+        """Subscribe to the typed ACP update stream for ``agent_id``.
+
+        The returned async iterator yields :class:`ReceivedSessionUpdate`
+        objects drawn from the per-session
+        :class:`~nate_ntm.runtime.acp_update_stream.AcpSessionUpdateStream`
+        owned by the active :class:`AcpAgentSession`.
+
+        This API is the preferred integration surface for ACP telemetry in
+        new code paths. It supersedes the legacy :meth:`subscribe_events`
+        interface, which remains for compatibility during the migration
+        away from :class:`AgentEvent`.
+        """
+
+        session = self._sessions.get(agent_id)
+        if session is None or session.status not in {"starting", "running"}:
+            raise AgentSessionNotActive(
+                f"No active ACP session for agent {agent_id!r}"
+            )
+
+        stream = session.update_stream
+        async with stream.subscribe() as updates:
+            yield updates
+
+    async def iter_acp_updates(self, agent_id: str) -> AsyncIterator[ReceivedSessionUpdate]:
+        """Yield typed ACP updates for ``agent_id`` as they arrive.
+
+        This is a thin convenience wrapper around
+        :meth:`subscribe_acp_updates`. Each call registers an independent
+        subscription that receives a replay of retained history followed by
+        live updates for the given agent.
+        """
+
+        async with self.subscribe_acp_updates(agent_id) as updates:
+            async for item in updates:
+                yield item
 
     _version_checked: bool = field(default=False, init=False)
     _detected_version: str | None = field(default=None, init=False)
@@ -769,7 +862,7 @@ class NateOhaAcpClient(BaseAcpClient):
             env=env,
             cwd=self.config.project_path,
             agent_id=agent_id,
-            event_sink=self._emit_event,
+            on_session_update=self._on_session_update,
             capabilities=NATE_NTM_CLIENT_CAPABILITIES,
         )
 
@@ -797,6 +890,23 @@ class NateOhaAcpClient(BaseAcpClient):
         # semantics.
         self._session_contexts[agent_id] = cm
 
+        # Create a provisional AcpAgentSession record before initializing the
+        # ACP connection so that any ``session/update`` notifications observed
+        # during initialization or during session (load/new) are published into
+        # a live :class:`AcpSessionUpdateStream`.
+        provisional_conversation_id = (metadata.conversation_id or "").strip()
+        session = AcpAgentSession(
+            agent_id=agent_id,
+            conversation_id=provisional_conversation_id,
+            process=process,
+            connection=connection,
+            protocol_client=protocol_client,
+            status="starting",
+            stderr_task=None,
+            exit_monitor_task=None,
+        )
+        self._sessions[agent_id] = session
+
         # Initialize the ACP connection and negotiate capabilities.
         await connection.initialize(
             protocol_version=PROTOCOL_VERSION,
@@ -812,7 +922,7 @@ class NateOhaAcpClient(BaseAcpClient):
         # otherwise we create a fresh session and persist the returned
         # ``session_id`` back into :class:`AgentState` so it can be reused
         # on ``--resume`` and in subsequent launches.
-        conversation_id = (metadata.conversation_id or "").strip()
+        conversation_id = provisional_conversation_id
         if conversation_id:
             # Attach to an existing, persisted ACP session.
             await connection.load_session(
@@ -843,17 +953,10 @@ class NateOhaAcpClient(BaseAcpClient):
             updated_state = existing_state.model_copy(update={"conversation_id": conversation_id})
             store.save_agent_state(updated_state)
 
-
-        self._sessions[agent_id] = AcpAgentSession(
-            agent_id=agent_id,
-            conversation_id=conversation_id,
-            process=process,
-            connection=connection,
-            protocol_client=protocol_client,
-            status="running",
-            stderr_task=None,
-            exit_monitor_task=None,
-        )
+        # Update the in-memory session record now that we know the
+        # authoritative conversation identifier and mark it as running.
+        session.conversation_id = conversation_id
+        session.status = "running"
 
     async def stop_agent_async(self, agent_id: str, *, timeout: float) -> None:
         """Asynchronously request a graceful stop for the ACP runtime.
@@ -875,15 +978,29 @@ class NateOhaAcpClient(BaseAcpClient):
             self.stop_agent(agent_id, timeout=timeout)
             return
 
+        error: BaseException | None = None
         try:
             # The context manager owns both the ACP connection and the
             # subprocess shutdown semantics.
             await ctx.__aexit__(None, None, None)
         except Exception as exc:  # pragma: no cover - defensive
+            error = exc
             raise AcpClientError(
                 f"Failed to stop ACP session for agent {agent_id!r}: {exc}"
             ) from exc
         finally:
+            # Ensure the per-session typed update stream is closed so that
+            # callers observe a consistent terminal state for this session.
+            try:
+                session.update_stream.close(error)
+            except Exception:
+                # Stream closure must not mask shutdown errors; log and
+                # continue with cleanup.
+                logger.debug(
+                    "acp_update_stream_close_error",
+                    extra={"agent_id": agent_id},
+                )
+
             # Regardless of whether shutdown succeeds or fails, terminate any
             # active event subscriptions for this agent so callers do not wait
             # indefinitely on a closed session, and clean up any temporary

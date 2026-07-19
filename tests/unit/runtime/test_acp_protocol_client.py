@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import List
+from typing import List, Tuple
 
 import pytest
 
@@ -13,15 +13,21 @@ from nate_ntm.runtime.acp_protocol_client import (
     NATE_NTM_CLIENT_CAPABILITIES,
     NateNtmAcpProtocolClient,
 )
-from nate_ntm.runtime.events import AgentEvent, AgentEventSource
+from nate_ntm.runtime.acp_types import SessionUpdate
 
 
-class _EventCollector:
+class _UpdateCollector:
     def __init__(self) -> None:
-        self.events: List[AgentEvent] = []
+        self.calls: List[Tuple[str, str, SessionUpdate, datetime]] = []
 
-    def __call__(self, event: AgentEvent) -> None:
-        self.events.append(event)
+    def __call__(
+        self,
+        agent_id: str,
+        session_id: str,
+        update: SessionUpdate,
+        received_at: datetime,
+    ) -> None:
+        self.calls.append((agent_id, session_id, update, received_at))
 
 
 def _fixed_clock() -> datetime:
@@ -29,11 +35,11 @@ def _fixed_clock() -> datetime:
 
 
 @pytest.mark.asyncio
-async def test_session_update_emits_translated_event() -> None:
-    collector = _EventCollector()
+async def test_session_update_forwards_typed_update() -> None:
+    collector = _UpdateCollector()
     client = NateNtmAcpProtocolClient(
         agent_id="agent-1",
-        event_sink=collector,
+        on_session_update=collector,
         clock=_fixed_clock,
     )
 
@@ -44,20 +50,18 @@ async def test_session_update_emits_translated_event() -> None:
 
     await client.session_update(session_id="session-123", update=update)
 
-    assert len(collector.events) == 1
-    event = collector.events[0]
+    assert len(collector.calls) == 1
+    agent_id, session_id, received_update, ts = collector.calls[0]
 
-    assert event.agent_id == "agent-1"
-    assert event.source is AgentEventSource.ACP
-    assert event.payload["session_id"] == "session-123"
-    assert event.type == "acp.user_message_chunk"
-    # The sequence starts at 1 for the first event.
-    assert event.event_id == "agent-1:session-123:1"
+    assert agent_id == "agent-1"
+    assert session_id == "session-123"
+    assert received_update is update
+    assert ts == _fixed_clock()
 
 
 @pytest.mark.asyncio
 async def test_request_permission_reports_unsupported_capability() -> None:
-    client = NateNtmAcpProtocolClient(agent_id="agent-x", event_sink=lambda e: None)
+    client = NateNtmAcpProtocolClient(agent_id="agent-x", on_session_update=lambda *args, **kwargs: None)
 
     with pytest.raises(RequestError) as exc_info:
         await client.request_permission("session-x", object(), [], reason="test")
@@ -71,7 +75,7 @@ async def test_request_permission_reports_unsupported_capability() -> None:
 
 @pytest.mark.asyncio
 async def test_ext_method_reports_method_not_found() -> None:
-    client = NateNtmAcpProtocolClient(agent_id="agent-x", event_sink=lambda e: None)
+    client = NateNtmAcpProtocolClient(agent_id="agent-x", on_session_update=lambda *args, **kwargs: None)
 
     with pytest.raises(RequestError) as exc_info:
         await client.ext_method("custom/unknown", {"foo": "bar"})

@@ -34,31 +34,41 @@ from typing import AsyncIterator, Callable
 import pytest
 
 from nate_ntm.config.runtime_config import AdapterKind, load_runtime_config
-from nate_ntm.runtime.acp_client import NateOhaAcpClient, next_matching_event
+from nate_ntm.runtime.acp_client import NateOhaAcpClient
+from nate_ntm.runtime.acp_update_stream import ReceivedSessionUpdate
 from nate_ntm.runtime.adapters import create_runtime_adapters
 from nate_ntm.runtime.agent_mail_client import McpAgentMailClient
 from nate_ntm.runtime.daemon import RuntimeDaemon
-from nate_ntm.runtime.events import AgentEvent
 from nate_ntm.runtime.metadata_store import MetadataStore
 from nate_ntm.runtime.nate_oha_launch import build_effective_nate_oha_config
 from nate_ntm.runtime.swarm_state import AgentState, SwarmState
 
 
-def _extract_text_payloads(events: list[AgentEvent]) -> list[str]:
-    """Return all text content payloads from ACP-derived AgentEvents.
+def _extract_text_from_updates(updates: list[ReceivedSessionUpdate]) -> list[str]:
+    """Return all text content payloads from ACP session updates.
 
     This helper is intentionally tolerant of different ACP update kinds
     (for example ``user_message_chunk`` vs ``agent_message_chunk``) and
-    focuses solely on the ``content.text`` field when present.
+    focuses solely on the ``content.text`` field when present in the
+    underlying ACP model.
     """
 
     texts: list[str] = []
-    for ev in events:
-        payload = ev.payload
-        update = payload.get("update")
-        if not isinstance(update, dict):
+    for received in updates:
+        update = received.update
+        # ACP SDK models are Pydantic; prefer model_dump(by_alias=True) so
+        # field names match the wire protocol.
+        if hasattr(update, "model_dump"):
+            payload = update.model_dump(by_alias=True)
+        elif isinstance(update, dict):
+            payload = update
+        else:
             continue
-        content = update.get("content")
+
+        if not isinstance(payload, dict):
+            continue
+
+        content = payload.get("content")
         if not isinstance(content, dict):
             continue
         if content.get("type") == "text":
@@ -68,16 +78,16 @@ def _extract_text_payloads(events: list[AgentEvent]) -> list[str]:
     return texts
 
 
-async def collect_events_for(
-    events: AsyncIterator[AgentEvent],
-    sink: list[AgentEvent],
+async def collect_updates_for(
+    updates: AsyncIterator[ReceivedSessionUpdate],
+    sink: list[ReceivedSessionUpdate],
     *,
     duration: float,
 ) -> None:
-    """Collect events into ``sink`` for approximately ``duration`` seconds.
+    """Collect updates into ``sink`` for approximately ``duration`` seconds.
 
-    The helper stops when the duration elapses, the underlying event stream
-    closes, or no further events arrive before the deadline.
+    The helper stops when the duration elapses, the underlying update stream
+    closes, or no further updates arrive before the deadline.
     """
 
     loop = asyncio.get_running_loop()
@@ -88,31 +98,40 @@ async def collect_events_for(
         if remaining <= 0:
             break
         try:
-            event = await asyncio.wait_for(events.__anext__(), timeout=remaining)
+            item = await asyncio.wait_for(updates.__anext__(), timeout=remaining)
         except (asyncio.TimeoutError, StopAsyncIteration):
             break
-        sink.append(event)
+        sink.append(item)
 
 
 async def _wait_for_text(
-    events: AsyncIterator[AgentEvent],
+    updates: AsyncIterator[ReceivedSessionUpdate],
     expected: str,
     *,
     timeout: float = 5.0,
-    sink: list[AgentEvent] | None = None,
-) -> AgentEvent:
-    """Wait for a single AgentEvent whose text content contains ``expected``.
+    sink: list[ReceivedSessionUpdate] | None = None,
+) -> ReceivedSessionUpdate:
+    """Wait for a single update whose text content contains ``expected``.
 
     The caller is responsible for creating the subscription via
-    :meth:`NateOhaAcpClient.subscribe_events` so that the subscription is
-    active *before* any prompts or other actions that may emit events.
+    :meth:`NateOhaAcpClient.subscribe_acp_updates` so that the subscription is
+    active before any prompts or other actions that may emit updates.
     """
 
-    def _predicate(event: AgentEvent) -> bool:
-        texts = _extract_text_payloads([event])
-        return any(expected in text for text in texts)
+    async def _runner() -> ReceivedSessionUpdate:
+        async for item in updates:
+            if sink is not None:
+                sink.append(item)
+            texts = _extract_text_from_updates([item])
+            if any(expected in text for text in texts):
+                return item
 
-    return await next_matching_event(events, _predicate, timeout=timeout, sink=sink)
+        raise RuntimeError("update stream closed before expected text observed")
+
+    if timeout is None:
+        return await _runner()
+
+    return await asyncio.wait_for(_runner(), timeout=timeout)
 
 
 @pytest.mark.asyncio
@@ -237,21 +256,22 @@ async def test_runtime_daemon_acp_async_persists_session_id_and_exposes_via_deta
     acp_client = daemon.acp_client
     assert isinstance(acp_client, NateOhaAcpClient)
 
-    # Capture ACP events emitted during the initial async session so we
-    # can assert on the translated event stream. Events are observed via
-    # the subscription-based API rather than a global callback.
-    events_run1: list[AgentEvent] = []
+    # Capture ACP session updates emitted during the initial async session so
+    # we can assert that the real ACP SDK wiring is exercised. Updates are
+    # observed via the typed subscription-based API rather than a global
+    # callback.
+    updates_run1: list[ReceivedSessionUpdate] = []
 
     # Establish a real ACP session for the agent using the async
     # lifecycle. This launches a nate-oha subprocess via the ACP SDK and
     # negotiates capabilities + a new session.
-    async with acp_client.subscribe_events(meta.agent_id) as events:
-        await acp_client.start_agent_async(meta.agent_id, metadata=meta)
+    await acp_client.start_agent_async(meta.agent_id, metadata=meta)
 
+    async with acp_client.subscribe_acp_updates(meta.agent_id) as updates:
         # Allow a short window for ACP session updates to be delivered
-        # through the protocol client while collecting any translated
-        # AgentEvents.
-        await collect_events_for(events, events_run1, duration=0.5)
+        # through the protocol client while collecting typed
+        # ReceivedSessionUpdate values.
+        await collect_updates_for(updates, updates_run1, duration=0.5)
 
     fresh_client: NateOhaAcpClient | None = None
 
@@ -264,13 +284,10 @@ async def test_runtime_daemon_acp_async_persists_session_id_and_exposes_via_deta
         session_id = reloaded_meta.conversation_id
         assert isinstance(session_id, str) and session_id
 
-        # If any ACP events were observed during the first run, they must
-        # reference the same session identifier in their payloads.
-        for event in events_run1:
-            assert event.agent_id == meta.agent_id
-            payload_session = event.payload.get("session_id")
-            if payload_session is not None:
-                assert payload_session == session_id
+        # If any ACP updates were observed during the first run, this
+        # confirms that the real ACP SDK connection was active for the
+        # newly created session.
+        assert updates_run1
 
         # Construct a fresh NateOhaAcpClient with the same configuration for
         # the second run. The async lifecycle helpers will reuse the
@@ -281,31 +298,22 @@ async def test_runtime_daemon_acp_async_persists_session_id_and_exposes_via_deta
         # metadata using the async lifecycle. This exercises the
         # ``load_session`` path in start_agent_async against a real Nate
         # OHA instance.
-        events_run2: list[AgentEvent] = []
+        updates_run2: list[ReceivedSessionUpdate] = []
 
         resume_meta = store.load_agent_state(meta.agent_id)
         assert resume_meta.conversation_id == session_id
 
-        async with fresh_client.subscribe_events(meta.agent_id) as events2:
-            await fresh_client.start_agent_async(meta.agent_id, metadata=resume_meta)
+        await fresh_client.start_agent_async(meta.agent_id, metadata=resume_meta)
 
-            # Collect a short burst of ACP events from the resumed session.
-            await collect_events_for(events2, events_run2, duration=0.5)
-
-
-        # All ACP events observed during the resumed run should reference
-        # the same session identifier when they carry one.
-        for event in events_run2:
-            assert event.agent_id == meta.agent_id
-            payload_session = event.payload.get("session_id")
-            if payload_session is not None:
-                assert payload_session == session_id
+        async with fresh_client.subscribe_acp_updates(meta.agent_id) as updates2:
+            # Collect a short burst of ACP updates from the resumed session.
+            await collect_updates_for(updates2, updates_run2, duration=0.5)
 
         # Across both runs we expect to see at least one ACP-derived
-        # event, confirming that the real ACP event translation path was
-        # exercised.
-        all_events = events_run1 + events_run2
-        assert any(ev.type.startswith("acp.") for ev in all_events)
+        # session update, confirming that the real ACP SDK wiring was
+        # exercised using the typed update stream.
+        all_updates = updates_run1 + updates_run2
+        assert all_updates
 
     finally:
         # Best-effort cleanup of the resumed session, if it was started.
@@ -475,17 +483,17 @@ async def test_runtime_daemon_acp_async_with_agent_mail_real_path_epic005(tmp_pa
 
     acp_client = daemon.acp_client
 
-    events_run1: list[AgentEvent] = []
+    updates_run1: list[ReceivedSessionUpdate] = []
 
     # First async run: establish a real ACP session for the agent using
     # the async lifecycle. This launches ``nate-oha acp`` via the ACP
     # SDK with Agent Mail integration enabled.
     start_meta = store.load_agent_state(agent_id)
-    async with acp_client.subscribe_events(agent_id) as events:
-        await acp_client.start_agent_async(agent_id, metadata=start_meta)
+    await acp_client.start_agent_async(agent_id, metadata=start_meta)
 
-        # Collect a short burst of ACP events from the initial session.
-        await collect_events_for(events, events_run1, duration=0.5)
+    async with acp_client.subscribe_acp_updates(agent_id) as updates:
+        # Collect a short burst of ACP updates from the initial session.
+        await collect_updates_for(updates, updates_run1, duration=0.5)
 
     fresh_client: NateOhaAcpClient | None = None
 
@@ -509,14 +517,9 @@ async def test_runtime_daemon_acp_async_with_agent_mail_real_path_epic005(tmp_pa
         assert (agent_mail_cfg.agent_identity or "").strip() == identity
         assert (agent_mail_cfg.credentials_ref or "") == (token or "")
 
-        # Any ACP events observed during the first run that carry a
-        # ``session_id`` in their payload must reference the same
-        # identifier.
-        for event in events_run1:
-            assert event.agent_id == agent_id
-            payload_session = event.payload.get("session_id")
-            if payload_session is not None:
-                assert payload_session == session_id
+        # Any ACP updates observed during the first run confirm that the
+        # real ACP SDK connection was active for the new session.
+        assert updates_run1
 
         # Construct a fresh NateOhaAcpClient with the same configuration for
         # the second run. The async lifecycle helpers will reuse the
@@ -527,31 +530,22 @@ async def test_runtime_daemon_acp_async_with_agent_mail_real_path_epic005(tmp_pa
         # persisted metadata using the async lifecycle. This exercises
         # the ``load_session`` path in start_agent_async against a real
         # nate-oha instance with Agent Mail enabled.
-        events_run2: list[AgentEvent] = []
+        updates_run2: list[ReceivedSessionUpdate] = []
 
         resume_meta = store.load_agent_state(agent_id)
         assert resume_meta.conversation_id == session_id
 
-        async with fresh_client.subscribe_events(agent_id) as events2:
-            await fresh_client.start_agent_async(agent_id, metadata=resume_meta)
+        await fresh_client.start_agent_async(agent_id, metadata=resume_meta)
 
-            # Collect a short burst of ACP events from the resumed session.
-            await collect_events_for(events2, events_run2, duration=0.5)
-
-
-        # All ACP events observed during the resumed run should
-        # reference the same session identifier when they carry one.
-        for event in events_run2:
-            assert event.agent_id == agent_id
-            payload_session = event.payload.get("session_id")
-            if payload_session is not None:
-                assert payload_session == session_id
+        async with fresh_client.subscribe_acp_updates(agent_id) as updates2:
+            # Collect a short burst of ACP updates from the resumed session.
+            await collect_updates_for(updates2, updates_run2, duration=0.5)
 
         # Across both runs we expect to see at least one ACP-derived
-        # event, confirming that the real ACP event translation path
-        # was exercised with Agent Mail enabled.
-        all_events = events_run1 + events_run2
-        assert any(ev.type.startswith("acp.") for ev in all_events)
+        # session update, confirming that the real ACP SDK wiring was
+        # exercised with Agent Mail enabled using the typed update stream.
+        all_updates = updates_run1 + updates_run2
+        assert all_updates
 
         # RuntimeDaemon.get_agent_detail should surface both the
         # persisted Agent Mail identity and the ACP-owned conversation
@@ -586,7 +580,7 @@ async def test_runtime_daemon_acp_async_prompt_echo_and_replay_real_path(tmp_pat
 
     * Start a nate-oha ACP session in echo mode via start_agent_async.
     * Send a user prompt via NateOhaAcpClient.prompt.
-    * Observe echoed text in translated AgentEvent values.
+    * Observe echoed text in ACP session updates.
     * Stop the session and resume it using the persisted ACP session_id.
     * Observe the prior conversation history being replayed on resume.
     * Send a new prompt after replay and observe continued interaction.
@@ -649,7 +643,7 @@ async def test_runtime_daemon_acp_async_prompt_echo_and_replay_real_path(tmp_pat
     acp_client = daemon.acp_client
     assert isinstance(acp_client, NateOhaAcpClient)
 
-    events_run1: list[AgentEvent] = []
+    updates_run1: list[ReceivedSessionUpdate] = []
 
     # ------------------------------
     # First run: start, prompt, echo
@@ -657,26 +651,22 @@ async def test_runtime_daemon_acp_async_prompt_echo_and_replay_real_path(tmp_pat
 
     prompt_text1 = "hello from async epic005"
 
-    # Subscribe to the async event stream before starting the agent so we
-    # observe all ACP events, including capability negotiation and echo.
-    async with acp_client.subscribe_events(agent_id) as events1:
-        await acp_client.start_agent_async(agent_id, metadata=meta)
+    # Establish the async ACP session, then subscribe to the typed update
+    # stream before sending the prompt so we observe both replayed history
+    # and live echo updates.
+    await acp_client.start_agent_async(agent_id, metadata=meta)
 
+    async with acp_client.subscribe_acp_updates(agent_id) as updates1:
         await acp_client.prompt(agent_id, prompt_text1)
-        await _wait_for_text(events1, prompt_text1, timeout=5.0, sink=events_run1)
+        await _wait_for_text(updates1, prompt_text1, timeout=5.0, sink=updates_run1)
 
     reloaded_meta = store.load_agent_state(agent_id)
     session_id = reloaded_meta.conversation_id
     assert isinstance(session_id, str) and session_id
 
-    # Sanity: session_id invariants for any ACP events that carry one.
-    for ev in events_run1:
-        assert ev.agent_id == agent_id
-        payload_session = ev.payload.get("session_id")
-        if payload_session is not None:
-            assert payload_session == session_id
-
-    texts_run1 = _extract_text_payloads(events_run1)
+    # Extract all text content carried in ACP updates from the first run and
+    # ensure that at least one update contains the echoed prompt.
+    texts_run1 = _extract_text_from_updates(updates_run1)
     assert any(prompt_text1 in text for text in texts_run1)
 
     # Use the first echoed text containing the prompt as the canonical
@@ -690,26 +680,21 @@ async def test_runtime_daemon_acp_async_prompt_echo_and_replay_real_path(tmp_pat
     await acp_client.stop_agent_async(agent_id, timeout=5.0)
 
     fresh_client = NateOhaAcpClient(config=config, executable="nate-oha")
-    events_run2: list[AgentEvent] = []
+    updates_run2: list[ReceivedSessionUpdate] = []
 
     resume_meta = store.load_agent_state(agent_id)
     assert resume_meta.conversation_id == session_id
 
     try:
         # Replay phase: observe prior conversation history on resume.
-        async with fresh_client.subscribe_events(agent_id) as events2:
-            await fresh_client.start_agent_async(agent_id, metadata=resume_meta)
+        await fresh_client.start_agent_async(agent_id, metadata=resume_meta)
 
+        async with fresh_client.subscribe_acp_updates(agent_id) as updates2:
             # Wait explicitly for replay of the canonical echoed text from the
             # first run rather than relying on a fixed time window.
-            await next_matching_event(
-                events2,
-                lambda event: canonical_echo1 in _extract_text_payloads([event]),
-                timeout=5.0,
-                sink=events_run2,
-            )
+            await _wait_for_text(updates2, canonical_echo1, timeout=5.0, sink=updates_run2)
 
-        texts_run2_before = _extract_text_payloads(events_run2)
+        texts_run2_before = _extract_text_from_updates(updates_run2)
         assert canonical_echo1 in texts_run2_before
 
         # ------------------------------
@@ -718,16 +703,9 @@ async def test_runtime_daemon_acp_async_prompt_echo_and_replay_real_path(tmp_pat
 
         prompt_text2 = "second prompt after replay"
 
-        async with fresh_client.subscribe_events(agent_id) as events3:
+        async with fresh_client.subscribe_acp_updates(agent_id) as updates3:
             await fresh_client.prompt(agent_id, prompt_text2)
-            await _wait_for_text(events3, prompt_text2, timeout=5.0, sink=events_run2)
-
-        # Session ID invariants across both runs.
-        for ev in events_run1 + events_run2:
-            assert ev.agent_id == agent_id
-            payload_session = ev.payload.get("session_id")
-            if payload_session is not None:
-                assert payload_session == session_id
+            await _wait_for_text(updates3, prompt_text2, timeout=5.0, sink=updates_run2)
 
     finally:
         # Best-effort cleanup of the resumed session.

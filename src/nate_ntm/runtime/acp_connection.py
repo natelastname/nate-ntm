@@ -30,11 +30,8 @@ from acp.interfaces import ClientCapabilities
 from .acp_protocol_client import (
     NATE_NTM_CLIENT_CAPABILITIES,
     NateNtmAcpProtocolClient,
+    SessionUpdateSink,
 )
-from .events import AgentEvent
-
-# Public re-export for consumers that prefer a named type.
-EventSink = Callable[[AgentEvent], None]
 
 
 @asynccontextmanager
@@ -44,7 +41,7 @@ async def open_nate_oha_acp_client(
     env: Mapping[str, str] | None,
     cwd: Path,
     agent_id: str,
-    event_sink: EventSink,
+    on_session_update: SessionUpdateSink,
     capabilities: ClientCapabilities | None = None,
     use_unstable_protocol: bool = False,
 ) -> AsyncIterator[tuple[Any, Process, NateNtmAcpProtocolClient]]:
@@ -70,12 +67,12 @@ async def open_nate_oha_acp_client(
     agent_id:
         Identifier of the agent this connection is associated with. This
         is threaded through into the :class:`NateNtmAcpProtocolClient`
-        so that translated :class:`AgentEvent` instances carry the
+        so that forwarded :class:`SessionUpdate` instances carry the
         correct ``agent_id``.
 
-    event_sink:
-        Callback invoked with each :class:`AgentEvent` produced by the
-        :class:`NateNtmAcpProtocolClient`.
+    on_session_update:
+        Callback invoked with each typed :class:`SessionUpdate` produced by
+        the :class:`NateNtmAcpProtocolClient`.
 
     capabilities:
         Optional :class:`ClientCapabilities` instance to advertise
@@ -130,10 +127,11 @@ async def open_nate_oha_acp_client(
         cwd=cwd,
     ) as (reader, writer, process):
         # The runtime-specific protocol client is responsible for
-        # translating ACP session updates into AgentEvent instances.
+        # forwarding typed ACP session updates into the runtime's
+        # per-session update stream machinery.
         protocol_client = NateNtmAcpProtocolClient(
             agent_id=agent_id,
-            event_sink=event_sink,
+            on_session_update=on_session_update,
         )
 
         # ``ClientSideConnection`` binds the protocol client to the

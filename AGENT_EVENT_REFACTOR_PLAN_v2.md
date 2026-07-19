@@ -1089,8 +1089,8 @@ Update other specifications that reference the deleted runtime event API, but do
 
 **Goal:** Introduce the new ACP-native event model without changing existing runtime behavior.
 
-- [ ] Add a central import or precise union for the real ACP `SessionUpdate` type.
-- [ ] Add `ReceivedSessionUpdate` with:
+- [x] Add a central import or precise union for the real ACP `SessionUpdate` type.
+- [x] Add `ReceivedSessionUpdate` with:
 
   - session-local `sequence`;
   - `received_at`;
@@ -1105,7 +1105,7 @@ Update other specifications that reference the deleted runtime event API, but do
   - explicit `SubscriberOverflowError`;
   - persistent close state.
 
-- [ ] Define deterministic behavior for:
+- [x] Define deterministic behavior for:
 
   - publish after close;
   - subscribe after close;
@@ -1126,15 +1126,15 @@ Update other specifications that reference the deleted runtime event API, but do
 
 **Goal:** Give each concrete `AcpAgentSession` exactly one update stream.
 
-- [ ] Add `update_stream` to `AcpAgentSession`.
-- [ ] Create a fresh stream whenever a concrete ACP session is created.
-- [ ] Close the stream when its session:
+- [x] Add `update_stream` to `AcpAgentSession`.
+- [x] Create a fresh stream whenever a concrete ACP session is created.
+- [x] Close the stream when its session:
 
   - stops;
   - fails;
   - is replaced.
 
-- [ ] Ensure old streams are not retained on logical-agent runtime state.
+- [x] Ensure old streams are not retained on logical-agent runtime state.
 - [ ] Define session attachment semantics:
 
   - subscriptions target one concrete session;
@@ -1149,7 +1149,7 @@ Update other specifications that reference the deleted runtime event API, but do
 
 **Goal:** Replace ACP-to-telemetry translation with direct typed publication.
 
-- [ ] Update `NateNtmAcpProtocolClient.session_update` to forward:
+- [x] Update `NateNtmAcpProtocolClient.session_update` to forward:
 
   - agent identity;
   - ACP session identity;
@@ -1162,9 +1162,9 @@ Update other specifications that reference the deleted runtime event API, but do
   - rejects or logs stale-session updates;
   - publishes into that session's stream.
 
-- [ ] Let the stream assign the canonical sequence number.
-- [ ] Remove sequencing, serialization, and generic event construction from the protocol callback.
-- [ ] Verify representative ACP update types remain intact through publication.
+- [x] Let the stream assign the canonical sequence number.
+- [x] Remove sequencing, serialization, and generic event construction from the protocol callback.
+- [x] Verify representative ACP update types remain intact through publication.
 
 **Phase complete when:** every ACP callback follows one direct path into the current session's typed stream.
 
@@ -1174,10 +1174,10 @@ Update other specifications that reference the deleted runtime event API, but do
 
 **Goal:** Expose one typed subscription path for ACP consumers.
 
-- [ ] Add `subscribe_acp_updates(agent_id)`.
-- [ ] Raise `AgentSessionNotActive` when no active session exists.
-- [ ] Bind each subscription to the concrete session found at attachment time.
-- [ ] Delegate replay, live delivery, overflow, and closure to the session stream.
+- [x] Add `subscribe_acp_updates(agent_id)`.
+- [x] Raise `AgentSessionNotActive` when no active session exists.
+- [x] Bind each subscription to the concrete session found at attachment time.
+- [x] Delegate replay, live delivery, overflow, and closure to the session stream.
 - [ ] Migrate existing ACP consumers to the new API.
 - [ ] Remove the old generic ACP subscription machinery:
 

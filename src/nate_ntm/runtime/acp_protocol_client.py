@@ -1,12 +1,13 @@
 """ACP SDK client implementation used by the runtime.
 
 `NateNtmAcpProtocolClient` implements the ACP :class:`~acp.interfaces.Client`
-interface and is responsible for translating ACP session updates into the
-runtime's :class:`~nate_ntm.runtime.events.AgentEvent` stream.
+interface and is responsible for receiving typed ACP session updates from the
+SDK and forwarding them into the runtime's per-session update stream
+machinery.
 
 All ACP-specific models are kept behind this boundary so the rest of the
-runtime can work with the lightweight :class:`AgentEvent` representation
-without depending on the ACP SDK.
+runtime can work with the internal :class:`SessionUpdate` alias without
+depending directly on the ACP SDK import paths.
 """
 
 from __future__ import annotations
@@ -17,8 +18,7 @@ from typing import Any, Callable, Mapping
 from acp import RequestError
 from acp.interfaces import Client, ClientCapabilities
 
-from .acp_event_translation import translate_acp_update
-from .events import AgentEvent
+from .acp_types import SessionUpdate
 
 __all__ = [
     "NATE_NTM_CLIENT_CAPABILITIES",
@@ -35,10 +35,11 @@ __all__ = [
 NATE_NTM_CLIENT_CAPABILITIES: ClientCapabilities = ClientCapabilities()
 
 
-# Type of the callback used to emit translated runtime events. Using a
-# synchronous callable keeps the implementation simple and allows
-# integration with the existing in-memory `AgentEventStream` APIs.
-EventSink = Callable[[AgentEvent], None]
+# Type of the callback used to forward typed session updates from the ACP SDK
+# into the runtime's per-session update stream machinery. Using a synchronous
+# callable keeps the implementation simple and avoids introducing additional
+# async hops in the ACP callback path.
+SessionUpdateSink = Callable[[str, str, SessionUpdate, datetime], None]
 
 
 class NateNtmAcpProtocolClient(Client):
@@ -49,8 +50,10 @@ class NateNtmAcpProtocolClient(Client):
     agent_id:
         Identifier of the agent this client instance is associated with.
 
-    event_sink:
-        Callback invoked with each translated :class:`AgentEvent`.
+    on_session_update:
+        Callback invoked with each typed :class:`SessionUpdate` delivered
+        by the ACP SDK. The callback receives ``agent_id``, ``session_id``,
+        the concrete ``SessionUpdate`` instance, and a receipt timestamp.
 
     clock:
         Optional callable returning the current time. This is primarily
@@ -61,11 +64,11 @@ class NateNtmAcpProtocolClient(Client):
         self,
         *,
         agent_id: str,
-        event_sink: EventSink,
+        on_session_update: SessionUpdateSink,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._agent_id = agent_id
-        self._event_sink = event_sink
+        self._on_session_update = on_session_update
         self._clock = clock or datetime.utcnow
 
         # The last ACP session identifier observed via `session_update`.
@@ -74,37 +77,28 @@ class NateNtmAcpProtocolClient(Client):
         # NateOhaAcpClient adapter.
         self._session_id: str | None = None
 
-        # Simple monotonically increasing counter used to assign
-        # deterministic event IDs within this agent/session pair.
-        self._sequence: int = 0
-
     # ------------------------------------------------------------------
     # Core ACP callbacks
     # ------------------------------------------------------------------
 
-    async def session_update(self, session_id: str, update: Any, **kwargs: Any) -> None:  # type: ignore[override]
+    async def session_update(self, session_id: str, update: SessionUpdate, **kwargs: Any) -> None:  # type: ignore[override]
         """Handle a single ACP ``session/update`` notification.
 
         The ACP SDK decodes the wire payload into a concrete Pydantic
         model instance before calling this method. We treat the model as
-        opaque and delegate to :func:`translate_acp_update` to produce a
-        runtime :class:`AgentEvent`.
+        opaque here and forward it, together with identity metadata and a
+        receipt timestamp, into the runtime's per-session update stream.
         """
 
         # Remember the most recent session identifier for introspection.
         self._session_id = session_id
 
-        # Sequence numbers are 1-based for readability.
-        self._sequence += 1
-
-        event = translate_acp_update(
-            agent_id=self._agent_id,
-            session_id=session_id,
-            update=update,
-            sequence=self._sequence,
-            timestamp=self._clock(),
+        self._on_session_update(
+            self._agent_id,
+            session_id,
+            update,
+            self._clock(),
         )
-        self._event_sink(event)
 
     # ------------------------------------------------------------------
     # Permission, filesystem, terminal, and elicitation callbacks

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -8,7 +9,6 @@ import pytest
 
 from nate_ntm.runtime.acp_connection import open_nate_oha_acp_client
 from nate_ntm.runtime.acp_protocol_client import NateNtmAcpProtocolClient
-from nate_ntm.runtime.events import AgentEventSource
 
 
 class DummyProcess:
@@ -36,10 +36,10 @@ async def test_open_nate_oha_acp_client_wires_spawn_and_client_side(
       stubbed subprocess shutdown path.
     """
 
-    events: list[Any] = []
+    updates: list[tuple[str, str, Any, datetime]] = []
 
-    def _event_sink(event: Any) -> None:
-        events.append(event)
+    def _on_session_update(agent_id: str, session_id: str, update: Any, received_at: datetime) -> None:
+        updates.append((agent_id, session_id, update, received_at))
 
     dummy_process = DummyProcess()
     captured: dict[str, Any] = {}
@@ -102,7 +102,7 @@ async def test_open_nate_oha_acp_client_wires_spawn_and_client_side(
         env=env,
         cwd=tmp_path,
         agent_id="agent-1",
-        event_sink=_event_sink,
+        on_session_update=_on_session_update,
     ) as (connection, process, protocol_client):
         # The helper should have constructed our dummy connection and
         # returned the dummy process instance created above.
@@ -116,22 +116,23 @@ async def test_open_nate_oha_acp_client_wires_spawn_and_client_side(
         # unit tests.
         assert getattr(protocol_client, "_agent_id") == "agent-1"
 
-        # Exercise the event path once to ensure the sink is wired up.
-        await protocol_client.session_update("session-123", {"foo": "bar"})
+        # Exercise the session update path once to ensure the sink is wired up.
+        update_payload = {"foo": "bar"}
+        await protocol_client.session_update("session-123", update_payload)
 
     # After the context exits, the dummy connection should have been
     # closed and the fake subprocess teardown path invoked.
     assert connection.closed
     assert dummy_process.terminated
 
-    # The event emitted by ``session_update`` should have been routed
+    # The update forwarded by ``session_update`` should have been routed
     # through to the sink and carry basic ACP metadata.
-    assert len(events) == 1
-    event = events[0]
-    assert event.agent_id == "agent-1"
-    assert event.source is AgentEventSource.ACP
-    assert event.payload["session_id"] == "session-123"
-    assert event.payload["update"] == {"foo": "bar"}
+    assert len(updates) == 1
+    agent_id, session_id, update, received_at = updates[0]
+    assert agent_id == "agent-1"
+    assert session_id == "session-123"
+    assert update is update_payload
+    assert isinstance(received_at, datetime)
 
     # Finally, verify that the subprocess helper was invoked with the
     # expected command, arguments, environment, and working directory.
