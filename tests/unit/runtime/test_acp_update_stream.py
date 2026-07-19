@@ -11,6 +11,7 @@ from nate_ntm.runtime.acp_update_stream import (
     AcpSessionUpdateStream,
     ReceivedSessionUpdate,
     StreamClosedError,
+    SubscriberOverflowError,
 )
 
 
@@ -108,23 +109,24 @@ async def test_close_rejects_future_publishes_and_allows_snapshot_subscription()
 
 
 @pytest.mark.asyncio
-async def test_live_subscriber_terminates_after_close_with_empty_queue() -> None:
+async def test_live_subscriber_waiting_for_next_item_is_unblocked_on_close() -> None:
     stream = AcpSessionUpdateStream(max_events=10)
 
-    t0 = datetime(2024, 1, 1, 12, 0, 0)
-
     async with stream.subscribe() as updates:
-        ev = stream.publish(_DummyUpdate(), received_at=t0)
-        first = await asyncio.wait_for(anext(updates), timeout=0.1)
-        assert first is ev
+        # No items have been published; the iterator will block waiting for
+        # the first live update.
+        pending = asyncio.create_task(anext(updates))
 
-        # After closing the stream and draining the queue, the iterator
-        # should terminate promptly on the next ``anext`` call rather than
-        # blocking indefinitely.
+        # Allow the event loop to schedule the pending ``anext`` so that it is
+        # actually waiting on the underlying queue.
+        await asyncio.sleep(0)
+
         stream.close()
 
+        # ``close()`` must actively wake the subscriber and make the pending
+        # ``anext`` complete with ``StopAsyncIteration`` rather than hanging.
         with pytest.raises(StopAsyncIteration):
-            await asyncio.wait_for(anext(updates), timeout=0.1)
+            await asyncio.wait_for(pending, timeout=0.1)
 
 
 @pytest.mark.asyncio
@@ -149,5 +151,26 @@ async def test_live_subscriber_drains_queued_events_before_terminating_on_close(
         assert first is ev0
         assert second is ev1
 
-        with pytest.raises(StopAsyncIteration):
+
+
+@pytest.mark.asyncio
+async def test_subscriber_overflow_raises_error_for_slow_consumer() -> None:
+    # Use a tiny max_events so that the per-subscriber live queue capacity is
+    # also tiny and easy to overflow.
+    stream = AcpSessionUpdateStream(max_events=1)
+
+    t0 = datetime(2024, 1, 1, 12, 0, 0)
+    t1 = datetime(2024, 1, 1, 12, 0, 1)
+
+    async with stream.subscribe() as updates:
+        # Publish one update and leave it queued so that the live queue reaches
+        # capacity for this subscriber.
+        stream.publish(_DummyUpdate(), received_at=t0)
+
+        # The second publish should overflow the subscriber queue. The
+        # subscriber must then observe a ``SubscriberOverflowError`` rather
+        # than silently losing updates.
+        stream.publish(_DummyUpdate(), received_at=t1)
+
+        with pytest.raises(SubscriberOverflowError):
             await asyncio.wait_for(anext(updates), timeout=0.1)

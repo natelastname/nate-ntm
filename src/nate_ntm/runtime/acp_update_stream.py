@@ -18,7 +18,7 @@ forwarding only.
 
 import asyncio
 from collections import deque
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import AsyncIterator, Deque, List, Set
@@ -78,9 +78,11 @@ class AcpSessionUpdateStream:
     - Exposes an async subscription API that first replays retained history
       and then yields live updates until the stream is closed.
 
-    The current implementation uses unbounded per-subscriber queues for live
-    delivery to avoid silent data loss. Bounded-queue and explicit overflow
-    semantics can be introduced later without changing the public interface.
+    Live delivery uses **bounded per-subscriber queues** so that slow
+    consumers cannot cause unbounded memory growth. When a subscriber's
+    queue overflows, that subscriber is terminated with
+    :class:`SubscriberOverflowError` rather than silently dropping ACP
+    updates.
     """
 
     max_events: int = 200
@@ -89,11 +91,12 @@ class AcpSessionUpdateStream:
     _next_sequence: int = field(default=1, init=False, repr=False)
     _closed: bool = field(default=False, init=False, repr=False)
     _close_error: BaseException | None = field(default=None, init=False, repr=False)
+    _closed_event: asyncio.Event = field(default_factory=asyncio.Event, init=False, repr=False)
 
     # Per-subscriber live queues. Each queue receives new updates published
     # after the subscriber attaches. Subscribers always see a full replay of
     # the retained history first.
-    _subscribers: Set[asyncio.Queue[ReceivedSessionUpdate]] = field(default_factory=set, init=False, repr=False)
+    _subscribers: Set[asyncio.Queue[object]] = field(default_factory=set, init=False, repr=False)
 
     def publish(self, update: SessionUpdate, *, received_at: datetime) -> ReceivedSessionUpdate:
         """Publish ``update`` into this session's stream.
@@ -118,15 +121,39 @@ class AcpSessionUpdateStream:
             while len(self._events) > self.max_events:
                 self._events.popleft()
 
-        # Fan out to subscribers. Subscriber queues are currently unbounded to
-        # avoid silent loss of ACP updates.
+        # Fan out to subscribers using bounded per-subscriber queues. When a
+        # subscriber queue overflows, poison that subscriber with a
+        # :class:`SubscriberOverflowError` so the iterator terminates with an
+        # explicit error instead of silently dropping updates.
+        dead: list[asyncio.Queue[object]] = []
         for queue in list(self._subscribers):
             try:
                 queue.put_nowait(event)
-            except asyncio.QueueFull:  # pragma: no cover - defensive
-                # With unbounded queues this should not occur. If it does,
-                # treat it as a hard error so it can be surfaced during tests.
-                raise
+            except asyncio.QueueFull:
+                # Clear any pending items for this subscriber and enqueue an
+                # overflow sentinel so that the consumer observes a terminal
+                # error on the next read.
+                while not queue.empty():
+                    try:
+                        queue.get_nowait()
+                    except asyncio.QueueEmpty:  # pragma: no cover - defensive
+                        break
+
+                try:
+                    queue.put_nowait(
+                        SubscriberOverflowError(
+                            "subscriber queue overflow in AcpSessionUpdateStream"
+                        )
+                    )
+                except asyncio.QueueFull:  # pragma: no cover - defensive
+                    # The queue was just drained, so this should not occur. If it
+                    # does, drop the subscriber and continue.
+                    pass
+
+                dead.append(queue)
+
+        for queue in dead:
+            self._subscribers.discard(queue)
 
         return event
 
@@ -145,9 +172,10 @@ class AcpSessionUpdateStream:
         # If already closed, we still replay the retained history, but there
         # will be no live updates.
         if self._closed:
-            live_queue: asyncio.Queue[ReceivedSessionUpdate] | None = None
+            live_queue: asyncio.Queue[object] | None = None
         else:
-            live_queue = asyncio.Queue[ReceivedSessionUpdate]()
+            maxsize = self.max_events if self.max_events > 0 else 1
+            live_queue = asyncio.Queue[object](maxsize=maxsize)
             self._subscribers.add(live_queue)
 
         async def _iterator() -> AsyncIterator[ReceivedSessionUpdate]:
@@ -161,15 +189,54 @@ class AcpSessionUpdateStream:
 
             try:
                 while True:
-                    # When the stream has been closed and there are no
-                    # remaining items in the subscriber queue, terminate
-                    # the iterator so callers observe a natural end-of-
-                    # stream signal.
-                    if self._closed and live_queue.empty():
+                    # If there is a pending item, consume it without blocking.
+                    if not live_queue.empty():
+                        item = live_queue.get_nowait()
+                        if isinstance(item, BaseException):
+                            raise item
+                        assert isinstance(item, ReceivedSessionUpdate)
+                        yield item
+                        continue
+
+                    # No pending items. If the stream has been closed and
+                    # there is nothing left to read, terminate the iterator
+                    # so callers observe a natural end-of-stream signal.
+                    if self._closed:
                         break
 
-                    ev = await live_queue.get()
-                    yield ev
+                    # Wait for either a new item or a stream-level close
+                    # signal so that subscribers blocked in ``anext`` are
+                    # promptly awakened when :meth:`close` is called.
+                    get_task = asyncio.create_task(live_queue.get())
+                    close_task = asyncio.create_task(self._closed_event.wait())
+
+                    done, pending = await asyncio.wait(
+                        {get_task, close_task},
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+
+                    if get_task in done:
+                        close_task.cancel()
+                        with suppress(asyncio.CancelledError):
+                            await close_task
+
+                        item = get_task.result()
+                        if isinstance(item, BaseException):
+                            raise item
+                        assert isinstance(item, ReceivedSessionUpdate)
+                        yield item
+                    else:
+                        # ``close_task`` completed first: cancel the pending
+                        # ``get_task`` and, if the stream is now closed and the
+                        # queue is still empty, terminate. If new items were
+                        # enqueued concurrently with ``close``, the loop will
+                        # pick them up on the next iteration.
+                        get_task.cancel()
+                        with suppress(asyncio.CancelledError):
+                            await get_task
+
+                        if self._closed and live_queue.empty():
+                            break
             finally:
                 self._subscribers.discard(live_queue)
 
@@ -184,18 +251,27 @@ class AcpSessionUpdateStream:
         """Mark the stream as closed.
 
         After calling this method, further publishes will raise
-        :class:`StreamClosedError`. Existing subscribers will naturally
-        terminate once they exhaust any items already present in their live
-        queues. New subscribers will receive only the retained snapshot and
-        then terminate.
+        :class:`StreamClosedError`. Existing subscribers will be **actively
+        unblocked** if they are currently waiting for the next update; they
+        will first drain any already-queued items and then observe a natural
+        end-of-stream signal. New subscribers will receive only the retained
+        snapshot and then terminate.
 
         When ``error`` is provided, it is recorded for diagnostics and may
         be surfaced by higher-level components if needed.
         """
 
+        if self._closed:
+            return
+
         self._closed = True
         if error is not None and self._close_error is None:
             self._close_error = error
+
+        # Wake any subscribers currently blocked in ``anext`` by signalling
+        # the shared closed event; their iterators will terminate once any
+        # queued items have been drained.
+        self._closed_event.set()
 
 
 __all__ = [

@@ -189,6 +189,48 @@ async def test_on_session_update_preserves_typed_update_and_timestamp(tmp_path: 
 
 
 
+
+@pytest.mark.asyncio
+async def test_on_session_update_rejects_stale_session_id(tmp_path: Path) -> None:
+    """_on_session_update drops updates for a stale ACP session.
+
+    When an :class:`AcpAgentSession` already has a bound ``conversation_id``
+    and an update arrives for a different ``session_id``, the helper must
+    reject the update instead of publishing it into the active
+    :class:`AcpSessionUpdateStream`.
+    """
+
+    config = _make_config(tmp_path)
+    client = NateOhaAcpClient(config=config)
+
+    agent_id = "agent-update-stale-1"
+
+    session = AcpAgentSession(
+        agent_id=agent_id,
+        conversation_id="conv-active-1",
+        process=object(),
+        connection=object(),
+        protocol_client=object(),
+        status="running",
+        stderr_task=None,
+        exit_monitor_task=None,
+    )
+    client._sessions[agent_id] = session
+
+    initial_sequence = session.update_stream._next_sequence
+
+    client._on_session_update(
+        agent_id=agent_id,
+        session_id="conv-stale-other",
+        update=_DummyUpdate(),
+        received_at=datetime(2024, 1, 1, 12, 0, 0),
+    )
+
+    # No new updates should have been published into the stream.
+    assert session.update_stream._next_sequence == initial_sequence
+    assert list(session.update_stream._events) == []
+
+
 @pytest.mark.asyncio
 async def test_subscribe_acp_updates_requires_active_session(tmp_path: Path) -> None:
     """subscribe_acp_updates rejects missing or inactive sessions.

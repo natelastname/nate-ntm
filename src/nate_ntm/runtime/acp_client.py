@@ -449,10 +449,10 @@ class NateOhaAcpClient(BaseAcpClient):
         :class:`~nate_ntm.runtime.acp_update_stream.AcpSessionUpdateStream`
         owned by the active :class:`AcpAgentSession`.
 
-        This API is the preferred integration surface for ACP telemetry in
-        new code paths. It supersedes the legacy :meth:`subscribe_events`
-        interface, which remains for compatibility during the migration
-        away from :class:`AgentEvent`.
+        This API is the canonical integration surface for ACP telemetry in
+        new code paths. It replaces the earlier generic
+        :class:`AgentEvent`-based streaming helpers, which have been
+        removed as part of the typed ``AcpSessionUpdateStream`` refactor.
         """
 
         session = self._sessions.get(agent_id)
