@@ -1135,7 +1135,7 @@ Update other specifications that reference the deleted runtime event API, but do
   - is replaced.
 
 - [x] Ensure old streams are not retained on logical-agent runtime state.
-- [ ] Define session attachment semantics:
+- [x] Define session attachment semantics:
 
   - subscriptions target one concrete session;
   - replacement closes the old subscription;

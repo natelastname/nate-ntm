@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime
 
+import asyncio
+
 import pytest
 
 from nate_ntm.runtime.acp_types import SessionUpdate
@@ -102,3 +104,50 @@ async def test_close_rejects_future_publishes_and_allows_snapshot_subscription()
 
     assert len(items) == 1
     assert isinstance(items[0], ReceivedSessionUpdate)
+
+
+
+@pytest.mark.asyncio
+async def test_live_subscriber_terminates_after_close_with_empty_queue() -> None:
+    stream = AcpSessionUpdateStream(max_events=10)
+
+    t0 = datetime(2024, 1, 1, 12, 0, 0)
+
+    async with stream.subscribe() as updates:
+        ev = stream.publish(_DummyUpdate(), received_at=t0)
+        first = await asyncio.wait_for(anext(updates), timeout=0.1)
+        assert first is ev
+
+        # After closing the stream and draining the queue, the iterator
+        # should terminate promptly on the next ``anext`` call rather than
+        # blocking indefinitely.
+        stream.close()
+
+        with pytest.raises(StopAsyncIteration):
+            await asyncio.wait_for(anext(updates), timeout=0.1)
+
+
+@pytest.mark.asyncio
+async def test_live_subscriber_drains_queued_events_before_terminating_on_close() -> None:
+    stream = AcpSessionUpdateStream(max_events=10)
+
+    t0 = datetime(2024, 1, 1, 12, 0, 0)
+    t1 = datetime(2024, 1, 1, 12, 0, 1)
+
+    async with stream.subscribe() as updates:
+        ev0 = stream.publish(_DummyUpdate(), received_at=t0)
+        ev1 = stream.publish(_DummyUpdate(), received_at=t1)
+
+        # Closing the stream while there are pending items in the live
+        # queue should still allow the subscriber to drain those items
+        # before observing end-of-stream.
+        stream.close()
+
+        first = await asyncio.wait_for(anext(updates), timeout=0.1)
+        second = await asyncio.wait_for(anext(updates), timeout=0.1)
+
+        assert first is ev0
+        assert second is ev1
+
+        with pytest.raises(StopAsyncIteration):
+            await asyncio.wait_for(anext(updates), timeout=0.1)

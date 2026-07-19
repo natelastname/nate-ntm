@@ -161,6 +161,13 @@ class AcpSessionUpdateStream:
 
             try:
                 while True:
+                    # When the stream has been closed and there are no
+                    # remaining items in the subscriber queue, terminate
+                    # the iterator so callers observe a natural end-of-
+                    # stream signal.
+                    if self._closed and live_queue.empty():
+                        break
+
                     ev = await live_queue.get()
                     yield ev
             finally:
