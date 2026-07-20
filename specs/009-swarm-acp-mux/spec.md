@@ -2,14 +2,18 @@
 
 ## Purpose
 
-`SwarmACPMux` is the connection-scoped routing layer between an external ACP client and a running swarm.
+`SwarmACPMux` builds on the typed ACP session streaming layer introduced in Epic 008.
 
-It presents one external ACP session while allowing the client to:
+> Build `SwarmACPMux`, which multiplexes multiple independent ACP sessions into a single swarm-facing update stream while preserving typed ACP semantics.
 
-- issue swarm-level control operations;
-- attach to one agent at a time;
-- send ordinary ACP requests to the attached agent;
-- receive the attached agent's retained and live ACP updates.
+Concretely, for each external "swarm ACP" session, `SwarmACPMux`:
+
+- exposes swarm-level control operations (for example `_attach`, `_detach`, `_swarm_status`, `_agent_detail`);
+- attaches that external session to **one agent at a time**, but may switch attachments over its lifetime;
+- subscribes to the attached agent's typed ACP session updates via `subscribe_acp_updates()`;
+- forwards those typed updates into a single, ordered swarm-facing session stream.
+
+`SwarmACPMux` does **not** replace the ACP transport or stream implementation. It is a thin routing layer that multiplexes existing per-session streams into one swarm-level view.
 
 Ownership is divided as follows:
 
@@ -17,20 +21,26 @@ Ownership is divided as follows:
 RuntimeDaemon
     owns swarm state and swarm-level status
 
-NateOhaAcpClient
-    owns per-agent ACP sessions and request forwarding
+NateOhaAcpClient / AcpAgentSession
+    own per-agent ACP sessions and per-session update streams
 
-Per-agent event stream
-    owns retained history and subscriber delivery
+AcpSessionUpdateStream + subscribe_acp_updates()  (Epic 008)
+    own typed ACP SessionUpdate delivery, replay, ordering, overflow and closure semantics
 
-SwarmACPMux
-    owns external-session attachment and routing state
+SwarmACPMux (Epic 009)
+    owns swarm-facing attachment and routing over typed updates
 
 Swarm ACP server adapter
-    owns ACP protocol decoding and reserved control dispatch
+    owns ACP protocol decoding/encoding and reserved control dispatch
 ```
 
-`SwarmACPMux` remains deliberately small. It coordinates existing runtime services rather than introducing another runtime, event registry, or agent lifecycle manager.
+This design assumes Epic 008 has already delivered:
+
+- `AcpSessionUpdateStream` and `ReceivedSessionUpdate`;
+- a per-session, session-owned update stream on `AcpAgentSession`;
+- the canonical `subscribe_acp_updates()` API;
+- direct typed `SessionUpdate` publication from ACP callbacks; and
+- ACP updates no longer routed through `AgentEvent` for transport (they may still be summarized into `AgentEvent` for observability).
 
 ------------------------------------------------------------------------
 
@@ -102,34 +112,30 @@ _agent_detail
 
 These are incoming client-to-swarm control operations.
 
-### Agent event path
+### Swarm session update path
+
+At the update-stream boundary established by Epic 008, the architecture is:
 
 ```
-nate-oha ACP process
-
-        |
-        v
-NateNtmAcpProtocolClient
-
-        |
-        v
-NateOhaAcpClient event publication
-
-        |
-        v
-Per-agent replay-capable event stream
-
-        |
-        | one independent subscription
-        v
+AcpAgentSession
+        ↓
+subscribe_acp_updates()
+        ↓
 SwarmACPMux
-
-        |
-        v
-External ACP connection
+        ↓
+Swarm session stream
+        ↓
+Swarm runtime / external ACP client
 ```
 
-The mux subscribes to one agent at a time and forwards that agent's ACP updates to the external client.
+More concretely, for a single attached agent:
+
+- `AcpAgentSession` owns a per-session `AcpSessionUpdateStream`.
+- `NateOhaAcpClient.subscribe_acp_updates(agent_id)` exposes that stream as an async iterator of `ReceivedSessionUpdate` values.
+- `SwarmACPMux` consumes that iterator for the currently attached agent and forwards each typed `SessionUpdate` to the external ACP connection via `ExternalACPConnection.session_update(...)`.
+- Over its lifetime, the mux may detach and reattach, thereby multiplexing multiple independent per-agent ACP sessions into one swarm-facing session stream.
+
+`SwarmACPMux` does not reimplement replay, overflow, or subscriber semantics; those are provided by `AcpSessionUpdateStream` and `subscribe_acp_updates()` (Epic 008).
 
 ------------------------------------------------------------------------
 
@@ -162,20 +168,43 @@ The mux owns:
 The runtime services supplied to the mux retain ownership of swarm state, agent sessions, retained history, and subscriber queues.
 
 ------------------------------------------------------------------------
+## Responsibilities and non-goals
+
+Epic 009 (SwarmACPMux) owns:
+
+- creating and managing one `SwarmACPMux` per external swarm ACP session;
+- subscribing to per-agent typed ACP update streams via `subscribe_acp_updates()`;
+- multiplexing those updates into a single swarm-facing session stream per external connection;
+- preserving required ordering guarantees at the swarm boundary (for example, attach acknowledgments before replay, and per-agent in-order delivery as provided by Epic 008);
+- coordinating attachment and detachment lifecycle for the external session;
+- routing swarm-level control operations to `RuntimeDaemon` (for status and detail) and to the attached agent (for prompt/interrupt);
+- exposing swarm-facing APIs used by the Swarm ACP server adapter.
+
+Epic 009 explicitly does **not** own:
+
+- ACP transport implementation or wire protocol details;
+- implementation of per-session `AcpSessionUpdateStream` or its buffering policies;
+- ACP replay, ordering, overflow, or closure semantics (these are specified in Epic 008);
+- low-level subscriber management for ACP streams.
+
+Those concerns are provided by the ACP integration layer and Epic 008; `SwarmACPMux` treats `subscribe_acp_updates()` as a stable, already-validated interface.
+
+------------------------------------------------------------------------
+
 
 ## Interfaces
 
 ### SwarmAgentClient
 
-The mux should depend on the narrow agent-facing interface it actually uses:
+The mux depends on the narrow, typed ACP interface it actually uses:
 
 ```
 class SwarmAgentClient(Protocol):
-    def subscribe_events(
+    def subscribe_acp_updates(
         self,
         agent_id: str,
-    ) -> AbstractAsyncContextManager[AsyncIterator[AgentEvent]]:
-        “""Yield retained events, followed by live events.”""
+    ) -> AbstractAsyncContextManager[AsyncIterator[ReceivedSessionUpdate]]:
+        “""Yield retained updates, followed by live updates.”""
 
     async def prompt(
         self,
@@ -188,9 +217,7 @@ class SwarmAgentClient(Protocol):
         …
 ```
 
-This interface can be implemented by `NateOhaAcpClient`.
-
-The default `subscribe_events()` contract should be replay-then-live delivery. A separate live-only API may be added only if another concrete runtime use case requires it.
+`NateOhaAcpClient` implements this protocol by delegating to the per-session `AcpSessionUpdateStream` via its `subscribe_acp_updates()` method from Epic 008. The mux does not depend on how that stream is implemented; it treats `subscribe_acp_updates()` as the stable boundary for consuming typed ACP updates.
 
 ### ExternalACPConnection
 
@@ -209,20 +236,10 @@ class ExternalACPConnection(Protocol):
 
 `SessionUpdate` represents the ACP SDK session-update union or the project's equivalent typed abstraction.
 
-The event-delivery layer should retain enough ACP information for the mux to forward the update without reconstructing protocol meaning from `AgentEvent.type`.
+`SwarmACPMux` receives this type from `ReceivedSessionUpdate.update` values yielded by `subscribe_acp_updates()` (Epic 008) and forwards it directly. Any translation between ACP SDK types and the runtime's normalized `AgentEvent` telemetry remains the responsibility of the ACP integration and runtime event pipeline, not the mux.
 
-A suitable `AgentEvent` representation may include:
+Metadata on `ReceivedSessionUpdate` (for example `sequence` and `received_at`) are **not** forwarded over ACP. They are strictly runtime-internal diagnostics that may be used for logging, metrics, or to enrich `AgentEvent`-style observability, but the mux always forwards the underlying typed `SessionUpdate` object unchanged.
 
-```
-@dataclass(slots=True)
-class AgentEvent:
-    agent_id: str
-    type: str
-    payload: Mapping[str, object]
-    acp_update: SessionUpdate | None = None
-```
-
-If storing the typed model directly is inappropriate for persistence, the ACP integration should expose one authoritative conversion function from the stored normalized payload to `SessionUpdate`.
 
 ------------------------------------------------------------------------
 
@@ -292,7 +309,7 @@ async def attach(self, agent_id: str) -> None:
 
     self.attached_agent_id = agent_id
     self._forwarding_task = asyncio.create_task(
-        self._forward_agent_events(agent_id),
+        self._forward_session_updates(agent_id),
         name=f"swarm-acp-mux:{agent_id}”,
     )
 ```
@@ -499,25 +516,21 @@ async def __aexit__(
 
 ## Internal methods
 
-### \_forward_agent_events
+### \_forward_session_updates
+
+
+This coroutine implements the attached-agent output path over typed ACP updates.
+
+The subscription yields retained history first, then live updates as defined by Epic 008:
 
 ```
-async def _forward_agent_events(self, agent_id: str) -> None:
-    …
-```
-
-This coroutine implements the attached-agent output path.
-
-The subscription yields retained history first, then live events:
-
-```
-async def _forward_agent_events(self, agent_id: str) -> None:
+async def _forward_session_updates(self, agent_id: str) -> None:
     current_task = asyncio.current_task()
 
     try:
-        async with self.agent_client.subscribe_events(agent_id) as events:
-            async for event in events:
-                await self._forward_external_event(event)
+        async with self.agent_client.subscribe_acp_updates(agent_id) as updates:
+            async for received in updates:
+                await self._forward_external_update(received)
     finally:
         if (
             self.attached_agent_id == agent_id
@@ -527,7 +540,7 @@ async def _forward_agent_events(self, agent_id: str) -> None:
             self._forwarding_task = None
 ```
 
-When the agent stream closes normally, the mux remains open and becomes unattached.
+When the per-agent update stream closes normally, the mux remains open and becomes unattached.
 
 A subsequent reserved `_attach` operation may attach it to another agent.
 
@@ -535,31 +548,23 @@ An exception while writing to the external ACP connection should terminate this 
 
 ------------------------------------------------------------------------
 
-### \_forward_external_event
+### \_forward_external_update
 
-```
-async def _forward_external_event(self, event: AgentEvent) -> None:
-    …
-```
 
 Forwards one typed ACP update to the external session:
 
 ```
-async def _forward_external_event(self, event: AgentEvent) -> None:
-    update = require_session_update(event)
-
+async def _forward_external_update(
+    self,
+    received: ReceivedSessionUpdate,
+) -> None:
     await self.external_connection.session_update(
         session_id=self.external_session_id,
-        update=update,
+        update=received.update,
     )
 ```
 
-`require_session_update()` is the single ACP integration boundary for obtaining a typed `SessionUpdate` from an `AgentEvent`.
-
-Its implementation should either:
-
-- return `event.acp_update`; or
-- validate the normalized stored payload into the ACP SDK type.
+`SwarmACPMux` does not inspect or transform the `SessionUpdate`; it simply forwards the typed value obtained from the underlying `ReceivedSessionUpdate` objects.
 
 The mux forwards the resulting update without interpreting ordinary agent output.
 
@@ -674,110 +679,67 @@ This preserves one simple attached-agent forwarding path.
 
 ------------------------------------------------------------------------
 
-## Replay-capable event delivery
+## Replay-capable session update delivery (Epic 008 dependency)
 
-Attaching to an agent should produce one continuous ordered stream containing:
+Attaching to an agent must produce one continuous, ordered stream of typed ACP session updates:
 
-1. retained per-agent events;
-2. all later live events.
+1. retained per-session updates from the bounded history; then
+2. all subsequent live updates.
 
-The mux consumes this through the normal subscription API:
+`SwarmACPMux` consumes this via the typed subscription API:
 
 ```
-async with self.agent_client.subscribe_events(agent_id) as events:
-    async for event in events:
+async with self.agent_client.subscribe_acp_updates(agent_id) as updates:
+    async for received in updates:
         …
 ```
 
-The event-delivery implementation owns the replay boundary and ordering guarantees.
+The replay and delivery semantics are owned entirely by the Epic 008 `AcpSessionUpdateStream` layer and its `subscribe()` / `subscribe_acp_updates()` helpers. In particular, that layer:
 
-A correct subscription must ensure that an event published during subscription establishment is delivered exactly once.
+1. yields retained history followed by live updates on a single logical stream;
+2. ensures that an update published during subscription establishment is delivered exactly once;
+3. handles history truncation / overflow and backpressure, and multiplexes multiple subscribers.
 
-A suitable sequence is:
-
-1. register the subscriber;
-2. capture the replay boundary;
-3. enqueue retained events through that boundary;
-4. continue live delivery through the same queue.
-
-The current code may require a small upstream refactor because retained history and live subscriber queues are owned by different components.
-
-A clean target is:
-
-```
-NateOhaAcpClient
-    publishes normalized per-agent events
-
-Replay-capable AgentEventStream
-    retains bounded history
-    owns subscriber queues
-    provides subscribe_events(agent_id)
-
-SwarmACPMux
-    consumes subscribe_events(agent_id)
-```
-
-Alternatively, `NateOhaAcpClient.subscribe_events()` may remain the public API while delegating internally to the replay-capable event stream.
-
-The public contract should expose one ordered replay-then-live stream.
+`SwarmACPMux` treats these semantics as a given. Its responsibility is limited to consuming `ReceivedSessionUpdate` values and forwarding the embedded `SessionUpdate` objects to the external ACP connection.
 
 ------------------------------------------------------------------------
 
-## Upstream changes
+## Upstream dependencies
 
-### AgentEventStream
+Epic 009 assumes several upstream capabilities that are primarily provided by Epic 008 and existing runtime components. This section summarizes those dependencies rather than re‑specifying their behavior.
 
-Extend the per-agent event stream so it owns both:
+### AcpSessionUpdateStream (Epic 008)
 
-- bounded retained history;
-- independent subscriber delivery.
+The runtime owns a per-agent, replay-capable stream of typed ACP session updates, implemented by `AcpSessionUpdateStream` (see `ACP_SESSION_UPDATE_STREAM.md`). For each agent/session, the stream:
 
-A possible interface is:
+- stores a bounded history of `ReceivedSessionUpdate` values;
+- exposes a `subscribe()` async context manager that yields an `AsyncIterator[ReceivedSessionUpdate]`;
+- is responsible for replay ordering, overflow policy, and multi-subscriber fan-out.
 
-```
-class AgentEventStream:
-    def publish(self, event: AgentEvent) -> None:
-        …
-
-    @asynccontextmanager
-    async def subscribe(
-        self,
-    ) -> AsyncIterator[AsyncIterator[AgentEvent]]:
-        …
-```
-
-Each subscription receives:
-
-```
-retained history -> live events -> closure sentinel
-```
-
-This centralizes ordering and removes the need to coordinate two separate event sources.
+This stream is the single source of truth for `SessionUpdate` traffic inside the runtime.
 
 ### NateOhaAcpClient
 
-Keep `subscribe_events(agent_id)` as the public agent-client API:
+`NateOhaAcpClient` bridges the ACP transport into the typed update stream. In particular it:
+
+- accepts raw ACP protocol messages from the server adapter;
+- converts them into typed `SessionUpdate` objects;
+- publishes them into the agent's `AcpSessionUpdateStream` instance;
+- exposes a mux-facing API:
 
 ```
-def subscribe_events(
+def subscribe_acp_updates(
     self,
     agent_id: str,
-) -> AbstractAsyncContextManager[AsyncIterator[AgentEvent]]:
-    return self._event_streams[agent_id].subscribe()
+) -> AbstractAsyncContextManager[AsyncIterator[ReceivedSessionUpdate]]:
+    …
 ```
 
-Event publication should use the same per-agent stream:
-
-```
-def _emit_event(self, event: AgentEvent) -> None:
-    self._event_streams[event.agent_id].publish(event)
-```
-
-Existing non-mux subscribers continue to use the same API and receive independent queues.
+Other callers may use the same stream directly (for example via `iter_acp_updates()`), but `SwarmACPMux` only depends on `subscribe_acp_updates()`.
 
 ### RuntimeDaemon
 
-Add:
+Add or extend a helper:
 
 ```
 def get_swarm_status(self) -> dict[str, object]:
@@ -791,27 +753,14 @@ This method should serialize swarm-level runtime state once for reuse by:
 - diagnostics;
 - future dashboards.
 
-### ACP event representation
+### ACP telemetry representation
 
-Preserve a typed or reliably reconstructable `SessionUpdate` in each ACP-derived `AgentEvent`.
+The runtime's existing `AgentEvent` pipeline may continue to be used for logging and observability. When it projects ACP activity into events, it SHOULD:
 
-Preferred shape:
+- retain or embed the corresponding `SessionUpdate` (for example on an `acp_update` field); or
+- capture enough normalized information to reconstruct the `SessionUpdate` if needed.
 
-```
-AgentEvent(
-    agent_id=agent_id,
-    type=f"acp.{kind}”,
-    payload=serialized_update,
-    acp_update=update,
-)
-```
-
-If typed ACP objects cannot be retained, provide one conversion function in the ACP integration module:
-
-```
-def require_session_update(event: AgentEvent) -> SessionUpdate:
-    …
-```
+This is an observability concern only. `SwarmACPMux` never takes `AgentEvent` as input and does not call any `require_session_update()` helper; its only source of truth for ACP traffic is the typed stream of `ReceivedSessionUpdate` values.
 
 ### Swarm ACP server adapter
 
@@ -886,20 +835,22 @@ Ordinary forwarded events may remain at debug or trace level.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
+from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
 from typing import Protocol
 
 from nate_ntm.runtime.daemon import RuntimeDaemon
-from nate_ntm.runtime.events import AgentEvent
 from nate_ntm.runtime.state import AgentState
 from nate_ntm.runtime.acp_types import SessionUpdate
+from nate_ntm.runtime.acp_update_stream import ReceivedSessionUpdate
 
 class SwarmAgentClient(Protocol):
-    def subscribe_events(
+    def subscribe_acp_updates(
         self,
         agent_id: str,
-    ):
-        …
+    ) -> AbstractAsyncContextManager[AsyncIterator[ReceivedSessionUpdate]]:
+        """Yield retained updates, followed by live updates."""
 
     async def prompt(
         self,
@@ -954,7 +905,7 @@ class SwarmACPMux:
 
         self.attached_agent_id = agent_id
         self._forwarding_task = asyncio.create_task(
-            self._forward_agent_events(agent_id),
+            self._forward_session_updates(agent_id),
             name=f"swarm-acp-mux:{agent_id}”,
         )
 
@@ -1019,15 +970,15 @@ class SwarmACPMux:
         self._closed = True
         await self.detach()
 
-    async def _forward_agent_events(self, agent_id: str) -> None:
+    async def _forward_session_updates(self, agent_id: str) -> None:
         current_task = asyncio.current_task()
 
         try:
-            async with self.agent_client.subscribe_events(
+            async with self.agent_client.subscribe_acp_updates(
                 agent_id
-            ) as events:
-                async for event in events:
-                    await self._forward_external_event(event)
+            ) as updates:
+                async for received in updates:
+                    await self._forward_external_update(received)
         finally:
             if (
                 self.attached_agent_id == agent_id
@@ -1036,13 +987,13 @@ class SwarmACPMux:
                 self.attached_agent_id = None
                 self._forwarding_task = None
 
-    async def _forward_external_event(
+    async def _forward_external_update(
         self,
-        event: AgentEvent,
+        received: ReceivedSessionUpdate,
     ) -> None:
         await self.external_connection.session_update(
             session_id=self.external_session_id,
-            update=require_session_update(event),
+            update=received.update,
         )
 
     def _require_attached_agent(self) -> str:
@@ -1131,7 +1082,7 @@ Add one real-path async integration test that:
 2. creates an external swarm ACP session and `SwarmACPMux`;
 3. sends external `_attach`;
 4. verifies that the mux attaches and the control update is not sent to the agent;
-5. confirms that retained agent events are replayed;
+5. confirms that retained ACP session updates for the attached agent are replayed in order;
 6. sends an ordinary prompt;
 7. verifies that agent output reaches the external ACP connection;
 8. confirms that an independent subscriber also receives the agent output;
@@ -1152,11 +1103,11 @@ else:
     await proxy_ordinary_request(mux, update)
 
 # Attached agent -> external client
-async with agent_client.subscribe_events(agent_id) as events:
-    async for event in events:
-        await mux.forward_external_event(event)
+async with agent_client.subscribe_acp_updates(agent_id) as updates:
+    async for received in updates:
+        await mux._forward_external_update(received)
 ```
 
 The runtime supplies replay-capable per-agent subscriptions. The outer ACP server supplies reserved-update decoding. The mux owns only attachment and routing.
 
-This yields one event stream, one agent client, one mux implementation, and one authoritative place for each responsibility.
+This yields one typed ACP update stream, one agent client, one mux implementation, and one authoritative place for each responsibility.
