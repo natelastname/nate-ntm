@@ -23,9 +23,12 @@ It focuses on integration tests under `tests/integration/runtime_acp/` and unit 
   uv run pytest -q
   ```
 
-- External services available (real or mocked), as in spec 001:
-  - OpenHands agent server for ACP/conversation handling.
-  - Agent Mail service for mailbox coordination.
+- External components required for the **real-path** integration tests:
+
+  - An ACP-capable agent server (for example, OpenHands) that can host at least one agent with a live typed `AcpSessionUpdateStream`.
+  - The Swarm ACP server adapter process bound to the runtime control API.
+
+  Small fakes or mocks are acceptable for *targeted* unit tests, but at least one end-to-end test MUST exercise the real typed streaming path (`AcpSessionUpdateStream` → subscription context → mux attachment transaction → external connection).
 
 ---
 
@@ -39,18 +42,18 @@ Once SwarmACPMux and its adapter integration are implemented, you should be able
 - `tests/integration/runtime_acp/test_runtime_daemon_acp_async_real_path_epic005.py`
   - Existing baseline for the async ACP event path without the mux.
 
-- `tests/integration/runtime_acp/test_swarm_acp_mux_real_path.py`
+- `tests/integration/acp/test_swarm_acp_mux_real_path.py`
   - New real-path test that exercises a similar scenario through the mux and Swarm ACP server adapter.
 
-- `tests/integration/runtime_acp/test_reserved_swarm_controls.py`
+- `tests/integration/acp/test_reserved_swarm_controls.py`
   - New test focusing on `_attach`, `_detach`, `_swarm_status`, `_agent_detail` behavior and error codes.
 
 Run these with `uv run pytest`:
 
 ```bash
 uv run pytest tests/unit/runtime/test_swarm_acp_mux.py -vv
-uv run pytest tests/integration/runtime_acp/test_swarm_acp_mux_real_path.py -vv
-uv run pytest tests/integration/runtime_acp/test_reserved_swarm_controls.py -vv
+uv run pytest tests/integration/acp/test_swarm_acp_mux_real_path.py -vv
+uv run pytest tests/integration/acp/test_reserved_swarm_controls.py -vv
 ```
 
 ---
@@ -79,11 +82,18 @@ The `test_swarm_acp_mux_real_path.py` test should perform roughly the following 
 
 6. **Attach to that agent** via `_attach`.
 
-   - The adapter should implement the three-stage attachment transaction:
+   - The adapter should implement the three-stage attachment transaction, with a token-aware abort on acknowledgment failure:
 
      ```python
      prepared = await mux.prepare_attach(agent_id)
-     await external_connection.send_attach_acknowledgment(...)
+
+     try:
+         await external_connection.send_attach_acknowledgment(...)
+     except BaseException:
+         # MUST discard the prepared attachment without activating it
+         await mux.abort_attachment(prepared)  # or equivalent token-aware abort
+         raise
+
      await mux.activate_attachment(prepared)
      ```
 
@@ -156,7 +166,9 @@ The `test_reserved_swarm_controls.py` test should focus on logical reserved oper
 
 Tests should also cover mux-level error conditions and their ACP-visible manifestations:
 
-- Sending an agent-directed operation with no attachment returns an error with code `MUX_NO_ATTACHED_AGENT`.
+- Sending an agent-directed operation with an **open** mux and no attachment returns an error with code `MUX_NO_ATTACHED_AGENT`.
+- Sending any mux-dependent operation after the mux has been closed returns an error with code `MUX_CLOSED`.
+- Attempting to attach to a known `agent_id` that currently has no active ACP session returns an error with code `MUX_AGENT_SESSION_NOT_ACTIVE`.
 - Unknown reserved operation names (if surfaced at all) are mapped to a stable error (for example, `MUX_INVALID_REQUEST`), depending on adapter design.
 - Internal runtime or adapter failures produce `MUX_INTERNAL_ERROR` with sufficient logging on the server side.
 

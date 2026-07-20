@@ -61,7 +61,7 @@ class SwarmAgentClient(Protocol):
     async def interrupt(self, agent_id: str) -> None: ...
 ```
 
-- Implemented by `NateOhaAcpClient` / `AcpAgentSession`.
+- Implemented by `NateOhaAcpClient`, which resolves each `agent_id` to a concrete `AcpAgentSession`.
 - Owns per-agent `AcpSessionUpdateStream` instances and their replay/overflow semantics.
 
 ---
@@ -134,7 +134,7 @@ class SwarmACPMux:
 - `_lifecycle_lock: asyncio.Lock`
   - Serializes lifecycle transitions that mutate mux state.
 - `_failure: asyncio.Future[None]`
-  - Represents the first fatal forwarding failure, observed via `wait_failed()`.
+  - Represents the first fatal forwarding failure, observed via `wait_failed()`. It is completed **only** on fatal forwarding errors; `close()` cancels it if still pending, and normal ACP stream exhaustion leaves it incomplete.
 - `_closed: bool`
   - Marks the mux as closed; subsequent operations raise `SwarmACPMuxClosedError`.
 

@@ -38,9 +38,13 @@ The adapter maps mux/domain errors and validation failures to a small set of sta
 Suggested logical codes:
 
 - `"MUX_NO_ATTACHED_AGENT"`
-  - Client attempted an agent-directed operation (prompt, interrupt, etc.) with no attached agent.
+  - Client attempted an agent-directed operation (prompt, interrupt, etc.) with an **open** mux that has no attached agent.
+- `"MUX_CLOSED"`
+  - Client attempted any mux-dependent operation after the mux was closed (for example, after external session shutdown or runtime shutdown).
 - `"MUX_UNKNOWN_AGENT"`
   - Requested `agent_id` is not part of the durable swarm membership.
+- `"MUX_AGENT_SESSION_NOT_ACTIVE"`
+  - Requested `agent_id` exists in durable swarm membership, but no concrete ACP session is currently active for that agent (for example, the agent runtime is down or not yet connected).
 - `"MUX_INVALID_REQUEST"`
   - Malformed or missing fields in a reserved-operation request.
 - `"MUX_STALE_ATTACHMENT"`
@@ -167,15 +171,26 @@ Attach this external ACP session to a specific agent and begin streaming that ag
 2. Validate `agent_id` against durable swarm membership.
 3. Call `prepared = await mux.prepare_attach(agent_id)`.
 4. If this fails (including `AgentSessionNotActive`), return an error and do **not** send a success acknowledgment.
-5. If it succeeds, send the `_attach` success acknowledgment **before** activating the attachment:
+5. If it succeeds, send the `_attach` success acknowledgment **before** activating the attachment, and abort the prepared attachment if the acknowledgment fails:
 
    ```python
-   await external_connection.send_attach_acknowledgment(
-       session_id=external_session_id,
-       agent_id=agent_id,
-   )
+   prepared = await mux.prepare_attach(agent_id)
+
+   try:
+       await external_connection.send_attach_acknowledgment(
+           session_id=external_session_id,
+           agent_id=agent_id,
+       )
+   except BaseException:
+       # MUST discard the prepared attachment without activating it
+       await mux.abort_attachment(prepared)  # or equivalent token-aware abort
+       raise
+
    await mux.activate_attachment(prepared)
    ```
+
+Here `mux.abort_attachment(prepared)` represents any token-aware cleanup that discards the prepared attachment if and only if it is still current. Implementations MAY expose this as a dedicated API or encode it into `detach()`, but the externally visible requirement is that a failed acknowledgment leaves the mux open and unattached, with no forwarding task started for the failed attachment.
+
 
 6. `activate_attachment(prepared)` starts the forwarding task and releases the forwarding gate.
 
@@ -196,9 +211,10 @@ Attach this external ACP session to a specific agent and begin streaming that ag
 **Errors (logical):**
 
 - `MUX_UNKNOWN_AGENT` if `agent_id` is not in durable swarm membership.
+- `MUX_AGENT_SESSION_NOT_ACTIVE` if `agent_id` is in durable swarm membership but no concrete ACP session is currently active for that agent (for example, the agent runtime is down or not yet connected).
 - `MUX_STALE_ATTACHMENT` if activation is attempted with a `PreparedAttachment` token that no longer matches the current `_Attachment`.
 - `MUX_INVALID_REQUEST` if the payload is malformed.
-- `MUX_INTERNAL_ERROR` if the attach flow fails unexpectedly.
+- `MUX_INTERNAL_ERROR` if the attach flow fails unexpectedly for other reasons (for example, adapter bugs or unexpected runtime errors).
 
 ---
 
@@ -244,7 +260,8 @@ All non-reserved operations (ACP-level requests that are **not** `_swarm_status`
 - The mux must be **open** (not closed).
 - `mux.attached_agent_id` must be non-null.
 
-If either precondition is not met, the adapter returns an error with code `"MUX_NO_ATTACHED_AGENT"`.
+If the mux is closed, the adapter returns an error with code `"MUX_CLOSED"`.
+If the mux is open but has no attached agent, the adapter returns an error with code `"MUX_NO_ATTACHED_AGENT"`.
 
 ### 4.2 Forwarding Behavior
 
@@ -269,7 +286,7 @@ When the external ACP session closes:
 - The mux:
   - marks itself `_closed = True`;
   - detaches from any attached agent (cancelling the forwarding task and exiting the subscription context);
-  - resolves or cancels internal waiters (including `wait_failed()`);
+  - cancels any pending failure waiter (for example, callers of `wait_failed()`), without treating closure itself as a fatal failure;
   - frees connection-local resources.
 
 ### 5.2 Runtime Shutdown

@@ -142,9 +142,11 @@ A convenience `attach(agent_id, acknowledge=...)` helper is allowed **only** if 
 - `_run_forwarding()` calls `_report_failure(exc)` on unexpected exceptions from either:
   - consuming the ACP subscription iterator; or
   - writing to `ExternalACPConnection.session_update()`.
-- `_report_failure()` completes `_failure` exactly once.
-- `wait_failed()` awaits `_failure` and re-raises the stored exception.
-- Normal task cancellation (from `detach()` / `close()`) and clean ACP stream exhaustion are **not** treated as failures and do not complete `_failure`.
+- `_report_failure()` completes `_failure` **exceptionally** exactly once.
+- `wait_failed()` awaits `_failure`:
+  - if a fatal forwarding failure occurs, it re-raises that exception;
+  - if the mux is closed cleanly while `_failure` is still pending, `close()` cancels `_failure` and any pending `wait_failed()` calls are cancelled.
+- Normal task cancellation (from `detach()` / `close()`), and clean ACP stream exhaustion are **not** treated as failures and do not complete `_failure`.
 
 **Rationale**:
 

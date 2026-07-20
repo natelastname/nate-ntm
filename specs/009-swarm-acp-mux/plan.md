@@ -20,12 +20,6 @@ The mux is a thin, connection-local coordinator. It does not implement ACP trans
 
 ## Technical Context
 
-<!--
-  ACTION REQUIRED: Replace the content in this section with the technical details
-  for the project. The structure here is presented in advisory capacity to guide
-  the iteration process.
--->
-
 **Language/Version**: Python 3.13+ (aligned with spec 001 and the project toolchain).
 
 **Primary Dependencies**:
@@ -36,7 +30,8 @@ The mux is a thin, connection-local coordinator. It does not implement ACP trans
 **Storage**:
 - No new durable storage.
 - Per-agent typed ACP update streams are in-memory, bounded, replay-capable structures owned by the ACP client layer.
-- Existing `.nate_ntm/` swarm metadata and `AgentEvent` history remain the sources of truth for swarm/agent state.
+- Existing `.nate_ntm/` swarm metadata and runtime state remain authoritative for swarm membership and agent lifecycle state.
+- Existing `AgentEvent` history remains the retained observability record used by agent-detail and diagnostic views.
 
 **Testing**:
 - Unit tests with `pytest` (invoked via `uv run pytest`), covering:
@@ -131,5 +126,3 @@ tests/
 
 | Violation | Why Needed | Simpler Alternative Rejected Because |
 |-----------|------------|-------------------------------------|
-| [e.g., 4th project] | [current need] | [why 3 projects insufficient] |
-| [e.g., Repository pattern] | [specific problem] | [why direct DB access insufficient] |

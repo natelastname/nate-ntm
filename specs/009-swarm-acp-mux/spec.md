@@ -463,7 +463,7 @@ Behavior:
 
 1. become closed exactly once;
 2. detach the current attachment;
-3. resolve or cancel internal waiters;
+3. cancel internal failure waiters (for example, any pending `wait_failed()` callers) without treating closure itself as a fatal failure;
 4. reject subsequent operations with `SwarmACPMuxClosedError`.
 
 `close()` is idempotent.
