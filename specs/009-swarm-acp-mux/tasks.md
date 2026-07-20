@@ -54,7 +54,7 @@ tests/integration/acp/test_reserved_swarm_controls.py
 
 **Purpose**: Establish the complete mux data model and dependency boundaries required by all user stories.
 
-- [ ] T001 Implement the foundational Epic 009 types in `src/nate_ntm/runtime/swarm_acp_mux.py`:
+- [x] T001 Implement the foundational Epic 009 types in `src/nate_ntm/runtime/swarm_acp_mux.py`:
 
   - `SwarmAgentClient`;
   - `ExternalACPConnection`;
@@ -69,7 +69,7 @@ tests/integration/acp/test_reserved_swarm_controls.py
   - `UnsupportedReservedUpdateError`.
 
   Match `specs/009-swarm-acp-mux/spec.md` §§5–6 and §13 and `specs/009-swarm-acp-mux/data-model.md` §1. Include all connection-local state fields, but do not implement attachment behavior in this task.
-- [ ] T002 Implement mux initialization and shared lifecycle primitives in `src/nate_ntm/runtime/swarm_acp_mux.py`:
+- [x] T002 Implement mux initialization and shared lifecycle primitives in `src/nate_ntm/runtime/swarm_acp_mux.py`:
 
   - initialize `_failure` in `__post_init__`;
   - add open-state and current-attachment validation helpers;
@@ -77,7 +77,7 @@ tests/integration/acp/test_reserved_swarm_controls.py
   - add internal subscription-exit cleanup that is safe to call exactly once.
 
   Follow `specs/009-swarm-acp-mux/spec.md` §§6, 11, and 14.
-- [ ] T003 Export the public Epic 009 mux types from `src/nate_ntm/runtime/__init__.py`, including `SwarmACPMux`, `PreparedAttachment`, and the public mux error classes.
+- [x] T003 Export the public Epic 009 mux types from `src/nate_ntm/runtime/__init__.py`, including `SwarmACPMux`, `PreparedAttachment`, and the public mux error classes.
 
 ------------------------------------------------------------------------
 
@@ -143,7 +143,7 @@ No new-agent update may appear before acknowledgment. Detach must leave the agen
 
 ### Implementation for User Story 1
 
-- [ ] T008 [US1] Implement `prepare_attach()` in `src/nate_ntm/runtime/swarm_acp_mux.py` with:
+- [x] T008 [US1] Implement `prepare_attach()` in `src/nate_ntm/runtime/swarm_acp_mux.py` with:
 
   - closed-state rejection;
   - durable membership validation through `RuntimeDaemon`;
@@ -155,7 +155,7 @@ No new-agent update may appear before acknowledgment. Detach must leave the agen
   - a unique token for the resulting `_Attachment`;
   - `newly_prepared=True` for a fresh attachment.
 
-- [ ] T009 [US1] Implement `activate_attachment()` and `abort_attachment()` in `src/nate_ntm/runtime/swarm_acp_mux.py`:
+- [x] T009 [US1] Implement `activate_attachment()` and `abort_attachment()` in `src/nate_ntm/runtime/swarm_acp_mux.py`:
 
   - activation validates the current token;
   - activation starts at most one forwarding task;
@@ -164,7 +164,7 @@ No new-agent update may appear before acknowledgment. Detach must leave the agen
   - abort preserves a reused healthy attachment;
   - abort with a stale token never changes the current attachment.
 
-- [ ] T010 [US1] Implement `_run_forwarding()` and `_attachment_finished()` in `src/nate_ntm/runtime/swarm_acp_mux.py`:
+- [x] T010 [US1] Implement `_run_forwarding()` and `_attachment_finished()` in `src/nate_ntm/runtime/swarm_acp_mux.py`:
 
   - consume only the iterator entered by `prepare_attach()`;
   - wait for activation before consuming updates;
@@ -173,7 +173,7 @@ No new-agent update may appear before acknowledgment. Detach must leave the agen
   - clean up normal exhaustion without closing the mux;
   - use attachment identity before clearing mux state.
 
-- [ ] T011 [US1] Implement mux failure observation in `src/nate_ntm/runtime/swarm_acp_mux.py`:
+- [x] T011 [US1] Implement mux failure observation in `src/nate_ntm/runtime/swarm_acp_mux.py`:
 
   - `_report_failure()` records only the first fatal forwarding failure;
   - `wait_failed()` re-raises that failure;
@@ -182,7 +182,7 @@ No new-agent update may appear before acknowledgment. Detach must leave the agen
   - cancellation caused by detach or close is not fatal;
   - clean close cancels a still-pending failure waiter.
 
-- [ ] T012 [US1] Implement `prompt()`, `interrupt()`, and `detach()` in `src/nate_ntm/runtime/swarm_acp_mux.py` according to `specs/009-swarm-acp-mux/spec.md` §§8.4–8.6:
+- [x] T012 [US1] Implement `prompt()`, `interrupt()`, and `detach()` in `src/nate_ntm/runtime/swarm_acp_mux.py` according to `specs/009-swarm-acp-mux/spec.md` §§8.4–8.6:
 
   - prompt and interrupt require an open mux and current attachment;
   - detach is idempotent;
@@ -191,7 +191,7 @@ No new-agent update may appear before acknowledgment. Detach must leave the agen
   - detach exits the retained subscription exactly once;
   - detach does not stop the agent.
 
-- [ ] T013 [US1] Implement `close()`, `__aenter__()`, and `__aexit__()` in `src/nate_ntm/runtime/swarm_acp_mux.py`:
+- [x] T013 [US1] Implement `close()`, `__aenter__()`, and `__aexit__()` in `src/nate_ntm/runtime/swarm_acp_mux.py`:
 
   - close becomes effective exactly once;
   - close detaches the current attachment;
@@ -249,7 +249,7 @@ No new-agent update may appear before acknowledgment. Detach must leave the agen
 
 ### Implementation for User Story 2
 
-- [ ] T018 [US2] Implement `get_swarm_status()` and `get_agent_detail()` in `src/nate_ntm/runtime/swarm_acp_mux.py` using the daemon-owned views and response shapes defined in `specs/009-swarm-acp-mux/contracts/swarm-acp-mux-session.md` §§3.1–3.2.
+- [x] T018 [US2] Implement `get_swarm_status()` and `get_agent_detail()` in `src/nate_ntm/runtime/swarm_acp_mux.py` using the daemon-owned views and response shapes defined in `specs/009-swarm-acp-mux/contracts/swarm-acp-mux-session.md` §§3.1–3.2.
 - [ ] T019 [US2] Complete reserved-control parsing and dispatch in `src/nate_ntm/runtime/swarm_acp_server.py`:
 
   - validate request payloads;
