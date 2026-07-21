@@ -7,10 +7,10 @@ import pytest
 from nate_ntm.config.runtime_config import RuntimeConfig, load_runtime_config
 
 
-def test_defaults(tmp_path: Path) -> None:
+def test_defaults_are_stable_without_environment(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()
-    config = load_runtime_config(project_path=project)
+    config = load_runtime_config(project_path=project, env={})
 
     assert isinstance(config, RuntimeConfig)
     assert config.project_path == project.resolve()
@@ -23,7 +23,27 @@ def test_defaults(tmp_path: Path) -> None:
     assert config.agent_mail_enabled is None
 
 
-def test_environment_overrides(tmp_path: Path) -> None:
+def test_explicit_values_override_environment(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    config = load_runtime_config(
+        project_path=project,
+        control_api_port=9998,
+        swarm_id="explicit",
+        agent_mail_enabled=False,
+        env={
+            "NATE_NTM_CONTROL_PORT": "9999",
+            "NATE_NTM_SWARM_ID": "environment",
+            "NATE_NTM_AGENT_MAIL_ENABLED": "true",
+        },
+    )
+
+    assert config.control_api_port == 9998
+    assert config.swarm_id == "explicit"
+    assert config.agent_mail_enabled is False
+
+
+def test_environment_resolves_paths_and_optional_values(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()
     config = load_runtime_config(
@@ -50,37 +70,33 @@ def test_environment_overrides(tmp_path: Path) -> None:
     assert config.agent_mail_enabled is True
 
 
-def test_explicit_values_override_environment(tmp_path: Path) -> None:
-    project = tmp_path / "project"
-    project.mkdir()
-    config = load_runtime_config(
-        project_path=project,
-        swarm_id="explicit",
-        agent_mail_enabled=False,
-        env={
-            "NATE_NTM_PROJECT_DIR": str(project),
-            "NATE_NTM_SWARM_ID": "environment",
-            "NATE_NTM_AGENT_MAIL_ENABLED": "true",
-        },
-    )
-
-    assert config.swarm_id == "explicit"
-    assert config.agent_mail_enabled is False
-
-
 def test_metadata_must_be_under_or_adjacent_to_project(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()
     adjacent = tmp_path / ".metadata"
-    assert load_runtime_config(project_path=project, metadata_dir=adjacent).metadata_dir == adjacent
+    assert load_runtime_config(
+        project_path=project,
+        metadata_dir=adjacent,
+        env={},
+    ).metadata_dir == adjacent
 
-    outside = tmp_path.parent / "outside" / ".metadata"
     with pytest.raises(ValueError):
-        load_runtime_config(project_path=project, metadata_dir=outside)
+        load_runtime_config(
+            project_path=project,
+            metadata_dir=tmp_path.parent / "outside" / ".metadata",
+            env={},
+        )
 
 
-@pytest.mark.parametrize("raw, expected", [("true", True), ("1", True), ("false", False), ("0", False)])
-def test_boolean_parsing(tmp_path: Path, raw: str, expected: bool) -> None:
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [("true", True), ("1", True), ("false", False), ("0", False)],
+)
+def test_boolean_parsing(
+    tmp_path: Path,
+    raw: str,
+    expected: bool,
+) -> None:
     project = tmp_path / "project"
     project.mkdir()
     config = load_runtime_config(
@@ -92,29 +108,31 @@ def test_boolean_parsing(tmp_path: Path, raw: str, expected: bool) -> None:
     assert config.agent_mail_enabled is expected
 
 
-def test_invalid_boolean_raises(tmp_path: Path) -> None:
-    project = tmp_path / "project"
-    project.mkdir()
-    with pytest.raises(ValueError):
-        load_runtime_config(
-            env={
-                "NATE_NTM_PROJECT_DIR": str(project),
-                "NATE_NTM_AGENT_MAIL_ENABLED": "maybe",
-            }
-        )
-
-
 @pytest.mark.parametrize("port", ["not-an-int", 0, 1024, 70000])
 def test_invalid_port_raises(tmp_path: Path, port: object) -> None:
     project = tmp_path / "project"
     project.mkdir()
     with pytest.raises(ValueError):
-        load_runtime_config(project_path=project, control_api_port=port)  # type: ignore[arg-type]
+        load_runtime_config(
+            project_path=project,
+            control_api_port=port,  # type: ignore[arg-type]
+            env={},
+        )
 
 
-def test_invalid_project_raises(tmp_path: Path) -> None:
+def test_invalid_inputs_raise(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+
     with pytest.raises(ValueError):
-        load_runtime_config(project_path=tmp_path / "missing")
+        load_runtime_config(
+            project_path=project,
+            agent_mail_enabled=None,
+            env={"NATE_NTM_AGENT_MAIL_ENABLED": "maybe"},
+        )
+
+    with pytest.raises(ValueError):
+        load_runtime_config(project_path=tmp_path / "missing", env={})
 
 
 def test_dotenv_loading(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
