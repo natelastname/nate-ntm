@@ -36,7 +36,6 @@ async def test_swarm_acp_client_uses_typed_sdk_operations_over_tcp() -> None:
             return {
                 "attached": True,
                 "agent": {"agent_id": params["agent_id"]},
-                "events": [{"kind": "started"}],
             }
         if method == acp.AGENT_METHODS["session_prompt"]:
             request = acp_schema.PromptRequest.model_validate(params)
@@ -73,9 +72,9 @@ async def test_swarm_acp_client_uses_typed_sdk_operations_over_tcp() -> None:
     try:
         assert (await client.attach("agent-a")).attached_agent_id == "agent-a"
         assert (await client.swarm_status()).swarm["swarm_id"] == "default"
-        assert (await client.agent_detail("agent-a", max_events=10)).events == [
-            {"kind": "started"}
-        ]
+        detail = await client.agent_detail("agent-a")
+        assert detail.attached is True
+        assert detail.agent == {"agent_id": "agent-a"}
         assert (await client.prompt_text("hello")).stop_reason == "end_turn"
         await client.interrupt()
         assert (await client.detach()).detached is True
@@ -86,8 +85,7 @@ async def test_swarm_acp_client_uses_typed_sdk_operations_over_tcp() -> None:
         if handlers:
             await asyncio.gather(*handlers)
 
-    methods = [method for method, _ in calls]
-    assert methods == [
+    assert [method for method, _ in calls] == [
         "_attach",
         "_swarm_status",
         "_agent_detail",
