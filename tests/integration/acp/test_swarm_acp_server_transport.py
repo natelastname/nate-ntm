@@ -14,7 +14,7 @@ import pytest
 import pytest_asyncio
 from acp.connection import StreamDirection, StreamEvent
 
-from nate_ntm.config.runtime_config import AdapterKind, RuntimeConfig, load_runtime_config
+from nate_ntm.config.runtime_config import RuntimeConfig, load_runtime_config
 from nate_ntm.runtime.acp_client import AcpAgentSession, NateOhaAcpClient
 from nate_ntm.runtime.acp_types import SessionNotification
 from nate_ntm.runtime.adapters import create_runtime_adapters
@@ -65,7 +65,6 @@ def _config(tmp_path: Path) -> RuntimeConfig:
     env.update(
         {
             "NATE_NTM_PROJECT_DIR": str(project),
-            "NATE_NTM_ADAPTER_MODE": AdapterKind.REAL.value,
             "NATE_NTM_NATE_OHA_CONFIG": str(root / "nate-oha-profiles/profile1.json"),
             "NATE_NTM_NATE_OHA_RUNTIME_MODE": "echo",
         }
@@ -103,12 +102,11 @@ async def real_swarm(tmp_path: Path) -> AsyncIterator[RealSwarm]:
         )
     )
 
-    adapters = create_runtime_adapters(config)
-    daemon = RuntimeDaemon.resume(config, adapters=adapters)
+    daemon = RuntimeDaemon.resume(config, adapters=create_runtime_adapters(config))
     client = daemon.acp_client
     assert isinstance(client, NateOhaAcpClient)
-    await client.start_agent_async(agent_a, metadata=states[agent_a])
-    await client.start_agent_async(agent_b, metadata=states[agent_b])
+    await client.start_agent(agent_a, metadata=states[agent_a])
+    await client.start_agent(agent_b, metadata=states[agent_b])
     daemon.start()
 
     try:
@@ -116,7 +114,7 @@ async def real_swarm(tmp_path: Path) -> AsyncIterator[RealSwarm]:
     finally:
         for agent_id in (agent_a, agent_b):
             try:
-                await client.stop_agent_async(agent_id, timeout=10.0)
+                await client.stop_agent(agent_id)
             except Exception:
                 pass
         daemon.request_shutdown()
