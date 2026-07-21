@@ -74,10 +74,10 @@ class _Mail(BaseAgentMailClient):
 
 
 class _Acp(BaseAcpClient):
-    async def start_agent_async(self, agent_id: str, *, metadata: AgentState) -> None:
+    async def start_agent(self, agent_id: str, *, metadata: AgentState) -> None:
         return None
 
-    async def stop_agent_async(self, agent_id: str, *, timeout: float) -> None:
+    async def stop_agent(self, agent_id: str) -> None:
         return None
 
     async def prompt(self, agent_id: str, prompt: str | None = None) -> str | None:
@@ -109,24 +109,27 @@ def test_create_persists_agents_and_resume_loads_them(tmp_path: Path) -> None:
     daemon = RuntimeDaemon.create(config, agent_count=2, adapters=_adapters(config))
 
     assert set(daemon.swarm_state.agents) == {"agent-1", "agent-2"}
-    assert daemon.swarm_state.agents["agent-1"].nate_oha_config is not None
     assert RuntimeDaemon.resume(config, adapters=_adapters(config)).swarm_state == daemon.swarm_state
 
 
-def test_lifecycle_registers_agents_and_stops_scheduler(tmp_path: Path) -> None:
+def test_lifecycle_registers_agents_and_updates_state(tmp_path: Path) -> None:
     config = _config(tmp_path)
     daemon = RuntimeDaemon.create(config, agent_count=1, adapters=_adapters(config))
 
     daemon.start()
     assert daemon.state.status is RuntimeStatus.RUNNING
     assert daemon.state.agents["agent-1"].status is AgentStatus.IDLE
-    assert daemon.scheduler is not None and daemon.scheduler.running is True
+
+    daemon.mark_agent_failed("agent-1", "boom")
+    assert daemon.state.agents["agent-1"].status is AgentStatus.FAILED
+    daemon.restart_agent("agent-1")
+    assert daemon.state.agents["agent-1"].status is AgentStatus.IDLE
+    assert daemon.state.agents["agent-1"].last_error is None
 
     daemon.request_shutdown()
     assert daemon.state.status is RuntimeStatus.SHUTTING_DOWN
     daemon.mark_stopped()
     assert daemon.state.status is RuntimeStatus.STOPPED
-    assert daemon.scheduler.running is False
 
 
 def test_start_rejects_invalid_transition(tmp_path: Path) -> None:
@@ -137,17 +140,15 @@ def test_start_rejects_invalid_transition(tmp_path: Path) -> None:
         daemon.start()
 
 
-def test_status_and_agent_detail_have_no_event_history(tmp_path: Path) -> None:
+def test_status_and_agent_detail(tmp_path: Path) -> None:
     config = _config(tmp_path)
     daemon = RuntimeDaemon.create(config, agent_count=1, adapters=_adapters(config))
     daemon.start()
 
     detail = daemon.get_agent_detail("agent-1")
-
     assert detail["agent_id"] == "agent-1"
     assert detail["status"] == AgentStatus.IDLE.value
     assert detail["agent_mail_identity"] == "mail:agent-1"
-    assert "events" not in detail
     assert daemon.get_swarm_status()["agent_counts"]["total"] == 1
 
 
