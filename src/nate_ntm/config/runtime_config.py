@@ -55,22 +55,31 @@ def load_runtime_config(
     """Resolve explicit values, environment values, and stable defaults."""
 
     values = _environment(env)
-    project = _project_path(project_path or values.get("NATE_NTM_PROJECT_DIR"))
+    project = _project_path(
+        project_path if project_path is not None else values.get("NATE_NTM_PROJECT_DIR")
+    )
     metadata = _metadata_dir(
-        metadata_dir or values.get("NATE_NTM_METADATA_DIR"), project
+        metadata_dir if metadata_dir is not None else values.get("NATE_NTM_METADATA_DIR"),
+        project,
     )
     return RuntimeConfig(
         project_path=project,
         metadata_dir=metadata,
         control_api_host=(
             control_api_host
-            or values.get("NATE_NTM_CONTROL_HOST")
-            or _DEFAULT_CONTROL_HOST
+            if control_api_host is not None
+            else values.get("NATE_NTM_CONTROL_HOST") or _DEFAULT_CONTROL_HOST
         ),
         control_api_port=_control_port(
-            control_api_port or values.get("NATE_NTM_CONTROL_PORT")
+            control_api_port
+            if control_api_port is not None
+            else values.get("NATE_NTM_CONTROL_PORT")
         ),
-        swarm_id=swarm_id or values.get("NATE_NTM_SWARM_ID") or _DEFAULT_SWARM_ID,
+        swarm_id=(
+            swarm_id
+            if swarm_id is not None
+            else values.get("NATE_NTM_SWARM_ID") or _DEFAULT_SWARM_ID
+        ),
         agent_mail_project=_optional(
             agent_mail_project
             if agent_mail_project is not None
@@ -143,14 +152,16 @@ def _project_path(raw: Path | str | None) -> Path:
 
 def _metadata_dir(raw: Path | str | None, project: Path) -> Path:
     path = Path(raw) if raw is not None else project / ".nate_ntm"
-    path = (project / path).resolve() if not path.is_absolute() else path.expanduser().resolve()
+    path = (
+        (project / path).resolve()
+        if not path.is_absolute()
+        else path.expanduser().resolve()
+    )
     try:
         path.relative_to(project)
     except ValueError:
         if path.parent != project.parent:
-            raise ValueError(
-                "metadata_dir must be under the project or adjacent to it"
-            )
+            raise ValueError("metadata_dir must be under the project or adjacent to it")
     return path
 
 
@@ -175,7 +186,11 @@ def _optional_path(value: Path | str | None, project: Path) -> Path | None:
     if value is None:
         return None
     path = Path(value)
-    return (project / path).resolve() if not path.is_absolute() else path.expanduser().resolve()
+    return (
+        (project / path).resolve()
+        if not path.is_absolute()
+        else path.expanduser().resolve()
+    )
 
 
 def _optional_bool(value: bool | None, raw: str | None) -> bool | None:
