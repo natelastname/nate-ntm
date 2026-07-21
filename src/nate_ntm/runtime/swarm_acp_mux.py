@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
-from typing import AsyncIterator, Awaitable, Callable, Protocol, TYPE_CHECKING
+from typing import TYPE_CHECKING, AsyncIterator, Awaitable, Callable, Protocol
 
 from .acp_types import SessionUpdate
 from .acp_update_stream import ReceivedSessionUpdate
@@ -186,12 +186,7 @@ class SwarmACPMux:
             "swarm": self.daemon.get_swarm_status(),
         }
 
-    def get_agent_detail(
-        self,
-        agent_id: str,
-        *,
-        max_events: int | None = None,
-    ) -> dict[str, object]:
+    def get_agent_detail(self, agent_id: str) -> dict[str, object]:
         self._ensure_open()
         try:
             agent = self.daemon.get_agent_detail(agent_id)
