@@ -1,20 +1,8 @@
-"""Public API surface for the nate_ntm runtime control layer.
+"""Command-only runtime control API.
 
-This package hosts the localhost-only control API server and any
-client helpers used by CLIs, TUIs, or web frontends.
-
-The primary entrypoint is a unified FastAPI application created by
-``create_runtime_api_app``, which exposes:
-
-* ``POST /jsonrpc``
-    HTTP JSON-RPC 2.0 endpoint for ``runtime.*``, ``swarm.*``,
-    ``agent.*``, and ``events.*`` commands.
-* ``WS   /events``
-    WebSocket endpoint that streams JSON-RPC-style ``events.notify``
-    notifications for subscribed clients.
-
-See ``specs/001-swarm-runtime-orchestrator/contracts/`` for the runtime
-API contracts.
+The package exposes a single FastAPI JSON-RPC endpoint for runtime status,
+swarm inspection, agent detail, and shutdown. Live agent output is carried by
+ACP rather than a parallel control-API event system.
 """
 
 from __future__ import annotations
