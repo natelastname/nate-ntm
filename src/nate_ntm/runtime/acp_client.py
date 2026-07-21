@@ -5,17 +5,19 @@ from __future__ import annotations
 import logging
 import os
 import shutil
-from contextlib import asynccontextmanager
+from asyncio.subprocess import Process
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, AsyncIterator
+from typing import AsyncIterator
 
+from acp.client.connection import ClientSideConnection
 from acp.meta import PROTOCOL_VERSION
 from acp.schema import TextContentBlock
 
 from ..config.runtime_config import RuntimeConfig
-from .acp_connection import open_nate_oha_acp_client
-from .acp_protocol_client import NATE_NTM_CLIENT_CAPABILITIES
+from .acp_connection import ACPConnectionResources, open_nate_oha_acp_client
+from .acp_protocol_client import NATE_NTM_CLIENT_CAPABILITIES, NateNtmAcpProtocolClient
 from .acp_types import SessionUpdate
 from .acp_update_stream import (
     AcpSessionUpdateStream,
@@ -46,9 +48,7 @@ class AcpClientError(RuntimeError):
 class AcpAgentStatus:
     agent_id: str
     state: str
-    last_exit_code: int | None = None
     last_error: str | None = None
-    restart_count: int = 0
 
 
 @dataclass(slots=True)
@@ -57,23 +57,21 @@ class AcpAgentSession:
 
     agent_id: str
     conversation_id: str
-    process: Any
-    connection: Any
-    protocol_client: Any
+    process: Process
+    connection: ClientSideConnection
+    protocol_client: NateNtmAcpProtocolClient
     update_stream: AcpSessionUpdateStream = field(default_factory=AcpSessionUpdateStream)
     status: str = "starting"
-    stderr_task: Any | None = None
-    exit_monitor_task: Any | None = None
     last_error: str | None = None
 
 
 class BaseAcpClient:
-    """Agent-centric ACP lifecycle contract used by the runtime."""
+    """Async agent-centric ACP lifecycle contract used by the runtime."""
 
-    async def start_agent_async(self, agent_id: str, *, metadata: AgentState) -> None:
+    async def start_agent(self, agent_id: str, *, metadata: AgentState) -> None:
         raise NotImplementedError
 
-    async def stop_agent_async(self, agent_id: str, *, timeout: float) -> None:
+    async def stop_agent(self, agent_id: str) -> None:
         raise NotImplementedError
 
     async def prompt(self, agent_id: str, prompt: str | None = None) -> str | None:
@@ -95,20 +93,15 @@ class BaseAcpClient:
 
 @dataclass(slots=True)
 class NateOhaAcpClient(BaseAcpClient):
-    """Launch and manage one nate-oha ACP process per agent.
-
-    ACP ``SessionUpdate`` values are the sole update model. They are published
-    directly into each session's :class:`AcpSessionUpdateStream`; no generic
-    runtime event translation or secondary observability stream exists.
-    """
+    """Launch and manage one nate-oha ACP process per agent."""
 
     config: RuntimeConfig
     executable: str = "nate-oha"
-    startup_timeout: float = 15.0
-    shutdown_timeout: float = 10.0
 
     _sessions: dict[str, AcpAgentSession] = field(default_factory=dict, init=False)
-    _session_contexts: dict[str, Any] = field(default_factory=dict, init=False)
+    _session_contexts: dict[
+        str, AbstractAsyncContextManager[ACPConnectionResources]
+    ] = field(default_factory=dict, init=False)
     _temp_config_dirs: dict[str, str] = field(default_factory=dict, init=False)
     _terminal_statuses: dict[str, AcpAgentStatus] = field(default_factory=dict, init=False)
 
@@ -155,26 +148,17 @@ class NateOhaAcpClient(BaseAcpClient):
     async def subscribe_acp_updates(
         self, agent_id: str
     ) -> AsyncIterator[AsyncIterator[ReceivedSessionUpdate]]:
-        session = self._sessions.get(agent_id)
-        if session is None or session.status not in {"starting", "running", "waiting"}:
-            raise AgentSessionNotActive(f"No active ACP session for agent {agent_id!r}")
-
+        session = self._require_active_session(agent_id)
         async with session.update_stream.subscribe() as updates:
             yield updates
 
-    async def iter_acp_updates(self, agent_id: str) -> AsyncIterator[ReceivedSessionUpdate]:
-        async with self.subscribe_acp_updates(agent_id) as updates:
-            async for update in updates:
-                yield update
-
-    async def start_agent_async(self, agent_id: str, *, metadata: AgentState) -> None:
+    async def start_agent(self, agent_id: str, *, metadata: AgentState) -> None:
         current = self._sessions.get(agent_id)
         if current is not None and current.status in {"starting", "running", "waiting"}:
             return
 
-        command = self._build_command(agent_id, metadata)
         context = open_nate_oha_acp_client(
-            command=command,
+            command=self._build_command(agent_id, metadata),
             env=self._build_env(agent_id, metadata),
             cwd=self.config.project_path,
             agent_id=agent_id,
@@ -198,7 +182,6 @@ class NateOhaAcpClient(BaseAcpClient):
                 protocol_version=PROTOCOL_VERSION,
                 client_capabilities=NATE_NTM_CLIENT_CAPABILITIES,
             )
-
             if session.conversation_id:
                 await connection.load_session(
                     cwd=str(self.config.project_path),
@@ -219,7 +202,6 @@ class NateOhaAcpClient(BaseAcpClient):
                 )
 
             session.status = "running"
-            session.last_error = None
             self._terminal_statuses.pop(agent_id, None)
         except Exception as exc:
             self._sessions.pop(agent_id, None)
@@ -238,7 +220,7 @@ class NateOhaAcpClient(BaseAcpClient):
                 f"Failed to establish ACP connection for agent {agent_id!r}: {exc}"
             ) from exc
 
-    async def stop_agent_async(self, agent_id: str, *, timeout: float) -> None:
+    async def stop_agent(self, agent_id: str) -> None:
         context = self._session_contexts.pop(agent_id, None)
         session = self._sessions.pop(agent_id, None)
         if context is None or session is None:
@@ -254,17 +236,15 @@ class NateOhaAcpClient(BaseAcpClient):
             await context.__aexit__(None, None, None)
         except Exception as exc:
             error = exc
-            session.last_error = str(exc)
             raise AcpClientError(
                 f"Failed to stop ACP session for agent {agent_id!r}: {exc}"
             ) from exc
         finally:
             session.update_stream.close(error)
             self._cleanup_temp_config(agent_id)
-            state = "failed" if error else "terminated"
             self._terminal_statuses[agent_id] = AcpAgentStatus(
                 agent_id=agent_id,
-                state=state,
+                state="failed" if error else "terminated",
                 last_error=str(error) if error else None,
             )
 
@@ -296,19 +276,12 @@ class NateOhaAcpClient(BaseAcpClient):
         session = self._sessions.get(agent_id)
         if session is None or session.status not in {"starting", "running", "waiting"}:
             raise AcpClientError(
-                f"No active ACP session for agent {agent_id!r}; "
-                "call start_agent_async(...) first"
+                f"No active ACP session for agent {agent_id!r}; call start_agent(...) first"
             )
         return session
 
     def _build_command(self, agent_id: str, metadata: AgentState) -> list[str]:
-        config = metadata.nate_oha_config
-        if config is None:
-            raise AcpClientError(
-                f"No persisted nate-oha configuration for agent {agent_id!r}"
-            )
-
-        config_path = materialize_nate_oha_config(config=config)
+        config_path = materialize_nate_oha_config(config=metadata.nate_oha_config)
         self._temp_config_dirs[agent_id] = str(config_path.parent)
         command = [self.executable, "acp", "--config", str(config_path)]
         if metadata.conversation_id:
