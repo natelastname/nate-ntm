@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import datetime, timezone
-from enum import Enum
 from pathlib import Path
 from typing import Any
 
@@ -25,22 +24,16 @@ from .runtime.swarm_state import AgentState, SwarmState
 load_dotenv()
 
 app = typer.Typer(help="nate_ntm command-line interface")
-runtime_app = typer.Typer(help="Runtime daemon commands")
-swarm_app = typer.Typer(help="Swarm metadata commands")
+swarm_app = typer.Typer(help="Create and resume swarms")
 api_app = typer.Typer(help="Runtime control API commands")
-app.add_typer(runtime_app, name="runtime")
 app.add_typer(swarm_app, name="swarm")
 app.add_typer(api_app, name="api")
-
-
-class CliStartupMode(str, Enum):
-    CREATE = "create"
-    RESUME = "resume"
 
 
 def _resolve_runtime_config(
     project: Path,
     *,
+    swarm_id: str = "default",
     nate_oha_config: Path | None = None,
     nate_oha_runtime_mode: str | None = None,
     llm_model: str | None = None,
@@ -49,12 +42,47 @@ def _resolve_runtime_config(
 ) -> RuntimeConfig:
     return load_runtime_config(
         project_path=project,
+        swarm_id=swarm_id,
         nate_oha_config_path=nate_oha_config,
         nate_oha_runtime_mode=nate_oha_runtime_mode,
         llm_model=llm_model,
         llm_api_key=llm_api_key,
         prompt_soul_content=prompt_soul_content,
     )
+
+
+def _run_swarm(
+    config: RuntimeConfig,
+    *,
+    acp_host: str,
+    acp_port: int,
+    control_host: str | None,
+    control_port: int | None,
+) -> None:
+    if not 0 <= acp_port <= 65535:
+        raise typer.BadParameter("--acp-port must be between 0 and 65535")
+
+    typer.echo(f"Swarm ACP: tcp://{acp_host}:{acp_port}", err=True)
+    typer.echo(
+        f"Control API: http://{control_host or config.control_api_host}:"
+        f"{control_port if control_port is not None else config.control_api_port}",
+        err=True,
+    )
+    try:
+        run_runtime_with_control_api(
+            config,
+            StartupMode.RESUME,
+            host=control_host,
+            port=control_port,
+            acp_host=acp_host,
+            acp_port=acp_port,
+        )
+    except (MetadataAlreadyExistsError, MetadataMissingError) as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+    except OSError as exc:
+        typer.echo(f"Failed to start swarm: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
 
 
 @swarm_app.command("create")
@@ -68,60 +96,6 @@ def swarm_create(
     swarm_id: str = typer.Option("default", "--swarm-id"),
     force: bool = typer.Option(False, "--force"),
     dry_run: bool = typer.Option(False, "--dry-run"),
-) -> None:
-    """Create one swarm from complete nate-oha JSON configurations."""
-
-    config = load_runtime_config(project_path=project, swarm_id=swarm_id)
-    store = MetadataStore(config)
-    swarm_path = store.metadata_dir / "swarm.json"
-    if swarm_path.exists() and not force:
-        raise typer.BadParameter(f"swarm metadata already exists: {swarm_path}")
-
-    agents: dict[str, AgentState] = {}
-    for path in agent:
-        agent_id = path.stem.strip()
-        if not agent_id:
-            raise typer.BadParameter(f"invalid agent config filename: {path}")
-        if agent_id in agents:
-            raise typer.BadParameter(f"duplicate agent id {agent_id!r}")
-        try:
-            nate_oha_config = NateOHAConfig.model_validate_json(path.read_text(encoding="utf-8"))
-        except (OSError, ValidationError, ValueError) as exc:
-            raise typer.BadParameter(f"invalid agent config {path}: {exc}") from exc
-        agents[agent_id] = AgentState(
-            agent_id=agent_id,
-            display_name=agent_id.replace("-", " ").replace("_", " ").title(),
-            nate_oha_config=nate_oha_config,
-        )
-
-    if not agents:
-        raise typer.BadParameter("at least one --agent config is required")
-
-    now = datetime.now(timezone.utc)
-    swarm = SwarmState(
-        swarm_id=config.swarm_id,
-        project_path=config.project_path,
-        created_at=now,
-        last_updated_at=now,
-        agents=agents,
-    )
-
-    if dry_run:
-        typer.echo(swarm.model_dump_json(indent=2))
-        return
-
-    store.save_swarm_state(swarm)
-    typer.echo(f"Created swarm {swarm.swarm_id!r} with {len(agents)} agents")
-    typer.echo(f"Metadata: {swarm_path}")
-
-
-@runtime_app.command("start")
-def runtime_start(
-    project: Path = typer.Option(
-        ..., "--project", "-p", exists=True, file_okay=False, dir_okay=True
-    ),
-    mode: CliStartupMode = typer.Option(CliStartupMode.RESUME, "--mode"),
-    agents: int | None = typer.Option(None, "--agents", "-n"),
     nate_oha_config: Path | None = typer.Option(
         None,
         "--nate-oha-config",
@@ -141,50 +115,110 @@ def runtime_start(
     control_host: str | None = typer.Option(None, "--control-host"),
     control_port: int | None = typer.Option(None, "--control-port"),
 ) -> None:
-    """Create or resume a swarm runtime with TCP ACP and control endpoints."""
-
-    if agents is not None:
-        if mode is CliStartupMode.RESUME:
-            raise typer.BadParameter("--agents can only be used with --mode=create")
-        if agents <= 0:
-            raise typer.BadParameter("--agents must be a positive integer")
-    if not 0 <= acp_port <= 65535:
-        raise typer.BadParameter("--acp-port must be between 0 and 65535")
+    """Create and run a new swarm with fresh agent conversations."""
 
     config = _resolve_runtime_config(
         project,
+        swarm_id=swarm_id,
         nate_oha_config=nate_oha_config,
         nate_oha_runtime_mode=nate_oha_runtime_mode,
         llm_model=llm_model,
         llm_api_key=llm_api_key,
         prompt_soul_content=prompt_soul_content,
     )
-    startup_mode = (
-        StartupMode.CREATE if mode is CliStartupMode.CREATE else StartupMode.RESUME
+    store = MetadataStore(config)
+    swarm_path = store.metadata_dir / "swarm.json"
+    if swarm_path.exists() and not force:
+        raise typer.BadParameter(f"swarm metadata already exists: {swarm_path}")
+
+    agents: dict[str, AgentState] = {}
+    for path in agent:
+        agent_id = path.stem.strip()
+        if not agent_id:
+            raise typer.BadParameter(f"invalid agent config filename: {path}")
+        if agent_id in agents:
+            raise typer.BadParameter(f"duplicate agent id {agent_id!r}")
+        try:
+            config_model = NateOHAConfig.model_validate_json(path.read_text(encoding="utf-8"))
+        except (OSError, ValidationError, ValueError) as exc:
+            raise typer.BadParameter(f"invalid agent config {path}: {exc}") from exc
+        agents[agent_id] = AgentState(
+            agent_id=agent_id,
+            display_name=agent_id.replace("-", " ").replace("_", " ").title(),
+            nate_oha_config=config_model,
+        )
+
+    if not agents:
+        raise typer.BadParameter("at least one --agent config is required")
+
+    now = datetime.now(timezone.utc)
+    swarm = SwarmState(
+        swarm_id=config.swarm_id,
+        project_path=config.project_path,
+        created_at=now,
+        last_updated_at=now,
+        agents=agents,
     )
 
-    typer.echo(f"Swarm ACP: tcp://{acp_host}:{acp_port}", err=True)
-    typer.echo(
-        f"Control API: http://{control_host or config.control_api_host}:"
-        f"{control_port if control_port is not None else config.control_api_port}",
-        err=True,
+    if dry_run:
+        typer.echo(swarm.model_dump_json(indent=2))
+        return
+
+    store.save_swarm_state(swarm)
+    typer.echo(f"Created swarm {swarm.swarm_id!r} with {len(agents)} agents", err=True)
+    typer.echo(f"Metadata: {swarm_path}", err=True)
+    _run_swarm(
+        config,
+        acp_host=acp_host,
+        acp_port=acp_port,
+        control_host=control_host,
+        control_port=control_port,
     )
-    try:
-        run_runtime_with_control_api(
-            config,
-            startup_mode,
-            host=control_host,
-            port=control_port,
-            acp_host=acp_host,
-            acp_port=acp_port,
-            agent_count=agents,
-        )
-    except (MetadataAlreadyExistsError, MetadataMissingError) as exc:
-        typer.echo(str(exc), err=True)
-        raise typer.Exit(code=1) from exc
-    except OSError as exc:
-        typer.echo(f"Failed to start runtime: {exc}", err=True)
-        raise typer.Exit(code=1) from exc
+
+
+@swarm_app.command("resume")
+def swarm_resume(
+    project: Path = typer.Option(
+        ..., "--project", "-p", exists=True, file_okay=False, dir_okay=True
+    ),
+    swarm_id: str = typer.Option("default", "--swarm-id"),
+    nate_oha_config: Path | None = typer.Option(
+        None,
+        "--nate-oha-config",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        resolve_path=True,
+    ),
+    nate_oha_runtime_mode: str | None = typer.Option(None, "--nate-oha-runtime-mode"),
+    llm_model: str | None = typer.Option(None, "--llm-model"),
+    llm_api_key: str | None = typer.Option(
+        None, "--llm-api-key", envvar="NATE_NTM_LLM_API_KEY"
+    ),
+    prompt_soul_content: str | None = typer.Option(None, "--prompt-soul-content"),
+    acp_host: str = typer.Option("127.0.0.1", "--acp-host", envvar="NATE_NTM_ACP_HOST"),
+    acp_port: int = typer.Option(8766, "--acp-port", envvar="NATE_NTM_ACP_PORT"),
+    control_host: str | None = typer.Option(None, "--control-host"),
+    control_port: int | None = typer.Option(None, "--control-port"),
+) -> None:
+    """Resume an existing swarm and its persisted agent conversations."""
+
+    config = _resolve_runtime_config(
+        project,
+        swarm_id=swarm_id,
+        nate_oha_config=nate_oha_config,
+        nate_oha_runtime_mode=nate_oha_runtime_mode,
+        llm_model=llm_model,
+        llm_api_key=llm_api_key,
+        prompt_soul_content=prompt_soul_content,
+    )
+    _run_swarm(
+        config,
+        acp_host=acp_host,
+        acp_port=acp_port,
+        control_host=control_host,
+        control_port=control_port,
+    )
 
 
 def _parse_params(pairs: list[str]) -> dict[str, Any]:
