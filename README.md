@@ -1,119 +1,90 @@
-# nate_ntm 
+# nate_ntm
 
-Swarm Runtime Orchestrator for coordinating coding agents (for example,
-OpenHands) around a single project directory. The runtime owns ACP
-connections, bridges Agent Mail coordination state, and exposes a local
-JSON-RPC control API (HTTP + ``/events`` WebSocket) used by CLI/TUI/web clients.
-
-This repository currently focuses on the MVP described in
-`specs/001-swarm-runtime-orchestrator/`.
-
-## Status
-
-- Feature branch: `001-swarm-runtime-orchestrator`
-- User stories US1–US3 implemented with fake/dev-mode adapters for Agent Mail
-  and ACP
-- Phase 6 production adapters for Agent Mail and ACP are present but still
-  evolving. For ACP, the canonical production adapter is now
-  `NateOhaAcpClient` (the nate-oha ACP runtime) from Feature 002; the older
-  `OpenHandsAcpClient` remains available as a legacy/compatibility option.
-  REAL adapter modes should be treated as experimental and gated behind
-  configuration and environment-specific quickstarts (see
-  `specs/002-nate-oha-acp-adapter/quickstart.md`).
+Swarm runtime orchestrator for coordinating coding agents around a local project directory. A swarm is a durable, independently addressable object whose complete state includes its project path and per-agent nate-oha configuration.
 
 ## Installation
 
-Requires **Python 3.13+** and either `uv` or `pip`.
-
-### Using uv (recommended for development)
+Requires Python 3.13+.
 
 ```bash
-# From the repository root
 uv sync
-
-# Run the test suite
 uv run pytest
 ```
 
-### Using pip
+The `nate-ntm` entrypoint is defined by `pyproject.toml`.
 
-```bash
-pip install -e .
-```
+## Create a swarm
 
-This installs the `nate-ntm` CLI entrypoint (from `pyproject.toml`).
-
-## Usage
-
-For end-to-end usage and validation scenarios, see:
-
-- `specs/001-swarm-runtime-orchestrator/quickstart.md`
-
-Example (local quickstart):
-
-```bash
-# Start a new swarm in create mode with 2 agents and the control API
-nate-ntm runtime start \
-  --project /abs/path/to/your/project \
-  --mode create \
-  --agents 2 \
-  --with-control-api
-
-# From another terminal, query runtime status via the control API
-nate-ntm api call runtime.get_status
-```
-
-By default the runtime uses in-memory "fake" adapters for Agent Mail and ACP so
-that US1–US3 can be exercised without external services. REAL adapters can be
-enabled via configuration flags and environment variables as they mature.
-
-### Swarm constructors
-
-A constructor transforms the complete swarm configuration once, during
-`swarm create`. The built-in `agent-mail` constructor generates one shared
-Agent Mail project, a unique identity and credential for every agent, and stores
-the resulting complete configuration in `swarm.json`.
+Create from the current working directory:
 
 ```bash
 nate-ntm swarm create \
-  --project /abs/path/to/your/project \
+  --agent planner.json \
+  --agent implementer.json
+```
+
+`--project` is optional and overrides the working-directory default. `--swarm-id` is also optional; omitted IDs are generated with `uuid4().hex`.
+
+Each swarm is stored at:
+
+```text
+~/.nate-ntm/swarms/<swarm-id>/swarm.json
+```
+
+The project directory does not identify or locate a swarm. Multiple swarms may use the same project directory.
+
+## Agent Mail constructor
+
+The `agent-mail` constructor materializes one shared Agent Mail project plus an identity and credential for each agent:
+
+```bash
+nate-ntm swarm create \
   --agent planner.json \
   --agent implementer.json \
   --constructor agent-mail
 ```
 
-Add `--dry-run` to inspect the fully constructed JSON without writing
-`.nate_ntm/swarm.json`. Constructors are recorded in order under
-`runtime_options.constructors` and are not rerun when the swarm is resumed.
-The Agent Mail URL may be supplied through `NATE_NTM_AGENT_MAIL_URL`,
-`AGENT_MAIL_UPSTREAM_URL`, or `AGENT_MAIL_URL`.
+The Agent Mail project ID defaults exactly to the swarm ID. Explicit overrides are construction-only inputs:
 
-## Control API and shared models
+```bash
+nate-ntm swarm create \
+  --agent planner.json \
+  --constructor agent-mail \
+  --agent-mail-project-id planning-mail \
+  --agent-mail-url http://127.0.0.1:8765
+```
 
-The runtime exposes a local FastAPI-based JSON-RPC 2.0 control API
-(``POST /jsonrpc``) plus an ``/events`` WebSocket endpoint. The
-canonical response schemas for the most common JSON-RPC **results** live in
-`src/nate_ntm/api/models.py` as Pydantic models.
+Use `--dry-run` to print the complete materialized swarm without creating its storage directory. Constructors run only during `swarm create`; their results are persisted and reused unchanged.
 
-These models represent the wire-level JSON result shapes and are reused by:
+## Start an existing swarm
 
-- the FastAPI/JSON-RPC server (`nate_ntm.api.runtime_api`),
-- the HTTP JSON-RPC client (`nate_ntm.api.client.JsonRpcHttpClient`), and
-- the `nate-ntm api call` CLI command, which normalises output for common
-  methods through these models.
+An existing swarm is addressed only by ID:
 
-`JsonRpcHttpClient` also exposes a low-level `call_for_result` helper that
-works with any JSON-RPC method. Typed helpers (e.g. `get_runtime_status`,
-`get_swarm_overview`, `get_agent_detail`) are convenience wrappers that
-validate and return the shared Pydantic result models.
+```bash
+nate-ntm runtime start --swarm-id <swarm-id>
+```
 
-## Development
+The runtime loads the persisted project path and per-agent configuration from `swarm.json`. There is no runtime create mode and no project-path lookup fallback.
 
-Key implementation docs for this feature live under:
+## Control API
 
-- `specs/001-swarm-runtime-orchestrator/plan.md`
-- `specs/001-swarm-runtime-orchestrator/spec.md`
-- `specs/001-swarm-runtime-orchestrator/tasks.md`
+The runtime exposes a local JSON-RPC 2.0 API and an `/events` WebSocket endpoint. Invoke a method with:
+
+```bash
+nate-ntm api call runtime.get_status
+```
+
+Shared result models live in `src/nate_ntm/api/models.py`.
+
+## Design
+
+Epic 013 defines the current identity, persistence, and CLI model:
+
+- `specs/013-cli-refactor/spec.md`
+- `specs/013-cli-refactor/research.md`
+- `specs/013-cli-refactor/plan.md`
+- `specs/013-cli-refactor/tasks.md`
+- `specs/013-cli-refactor/quickstart.md`
 
 ## License
 
