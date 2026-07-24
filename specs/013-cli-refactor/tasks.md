@@ -14,7 +14,7 @@
 
 ## Foundational Work
 
-- [ ] T002 Change `AgentMailFeatureConfig.project` from `Path | None` to `str | None` in `../nate-oha/src/nate_oha/config.py`, remove path-oriented wording and imports made unused by the change, and add string validation/JSON round-trip coverage in `../nate-oha/tests/test_agent_mail_config.py` without accepting both types.
+- [x] T002 Change `AgentMailFeatureConfig.project` from `Path | None` to `str | None` in `../nate-oha/src/nate_oha/config.py`, remove path-oriented wording and imports made unused by the change, and add string validation/JSON round-trip coverage in `../nate-oha/tests/test_agent_mail_config.py` without accepting both types.
 - [x] T003 Refactor `src/nate_ntm/runtime/metadata_store.py` so `MetadataStore` binds directly to a validated `swarm_id`, derives `~/.nate-ntm/swarms/<swarm-id>/swarm.json`, retains the existing atomic writer, and validates the embedded swarm ID without requiring an external project path.
 - [x] T004 Add one canonical swarm-ID validation function in `src/nate_ntm/runtime/metadata_store.py` or `src/nate_ntm/runtime/swarm_state.py` that preserves valid explicit IDs exactly and rejects empty IDs, separators, `.`/`..`, and path escape attempts; reuse it from every create/load entry point.
 - [x] T005 Simplify `RuntimeConfig` and `load_runtime_config()` in `src/nate_ntm/config/runtime_config.py` by removing `metadata_dir`, generated/default swarm-ID behavior, Agent Mail construction fields, and their obsolete environment loading while retaining only settings needed to run an already materialized swarm.
@@ -26,7 +26,7 @@
 
 ### Tests
 
-- [ ] T007 [US1] Replace project-local persistence expectations in `tests/unit/runtime/test_metadata_store.py` with real-store tests that generate a UUID4-hex ID, operate only on `~/.nate-ntm/swarms/<owned-id>/`, verify atomic round-trip and collision safety, and remove only that exact directory in fixture teardown.
+- [x] T007 [US1] Replace project-local persistence expectations in `tests/unit/runtime/test_metadata_store.py` with real-store tests that generate a UUID4-hex ID, operate only on `~/.nate-ntm/swarms/<owned-id>/`, verify atomic round-trip and collision safety, and remove only that exact directory in fixture teardown.
 - [x] T008 [US1] Add a CLI macro test in `tests/integration/quickstart/test_swarm_create.py` that changes into a temporary project, omits `--project` and `--swarm-id`, captures the generated ID, loads the resulting centralized state, verifies the resolved working directory, and asserts `<project>/.nate_ntm` was not created.
 - [x] T009 [P] [US1] Add a second CLI macro test in `tests/integration/quickstart/test_swarm_create.py` that creates two swarms for the same explicit project and verifies distinct IDs, distinct storage directories, and independent persisted state.
 
@@ -42,7 +42,7 @@
 
 ### Tests
 
-- [ ] T013 [US2] Update `tests/test_swarm_constructors.py` to assert string Agent Mail project IDs, default equality with `swarm_id`, explicit `--agent-mail-project-id` and `--agent-mail-url` overrides, ordered constructor metadata, and absence of source-object mutation.
+- [x] T013 [US2] Update `tests/test_swarm_constructors.py` to assert string Agent Mail project IDs, default equality with `swarm_id`, explicit `--agent-mail-project-id` and `--agent-mail-url` overrides, ordered constructor metadata, and absence of source-object mutation.
 - [x] T014 [US2] Add CLI validation cases in `tests/integration/quickstart/test_swarm_create.py` proving `--agent-mail-project-id` and `--agent-mail-url` fail without `--constructor agent-mail` and that no swarm directory is created on failure.
 
 ### Implementation
