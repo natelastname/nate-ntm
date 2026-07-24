@@ -108,7 +108,12 @@ def swarm_create(
         typer.echo(swarm.model_dump_json(indent=2))
         return
 
-    store.save_swarm_state(swarm)
+    try:
+        store.save_swarm_state(swarm, overwrite=force)
+    except FileExistsError as exc:
+        raise typer.BadParameter(
+            f"swarm metadata already exists: {store.swarm_path}"
+        ) from exc
     typer.echo(f"Created swarm {swarm.swarm_id!r} with {len(agents)} agents")
     typer.echo(f"Swarm ID: {swarm.swarm_id}")
     typer.echo(f"Metadata: {store.swarm_path}")
