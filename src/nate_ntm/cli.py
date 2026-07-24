@@ -45,7 +45,7 @@ def swarm_create(
     constructor: list[str] = typer.Option([], "--constructor"),  # type: ignore[assignment]
     swarm_id: str | None = typer.Option(None, "--swarm-id"),
     agent_mail_project_id: str | None = typer.Option(None, "--agent-mail-project-id"),
-    agent_mail_url: str = typer.Option("http://127.0.0.1:8765", "--agent-mail-url"),
+    agent_mail_url: str | None = typer.Option(None, "--agent-mail-url"),
     force: bool = typer.Option(False, "--force"),
     dry_run: bool = typer.Option(False, "--dry-run"),
 ) -> None:
@@ -54,8 +54,12 @@ def swarm_create(
     effective_swarm_id = validate_swarm_id(swarm_id or uuid4().hex)
     effective_project = (project or Path.cwd()).expanduser().resolve()
     if not effective_project.is_dir():
-        raise typer.BadParameter(f"project does not exist or is not a directory: {effective_project}")
-    if (agent_mail_project_id is not None or agent_mail_url != "http://127.0.0.1:8765") and "agent-mail" not in constructor:
+        raise typer.BadParameter(
+            f"project does not exist or is not a directory: {effective_project}"
+        )
+    if (
+        agent_mail_project_id is not None or agent_mail_url is not None
+    ) and "agent-mail" not in constructor:
         raise typer.BadParameter("Agent Mail options require --constructor agent-mail")
 
     store = MetadataStore(effective_swarm_id)
@@ -70,7 +74,9 @@ def swarm_create(
         if agent_id in agents:
             raise typer.BadParameter(f"duplicate agent id {agent_id!r}")
         try:
-            nate_oha_config = NateOHAConfig.model_validate_json(path.read_text(encoding="utf-8"))
+            nate_oha_config = NateOHAConfig.model_validate_json(
+                path.read_text(encoding="utf-8")
+            )
         except (OSError, ValidationError, ValueError) as exc:
             raise typer.BadParameter(f"invalid agent config {path}: {exc}") from exc
         agents[agent_id] = AgentState(
