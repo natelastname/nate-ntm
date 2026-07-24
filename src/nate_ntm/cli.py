@@ -21,6 +21,7 @@ from .runtime.daemon import MetadataAlreadyExistsError, MetadataMissingError, St
 from .runtime.metadata_store import MetadataStore
 from .runtime.runner import run_runtime_with_control_api
 from .runtime.swarm_state import AgentState, SwarmState
+from .swarm_constructors import apply_constructors
 
 load_dotenv()
 
@@ -65,6 +66,7 @@ def swarm_create(
     agent: list[Path] = typer.Option(
         ..., "--agent", exists=True, file_okay=True, dir_okay=False, resolve_path=True
     ),
+    constructor: list[str] = typer.Option([], "--constructor"),  # type: ignore[assignment]
     swarm_id: str = typer.Option("default", "--swarm-id"),
     force: bool = typer.Option(False, "--force"),
     dry_run: bool = typer.Option(False, "--dry-run"),
@@ -98,12 +100,15 @@ def swarm_create(
         raise typer.BadParameter("at least one --agent config is required")
 
     now = datetime.now(timezone.utc)
-    swarm = SwarmState(
-        swarm_id=config.swarm_id,
-        project_path=config.project_path,
-        created_at=now,
-        last_updated_at=now,
-        agents=agents,
+    swarm = apply_constructors(
+        SwarmState(
+            swarm_id=config.swarm_id,
+            project_path=config.project_path,
+            created_at=now,
+            last_updated_at=now,
+            agents=agents,
+        ),
+        constructor,
     )
 
     if dry_run:
