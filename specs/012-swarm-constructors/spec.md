@@ -53,8 +53,8 @@ An operator wants to select multiple constructors, such as Agent Mail setup and 
 **Acceptance Scenarios**:
 
 1. **Given** multiple selected constructors, **when** a swarm is created, **then** nate_ntm applies them in the order supplied by the operator or declared by the swarm definition.
-2. **Given** a constructor fails, **when** construction is in progress, **then** swarm creation fails without persisting a partially materialized swarm as valid.
-3. **Given** two constructors produce an invalid or conflicting configuration, **when** final validation runs, **then** swarm creation fails with an actionable error identifying the conflicting constructor output.
+2. **Given** a constructor raises an error, **when** construction is in progress, **then** swarm creation stops, the original error surfaces to the caller, and no swarm state is saved.
+3. **Given** two constructors produce an invalid or conflicting configuration, **when** final validation runs, **then** swarm creation fails with the underlying validation error.
 
 ---
 
@@ -66,7 +66,6 @@ An operator wants to select multiple constructors, such as Agent Mail setup and 
 - What happens when constructor parameters are malformed or reference an unknown constructor?
 - What happens when an existing explicit configuration conflicts with values a constructor would generate?
 - What happens when swarm creation fails after a constructor has performed an external side effect?
-- How are secrets or credentials referenced without embedding sensitive values directly in persisted swarm configuration?
 
 ## Clarifications
 
@@ -88,34 +87,41 @@ An operator wants to select multiple constructors, such as Agent Mail setup and 
 
   → A: Constructors are applied sequentially in the explicit order supplied during swarm creation or recorded in the swarm definition.
 
+- Q: How should constructor errors be handled initially?
+
+  → A: Constructor and validation errors should surface directly. This feature does not need a custom error abstraction, redaction layer, or compensating cleanup framework.
+
+- Q: Must generated credentials or secrets be hidden from persisted configuration?
+
+  → A: No. For the current system, generated configuration may be persisted as ordinary explicit configuration without special secret-handling machinery.
+
 ## Requirements *(mandatory)*
 
 ### Functional Requirements
 
 - **FR-001**: nate_ntm MUST allow an operator to select zero or more named constructors when creating a swarm.
-- **FR-002**: A constructor MUST receive the complete draft swarm configuration and a construction context containing the information required to generate stable swarm-wide values.
+- **FR-002**: A constructor MUST receive the complete draft swarm configuration and the stable swarm-creation inputs it needs.
 - **FR-003**: A constructor MUST return a complete transformed swarm configuration rather than mutating runtime state after swarm creation.
 - **FR-004**: nate_ntm MUST apply selected constructors exactly once, sequentially, in explicit order before final swarm validation and persistence.
-- **FR-005**: nate_ntm MUST validate the fully constructed swarm configuration after all constructors have run and MUST reject invalid or conflicting output.
-- **FR-006**: nate_ntm MUST NOT persist a partially constructed swarm as a valid swarm when any constructor or final validation fails.
-- **FR-007**: nate_ntm MUST persist the ordered constructor declarations, including their non-secret parameters, as part of the swarm's construction metadata.
-- **FR-008**: nate_ntm MUST persist the fully materialized swarm configuration, including generated values required for startup and resume.
+- **FR-005**: nate_ntm MUST validate the fully constructed swarm configuration after all constructors have run.
+- **FR-006**: nate_ntm MUST NOT save swarm state when a constructor or final validation raises an error.
+- **FR-007**: nate_ntm MUST persist the ordered constructor declarations and their parameters as part of the swarm's construction metadata.
+- **FR-008**: nate_ntm MUST persist the fully materialized swarm configuration, including all generated values required for startup and resume.
 - **FR-009**: Starting or resuming an existing swarm MUST use the persisted materialized configuration and MUST NOT rerun constructors implicitly.
 - **FR-010**: nate_ntm MUST provide an Agent Mail constructor that generates or initializes one shared Agent Mail project configuration for the swarm.
 - **FR-011**: The Agent Mail constructor MUST assign every agent a stable, unique Agent Mail identity and add the required Agent Mail configuration to each agent.
 - **FR-012**: The Agent Mail constructor MUST detect duplicate or otherwise invalid generated identities before the swarm is persisted.
-- **FR-013**: Explicit user configuration MUST have defined conflict semantics: a constructor MUST either preserve compatible explicit values or fail with an actionable conflict error; it MUST NOT silently overwrite conflicting explicit values.
+- **FR-013**: Explicit user configuration MUST have defined conflict semantics: a constructor MUST either preserve compatible explicit values or reject conflicting values; it MUST NOT silently overwrite conflicting explicit values.
 - **FR-014**: Constructor registration and lookup MUST provide one canonical implementation path for built-in and future constructors.
-- **FR-015**: Selecting an unknown constructor, supplying invalid constructor parameters, or selecting the same non-repeatable constructor more than once MUST fail before swarm materialization is persisted.
-- **FR-016**: Constructor failures MUST identify the constructor that failed and provide an actionable explanation without exposing secrets.
-- **FR-017**: Constructors that perform external side effects MUST be idempotent or provide cleanup sufficient to prevent failed construction from leaving nate_ntm metadata in a valid-but-incomplete state.
+- **FR-015**: Selecting an unknown constructor, supplying invalid constructor parameters, or selecting the same non-repeatable constructor more than once MUST fail before swarm state is persisted.
+- **FR-016**: Errors raised by constructors, external services, configuration validation, or persistence MUST surface through the existing CLI error behavior without a constructor-specific wrapping or redaction layer.
 
 ### Key Entities *(include if feature involves data)*
 
-- **Swarm Constructor**: A named, registered transformation that receives a complete draft swarm configuration plus construction context and returns a complete transformed swarm configuration.
-- **Constructor Declaration**: Persisted metadata identifying a constructor, its explicit order, and its non-secret parameters.
-- **Construction Context**: Stable inputs available during materialization, such as project path, swarm identifier, creation identifier, and external service adapters.
-- **Draft Swarm Configuration**: The not-yet-valid configuration passed through the constructor pipeline.
+- **Swarm Constructor**: A named, registered transformation that receives a complete draft swarm configuration plus stable creation inputs and returns a complete transformed swarm configuration.
+- **Constructor Declaration**: Persisted metadata identifying a constructor, its explicit order, and its parameters.
+- **Construction Inputs**: Stable values available during materialization, such as the project path and swarm identifier.
+- **Draft Swarm Configuration**: The not-yet-persisted complete swarm state passed through the constructor pipeline.
 - **Materialized Swarm Configuration**: The explicit, validated, persisted configuration produced after all constructors have run. This is the sole configuration consumed by runtime startup and resume.
 - **Agent Mail Constructor**: The built-in constructor that coordinates swarm-wide Agent Mail project setup and per-agent Agent Mail identities and configuration.
 
@@ -125,17 +131,18 @@ An operator wants to select multiple constructors, such as Agent Mail setup and 
 
 - **SC-001**: For a swarm of 20 agents with no preexisting Agent Mail setup, the Agent Mail constructor produces a valid materialized configuration containing one shared project and 20 unique agent identities in 100% of normal test runs.
 - **SC-002**: Starting and resuming a constructed swarm reuses 100% of persisted generated identities and does not invoke the constructor pipeline.
-- **SC-003**: When any constructor fails or final validation rejects its output, no valid materialized swarm is persisted in 100% of tested failure cases.
-- **SC-004**: Given the same draft swarm configuration, stable construction context, constructor versions, parameters, and ordering, constructors produce semantically equivalent materialized configuration in 100% of repeatability tests that exclude external nondeterminism.
-- **SC-005**: An operator can determine which constructors created a swarm, in what order, and with which non-secret parameters solely by inspecting persisted swarm metadata.
+- **SC-003**: When any constructor or final validation raises an error, no swarm state is persisted in 100% of tested failure cases.
+- **SC-004**: Given the same draft swarm configuration, stable creation inputs, constructor versions, parameters, and ordering, constructors produce semantically equivalent materialized configuration in 100% of repeatability tests that exclude external nondeterminism.
+- **SC-005**: An operator can determine which constructors created a swarm, in what order, and with which parameters solely by inspecting persisted swarm metadata.
 
 ## Assumptions
 
 - Swarm construction is distinct from runtime startup and occurs before managed agent subprocesses are launched.
-- The existing project-local swarm metadata store remains the source of truth for constructed swarm configuration.
-- Agent Mail project creation and identity registration are available through an adapter owned by nate_ntm rather than being implemented independently by each constructor.
+- The existing project-local `swarm.json` remains the source of truth for constructed swarm configuration.
+- Agent Mail project creation and identity registration are available through an existing nate_ntm or nate-oha integration surface.
 - Generated identifiers may include a persisted random or unique component; determinism means they are generated once and then reused, not necessarily derivable from agent names alone.
 - Constructor implementations are trusted nate_ntm code. Loading arbitrary third-party constructor code is outside the scope of this feature.
+- Persisted swarm configuration is allowed to contain credentials and other sensitive values for now; specialized secret storage is out of scope.
 
 ## Out of Scope
 
@@ -143,4 +150,5 @@ An operator wants to select multiple constructors, such as Agent Mail setup and 
 - Continuously reconciling runtime state against constructor declarations.
 - Arbitrary user-provided executable constructor plugins.
 - A general migration framework for modifying already materialized swarms.
+- A constructor-specific exception hierarchy, error-redaction layer, rollback protocol, or compensating transaction framework.
 - Role assignment, prompt generation, repository provisioning, or other constructors beyond Agent Mail, except as necessary to prove that the constructor abstraction is reusable.
