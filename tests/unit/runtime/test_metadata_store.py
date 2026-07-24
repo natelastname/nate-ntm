@@ -53,6 +53,20 @@ def test_swarm_state_round_trips_through_canonical_store(
     assert not list(store.metadata_dir.glob("*.tmp"))
 
 
+def test_create_only_write_preserves_existing_state(
+    store: MetadataStore, tmp_path: Path
+) -> None:
+    original = _state(store, tmp_path)
+    store.save_swarm_state(original, overwrite=False)
+    replacement = original.model_copy(update={"config_version": "replacement"})
+
+    with pytest.raises(FileExistsError):
+        store.save_swarm_state(replacement, overwrite=False)
+
+    assert store.load_swarm_state() == original
+    assert not list(store.metadata_dir.glob("*.tmp"))
+
+
 def test_store_rejects_malformed_or_mismatched_state(
     store: MetadataStore, tmp_path: Path
 ) -> None:
