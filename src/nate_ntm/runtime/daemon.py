@@ -5,29 +5,24 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
-from pathlib import Path
 
 from ..config.runtime_config import RuntimeConfig
 from .acp_client import BaseAcpClient
 from .adapters import RuntimeAdapters, create_runtime_adapters
 from .agent_mail_client import BaseAgentMailClient
 from .metadata_store import MetadataStore
-from .nate_oha_launch import build_effective_nate_oha_config
 from .state import AgentRuntimeState, AgentStatus, RuntimeState, RuntimeStatus
-from .swarm_state import AgentState, SwarmState
+from .swarm_state import SwarmState
 
 __all__ = [
     "StartupMode",
     "RuntimeStartupError",
-    "MetadataAlreadyExistsError",
     "MetadataMissingError",
     "RuntimeDaemon",
-    "check_startup_preconditions",
 ]
 
 
 class StartupMode(str, Enum):
-    CREATE = "create"
     RESUME = "resume"
 
 
@@ -35,22 +30,8 @@ class RuntimeStartupError(RuntimeError):
     pass
 
 
-class MetadataAlreadyExistsError(RuntimeStartupError):
-    pass
-
-
 class MetadataMissingError(RuntimeStartupError):
     pass
-
-
-def check_startup_preconditions(config: RuntimeConfig, mode: StartupMode) -> None:
-    path = config.metadata_dir / "swarm.json"
-    if mode is StartupMode.CREATE and path.exists():
-        raise MetadataAlreadyExistsError(
-            f"Swarm state already exists at {path}; refusing create mode"
-        )
-    if mode is StartupMode.RESUME and not path.exists():
-        raise MetadataMissingError(f"Swarm state not found at {path}; cannot resume")
 
 
 def _map_acp_status(value: str) -> str | None:
@@ -70,82 +51,31 @@ class RuntimeDaemon:
     metadata_store: MetadataStore
     swarm_state: SwarmState
     state: RuntimeState
-    startup_mode: StartupMode
+    startup_mode: StartupMode = StartupMode.RESUME
     started_at: datetime | None = None
     agent_mail_client: BaseAgentMailClient | None = None
     acp_client: BaseAcpClient | None = None
 
     @classmethod
-    def create(
+    def resume(
         cls,
         config: RuntimeConfig,
+        swarm_state: SwarmState | None = None,
         *,
-        agent_count: int | None = None,
         adapters: RuntimeAdapters | None = None,
-    ) -> RuntimeDaemon:
-        check_startup_preconditions(config, StartupMode.CREATE)
+    ) -> "RuntimeDaemon":
+        store = MetadataStore(config.swarm_id)
+        if not store.exists():
+            raise MetadataMissingError(
+                f"Swarm state not found at {store.swarm_path}; cannot resume"
+            )
+        swarm = swarm_state or store.load_swarm_state()
         adapters = adapters or create_runtime_adapters(config)
-        store = MetadataStore(config=config)
-        project_id = adapters.agent_mail.ensure_project()
-
-        agents: dict[str, AgentState] = {}
-        for index in range(1, (agent_count or 0) + 1):
-            agent_id = f"agent-{index}"
-            identity, credentials_ref = (
-                adapters.agent_mail.ensure_agent_identity_with_credentials(agent_id)
-            )
-            try:
-                nate_oha_config = build_effective_nate_oha_config(
-                    config=config,
-                    agent_mail_identity=identity,
-                    agent_mail_credentials_ref=credentials_ref,
-                )
-            except ValueError as exc:
-                raise RuntimeStartupError(
-                    f"Failed to build nate-oha config for {agent_id!r}: {exc}"
-                ) from exc
-            agents[agent_id] = AgentState(
-                agent_id=agent_id,
-                display_name=f"Agent {index}",
-                nate_oha_config=nate_oha_config,
-            )
-
-        now = datetime.utcnow()
-        swarm = SwarmState(
-            swarm_id=config.swarm_id,
-            project_path=config.project_path,
-            agent_mail_project_id=project_id,
-            created_at=now,
-            last_updated_at=now,
-            agents=agents,
-        )
-        store.save_swarm_state(swarm)
         return cls(
             config=config,
             metadata_store=store,
             swarm_state=swarm,
             state=RuntimeState(config=config),
-            startup_mode=StartupMode.CREATE,
-            agent_mail_client=adapters.agent_mail,
-            acp_client=adapters.acp,
-        )
-
-    @classmethod
-    def resume(
-        cls,
-        config: RuntimeConfig,
-        *,
-        adapters: RuntimeAdapters | None = None,
-    ) -> RuntimeDaemon:
-        check_startup_preconditions(config, StartupMode.RESUME)
-        adapters = adapters or create_runtime_adapters(config)
-        store = MetadataStore(config=config)
-        return cls(
-            config=config,
-            metadata_store=store,
-            swarm_state=store.load_swarm_state(),
-            state=RuntimeState(config=config),
-            startup_mode=StartupMode.RESUME,
             agent_mail_client=adapters.agent_mail,
             acp_client=adapters.acp,
         )
@@ -207,8 +137,8 @@ class RuntimeDaemon:
     def get_runtime_status(self) -> dict[str, object]:
         return {
             "status": self.state.status.value,
-            "project_path": str(self.config.project_path),
-            "swarm_id": self.config.swarm_id,
+            "project_path": str(self.swarm_state.project_path),
+            "swarm_id": self.swarm_state.swarm_id,
             "agent_counts": self._compute_agent_counts(),
         }
 
@@ -220,8 +150,8 @@ class RuntimeDaemon:
             else {}
         )
         return {
-            "swarm_id": self.config.swarm_id,
-            "project_path": str(self.config.project_path),
+            "swarm_id": self.swarm_state.swarm_id,
+            "project_path": str(self.swarm_state.project_path),
             "runtime_status": self.state.status.value,
             "agent_counts": self._compute_agent_counts(),
             "agents": [
@@ -257,7 +187,11 @@ class RuntimeDaemon:
         if runtime is None and metadata is None:
             raise KeyError(f"Unknown agent_id: {agent_id!r}")
 
-        status = runtime.status.value if runtime else metadata.last_known_status or AgentStatus.STARTING.value
+        status = (
+            runtime.status.value
+            if runtime
+            else metadata.last_known_status or AgentStatus.STARTING.value
+        )
         last_error = runtime.last_error if runtime else None
         if runtime is None and self.acp_client is not None:
             try:
@@ -275,13 +209,16 @@ class RuntimeDaemon:
                 "last_error": last_error,
             }
 
+        feature = metadata.nate_oha_config.features.agent_mail
         return {
             "agent_id": agent_id,
             "display_name": metadata.display_name,
             "status": status,
             "agent_mail_identity": (
-                metadata.nate_oha_config.features.agent_mail.agent_identity or ""
-            ).strip(),
+                feature.agent_identity.strip()
+                if feature is not None and feature.agent_identity
+                else ""
+            ),
             "conversation_id": metadata.conversation_id or "",
             "last_error": last_error,
         }
