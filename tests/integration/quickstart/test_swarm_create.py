@@ -112,22 +112,26 @@ def test_create_rejects_invalid_inputs_without_writing_state(tmp_path: Path) -> 
     assert invalid_result.exit_code != 0
     assert "invalid agent config" in invalid_result.output
 
-    swarm_id = uuid4().hex
-    unused_option = runner.invoke(
-        app,
-        [
-            "swarm",
-            "create",
-            "--project",
-            str(project),
-            "--swarm-id",
-            swarm_id,
-            "--agent",
-            str(valid),
-            "--agent-mail-project-id",
-            "mail-project",
-        ],
-    )
-    assert unused_option.exit_code != 0
-    assert "require --constructor agent-mail" in unused_option.output
-    assert not MetadataStore(swarm_id).metadata_dir.exists()
+    for option, value in (
+        ("--agent-mail-project-id", "mail-project"),
+        ("--agent-mail-url", "http://127.0.0.1:8765"),
+    ):
+        swarm_id = uuid4().hex
+        unused_option = runner.invoke(
+            app,
+            [
+                "swarm",
+                "create",
+                "--project",
+                str(project),
+                "--swarm-id",
+                swarm_id,
+                "--agent",
+                str(valid),
+                option,
+                value,
+            ],
+        )
+        assert unused_option.exit_code != 0
+        assert "require --constructor agent-mail" in unused_option.output
+        assert not MetadataStore(swarm_id).metadata_dir.exists()
