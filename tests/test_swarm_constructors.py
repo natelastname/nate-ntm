@@ -108,6 +108,18 @@ def test_cli_dry_run_materializes_complete_agent_mail_swarm(tmp_path: Path) -> N
     assert planner.upstream_url == reviewer.upstream_url == "http://127.0.0.1:8765"
 
 
+def test_agent_mail_constructor_is_copy_on_write() -> None:
+    source = _swarm()
+    before = source.model_copy(deep=True)
+
+    result = agent_mail_constructor(source, ConstructionContext())
+
+    assert source == before
+    assert source.agents["Planner"].nate_oha_config.features.agent_mail is None
+    assert result is not source
+    assert result.agents["Planner"].nate_oha_config.features.agent_mail is not None
+
+
 def test_persisted_constructed_swarm_round_trips(tmp_path: Path) -> None:
     swarm_id = uuid4().hex
     store = MetadataStore(swarm_id)
