@@ -70,7 +70,7 @@ class RuntimeDaemon:
                 f"Swarm state not found at {store.swarm_path}; cannot resume"
             )
         swarm = swarm_state or store.load_swarm_state()
-        adapters = adapters or create_runtime_adapters(config)
+        adapters = adapters or create_runtime_adapters(config, swarm)
         return cls(
             config=config,
             metadata_store=store,
