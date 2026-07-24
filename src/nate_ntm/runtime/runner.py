@@ -1,4 +1,4 @@
-"""Run a RuntimeDaemon with its control API and external ACP TCP server."""
+"""Run an existing RuntimeDaemon with its control API and ACP TCP server."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from ..config.runtime_config import RuntimeConfig
 from .adapters import RuntimeAdapters, create_runtime_adapters
 from .daemon import RuntimeDaemon, StartupMode
 from .swarm_acp_tcp import SwarmACPTCPServer
+from .swarm_state import SwarmState
 
 __all__ = [
     "RuntimeControlContext",
@@ -28,7 +29,6 @@ __all__ = [
 @dataclass(slots=True)
 class RuntimeControlContext:
     config: RuntimeConfig
-    mode: StartupMode
     daemon: RuntimeDaemon
     api_server: RuntimeApiServer
     app: API
@@ -45,27 +45,16 @@ class RuntimeControlContext:
 
 def create_runtime_control_context(
     config: RuntimeConfig,
-    mode: StartupMode,
+    swarm_state: SwarmState | None = None,
     *,
     host: str | None = None,
     port: int | None = None,
     acp_host: str = "127.0.0.1",
     acp_port: int = 8766,
-    agent_count: int | None = None,
     adapters: RuntimeAdapters | None = None,
 ) -> RuntimeControlContext:
     adapters = adapters or create_runtime_adapters(config)
-    if mode is StartupMode.CREATE:
-        daemon = RuntimeDaemon.create(
-            config,
-            agent_count=agent_count,
-            adapters=adapters,
-        )
-    elif mode is StartupMode.RESUME:
-        daemon = RuntimeDaemon.resume(config, adapters=adapters)
-    else:
-        raise ValueError(f"Unsupported startup mode: {mode!r}")
-
+    daemon = RuntimeDaemon.resume(config, swarm_state, adapters=adapters)
     api_server = RuntimeApiServer(daemon=daemon)
     acp_server = SwarmACPTCPServer(
         daemon=daemon,
@@ -75,7 +64,6 @@ def create_runtime_control_context(
     )
     return RuntimeControlContext(
         config=config,
-        mode=mode,
         daemon=daemon,
         api_server=api_server,
         app=create_runtime_api_app(api_server),
@@ -90,7 +78,6 @@ def create_runtime_control_context(
 async def _start_api_server(ctx: RuntimeControlContext) -> None:
     if ctx._uvicorn_server is not None:
         return
-
     config = uvicorn.Config(
         ctx.app,
         host=ctx.host,
@@ -99,7 +86,6 @@ async def _start_api_server(ctx: RuntimeControlContext) -> None:
     )
     if not config.loaded:
         config.load()
-
     sock = config.bind_socket()
     ctx.bound_port = int(sock.getsockname()[1])
     ctx._sockets = [sock]
@@ -146,24 +132,22 @@ async def serve_runtime_control_api(
 
 async def run_runtime_with_control_api_async(
     config: RuntimeConfig,
-    mode: StartupMode,
+    swarm_state: SwarmState | None = None,
     *,
     host: str | None = None,
     port: int | None = None,
     acp_host: str = "127.0.0.1",
     acp_port: int = 8766,
     poll_interval: float = 0.1,
-    agent_count: int | None = None,
     adapters: RuntimeAdapters | None = None,
 ) -> None:
     ctx = create_runtime_control_context(
         config,
-        mode,
+        swarm_state,
         host=host,
         port=port,
         acp_host=acp_host,
         acp_port=acp_port,
-        agent_count=agent_count,
         adapters=adapters,
     )
     await serve_runtime_control_api(ctx, poll_interval=poll_interval)
@@ -171,26 +155,24 @@ async def run_runtime_with_control_api_async(
 
 def run_runtime_with_control_api(
     config: RuntimeConfig,
-    mode: StartupMode,
+    swarm_state: SwarmState | None = None,
     *,
     host: str | None = None,
     port: int | None = None,
     acp_host: str = "127.0.0.1",
     acp_port: int = 8766,
     poll_interval: float = 0.1,
-    agent_count: int | None = None,
     adapters: RuntimeAdapters | None = None,
 ) -> None:
     asyncio.run(
         run_runtime_with_control_api_async(
             config,
-            mode,
+            swarm_state,
             host=host,
             port=port,
             acp_host=acp_host,
             acp_port=acp_port,
             poll_interval=poll_interval,
-            agent_count=agent_count,
             adapters=adapters,
         )
     )
