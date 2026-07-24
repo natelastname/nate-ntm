@@ -31,45 +31,44 @@ This epic intentionally makes a clean break. No compatibility path is required f
 1. Every swarm MUST have one durable logical `swarm_id`.
 2. When `--swarm-id` is omitted during creation, nate-ntm MUST generate `uuid.uuid4().hex`: 32 lowercase hexadecimal characters with no dashes.
 3. An explicitly supplied `--swarm-id` MUST override automatic generation and be preserved exactly after validation.
-4. Swarm metadata MUST be stored in one centralized per-user root, organized by swarm ID rather than project path.
-5. The default metadata location MUST follow this logical layout:
+4. Swarm metadata MUST be stored centrally under the current user's home directory, organized by swarm ID rather than project path.
+5. The canonical swarm metadata path MUST be:
 
    ```text
-   <nate-ntm state root>/swarms/<swarm-id>/swarm.json
+   ~/.nate-ntm/swarms/<swarm-id>/swarm.json
    ```
 
-6. The default nate-ntm state root MUST follow the platform-appropriate user state directory convention rather than living inside the source project.
-7. The swarm ID MUST be the sole key used to locate an existing swarm.
-8. Runtime resume MUST require `--swarm-id` and MUST NOT accept `--project` as an alternate lookup mechanism.
-9. On resume, nate-ntm MUST load the persisted project path and complete materialized configuration from centralized swarm state.
-10. The local project path MUST remain persisted as execution context, but MUST NOT determine storage location or swarm identity.
-11. Multiple swarms MUST be allowed to reference the same local project directory without overwriting one another.
-12. `nate-ntm swarm create --project` MUST be optional and MUST default to the process working directory.
-13. The effective project directory MUST be resolved and validated before the swarm is materialized.
-14. Creation MUST fail if the chosen or generated swarm ID already has persisted state, unless an explicitly documented destructive replacement option is used.
-15. Project-local `.nate_ntm/` state MUST no longer be read or written by the canonical implementation.
-16. No migration, fallback lookup, deprecated alias, or dual storage path is required.
-17. `nate-ntm swarm create` MUST expose explicit CLI options for Agent Mail constructor inputs that may vary between creations.
-18. The Agent Mail constructor MUST receive those values through explicit construction input rather than environment variables or other ambient process state.
-19. Agent Mail project values MUST be defined and represented as logical string identifiers, never filesystem paths.
-20. The CLI and persisted state MUST clearly distinguish:
+6. The swarm ID MUST be the sole key used to locate an existing swarm.
+7. Runtime resume MUST require `--swarm-id` and MUST NOT accept `--project` as an alternate lookup mechanism.
+8. On resume, nate-ntm MUST load the persisted project path and complete materialized configuration from centralized swarm state.
+9. The local project path MUST remain persisted as execution context, but MUST NOT determine storage location or swarm identity.
+10. Multiple swarms MUST be allowed to reference the same local project directory without overwriting one another.
+11. `nate-ntm swarm create --project` MUST be optional and MUST default to the process working directory.
+12. The effective project directory MUST be resolved and validated before the swarm is materialized.
+13. Creation MUST fail if the chosen or generated swarm ID already has persisted state, unless an explicitly documented destructive replacement option is used.
+14. Project-local `.nate_ntm/` state MUST no longer be read or written by the canonical implementation.
+15. No migration, fallback lookup, deprecated alias, or dual storage path is required.
+16. `nate-ntm swarm create` MUST expose explicit CLI options for Agent Mail constructor inputs that may vary between creations.
+17. The Agent Mail constructor MUST receive those values through explicit construction input rather than environment variables or other ambient process state.
+18. Agent Mail project values MUST be defined and represented as logical string identifiers, never filesystem paths.
+19. The CLI and persisted state MUST clearly distinguish:
     - the local project directory;
     - the swarm ID; and
     - the Agent Mail project ID.
-21. The following Agent Mail environment-variable interfaces MUST be removed:
+20. The following Agent Mail environment-variable interfaces MUST be removed:
     - `NATE_NTM_AGENT_MAIL_PROJECT`
     - `AGENT_MAIL_PROJECT`
     - `NATE_NTM_AGENT_MAIL_URL`
     - `AGENT_MAIL_UPSTREAM_URL`
     - `AGENT_MAIL_URL`
-22. When the Agent Mail project ID is omitted, it MUST default to the effective swarm ID exactly, without an additional suffix or independently generated value.
-23. An explicitly supplied Agent Mail project ID MUST override that default.
-24. Agent Mail constructor options MUST otherwise have stable defaults so the common creation command needs only `--constructor agent-mail`.
-25. Supplying Agent Mail-only options without selecting the `agent-mail` constructor MUST fail.
-26. Effective Agent Mail project ID and upstream URL values MUST be materialized into each resulting `NateOHAConfig` and visible in dry-run output.
-27. Starting or resuming a swarm MUST use persisted effective configuration and MUST NOT require the original constructor arguments.
-28. Configuration fields used only by removed environment-variable or project-local-storage paths MUST be deleted when they have no remaining consumer.
-29. CLI help and documentation MUST use one canonical term and one canonical option for each concept.
+21. When the Agent Mail project ID is omitted, it MUST default to the effective swarm ID exactly, without an additional suffix or independently generated value.
+22. An explicitly supplied Agent Mail project ID MUST override that default.
+23. Agent Mail constructor options MUST otherwise have stable defaults so the common creation command needs only `--constructor agent-mail`.
+24. Supplying Agent Mail-only options without selecting the `agent-mail` constructor MUST fail.
+25. Effective Agent Mail project ID and upstream URL values MUST be materialized into each resulting `NateOHAConfig` and visible in dry-run output.
+26. Starting or resuming a swarm MUST use persisted effective configuration and MUST NOT require the original constructor arguments.
+27. Configuration fields used only by removed environment-variable or project-local-storage paths MUST be deleted when they have no remaining consumer.
+28. CLI help and documentation MUST use one canonical term and one canonical option for each concept.
 
 ## Scenarios and Examples
 
@@ -98,7 +97,7 @@ f47ac10b58cc4372a5670e02b2c3d479
 State is stored under:
 
 ```text
-<nate-ntm state root>/swarms/f47ac10b58cc4372a5670e02b2c3d479/swarm.json
+~/.nate-ntm/swarms/f47ac10b58cc4372a5670e02b2c3d479/swarm.json
 ```
 
 The command reports the generated swarm ID so it can be used by subsequent commands.
@@ -136,7 +135,7 @@ If `--agent-mail-project-id` were omitted, its effective value would be `plannin
 nate-ntm runtime start --swarm-id planning-swarm --mode resume
 ```
 
-The runtime locates centralized state using `planning-swarm`, reads `/work/my-repository` from that state, and resumes without a `--project` argument or Agent Mail constructor inputs.
+The runtime locates `~/.nate-ntm/swarms/planning-swarm/swarm.json`, reads `/work/my-repository` from that state, and resumes without a `--project` argument or Agent Mail constructor inputs.
 
 ### Invalid project-based resume
 
@@ -167,7 +166,7 @@ The command fails because `agent-mail` was not selected.
 - The swarm ID and Agent Mail project ID remain strings.
 - The default Agent Mail project ID is exactly the effective swarm ID.
 - The project path is not required to be unique across swarms.
-- The centralized store remains file-based and uses one authoritative `swarm.json` object graph per swarm.
+- The centralized store is exactly `~/.nate-ntm/swarms/` and uses one authoritative `swarm.json` object graph per swarm.
 - Writes must preserve the existing atomic replacement guarantee.
 - Constructors remain one-time creation transformations and never run during resume.
 - Agent Mail upstream endpoints remain validated URL strings.
@@ -182,23 +181,24 @@ The command fails because `agent-mail` was not selected.
 3. An explicit `--project` overrides the working-directory default.
 4. Two swarms associated with the same project directory persist and load independently.
 5. No canonical runtime code reads or writes `<project>/.nate_ntm/`.
-6. An existing swarm can be resumed using only its swarm ID plus runtime-specific options.
-7. Resume does not accept the project path as a swarm lookup key.
-8. The persisted project path is recovered unchanged from centralized state.
-9. A collision on an existing swarm ID fails without damaging existing state.
-10. A repository-wide search finds no runtime use of the removed Agent Mail environment-variable names.
-11. `swarm create --help` presents unambiguous swarm, project, and Agent Mail options.
-12. Agent Mail project IDs remain strings throughout nate-ntm and effective nate-oha configuration.
-13. With no explicit Agent Mail project ID, the materialized Agent Mail project ID equals the effective swarm ID.
-14. An explicit Agent Mail project ID is preserved exactly.
-15. Agent Mail-only options without `--constructor agent-mail` fail clearly.
-16. Resume requires no Agent Mail constructor arguments or construction environment variables.
-17. The complete default test suite passes without tests preserving project-local storage, project-based resume, environment aliases, or the `default` swarm ID.
+6. Created swarm metadata is stored at `~/.nate-ntm/swarms/<swarm-id>/swarm.json`.
+7. An existing swarm can be resumed using only its swarm ID plus runtime-specific options.
+8. Resume does not accept the project path as a swarm lookup key.
+9. The persisted project path is recovered unchanged from centralized state.
+10. A collision on an existing swarm ID fails without damaging existing state.
+11. A repository-wide search finds no runtime use of the removed Agent Mail environment-variable names.
+12. `swarm create --help` presents unambiguous swarm, project, and Agent Mail options.
+13. Agent Mail project IDs remain strings throughout nate-ntm and effective nate-oha configuration.
+14. With no explicit Agent Mail project ID, the materialized Agent Mail project ID equals the effective swarm ID.
+15. An explicit Agent Mail project ID is preserved exactly.
+16. Agent Mail-only options without `--constructor agent-mail` fail clearly.
+17. Resume requires no Agent Mail constructor arguments or construction environment variables.
+18. The complete default test suite passes without tests preserving project-local storage, project-based resume, environment aliases, or the `default` swarm ID.
 
 ## Scope
 
 - Generated and explicit swarm identity.
-- Centralized per-user swarm persistence keyed by swarm ID.
+- Centralized per-user swarm persistence at `~/.nate-ntm/swarms/`, keyed by swarm ID.
 - Create, load, start, and resume CLI semantics affected by swarm lookup.
 - Working-directory defaulting for swarm creation.
 - Allowing multiple swarms to share one project path.
@@ -215,6 +215,7 @@ The command fails because `agent-mail` was not selected.
 - Migrating existing project-local `.nate_ntm/` state.
 - Falling back from swarm ID lookup to project-directory discovery.
 - Maintaining compatibility with the old storage layout or removed environment variables.
+- Supporting alternate platform-specific state roots.
 - A global database or daemon-managed registry beyond the centralized file hierarchy.
 - Searching for swarms by project path, display name, recent usage, or fuzzy matching.
 - A general constructor configuration-file language.
@@ -224,9 +225,9 @@ The command fails because `agent-mail` was not selected.
 
 ## Terminology
 
-- **State root**: The platform-appropriate centralized per-user directory containing nate-ntm durable state.
+- **State root**: `~/.nate-ntm/`.
 - **Swarm ID**: The durable logical identifier and sole lookup/storage key for a swarm. Its generated form is `uuid.uuid4().hex`.
-- **Swarm directory**: `<state root>/swarms/<swarm-id>/`.
+- **Swarm directory**: `~/.nate-ntm/swarms/<swarm-id>/`.
 - **Local project directory**: The persisted filesystem workspace associated with a swarm. During creation it defaults to the current working directory; it does not identify or locate the swarm.
 - **Agent Mail project ID**: A logical string identifying an Agent Mail namespace. By default it equals the effective swarm ID. It is not a filesystem path.
 - **Agent Mail upstream URL**: The URL of the Agent Mail service used to configure agents.
@@ -235,9 +236,8 @@ The command fails because `agent-mail` was not selected.
 
 ## Open Questions
 
-1. Which platform-state-directory library or standard helper should define the default state root?
-2. Should an environment variable or global CLI option allow overriding the state root for testing and unusual deployments, or should only an explicit programmatic configuration hook exist?
-3. Should the canonical Agent Mail option be `--agent-mail-project-id` or `--agent-mail-project`?
-4. Should the default Agent Mail upstream URL remain `http://127.0.0.1:8765` or be required explicitly?
-5. Should constructor inputs use one typed construction-context object immediately?
-6. Which existing `RuntimeConfig` fields become unnecessary once swarm lookup and Agent Mail construction inputs are separated?
+1. Should an explicit programmatic configuration hook allow tests to substitute a temporary state root, while production CLI behavior remains fixed at `~/.nate-ntm/`?
+2. Should the canonical Agent Mail option be `--agent-mail-project-id` or `--agent-mail-project`?
+3. Should the default Agent Mail upstream URL remain `http://127.0.0.1:8765` or be required explicitly?
+4. Should constructor inputs use one typed construction-context object immediately?
+5. Which existing `RuntimeConfig` fields become unnecessary once swarm lookup and Agent Mail construction inputs are separated?
