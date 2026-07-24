@@ -59,8 +59,11 @@ def test_runtime_start_rejects_missing_swarm() -> None:
     assert "swarm not found" in result.output
 
 
-@pytest.mark.parametrize("obsolete", ["--project", "--mode", "--agents"])
-def test_runtime_start_rejects_removed_creation_options(obsolete: str) -> None:
+@pytest.mark.parametrize(
+    "obsolete",
+    ["--project", "--mode", "--agents", "--nate-oha-config"],
+)
+def test_runtime_start_rejects_removed_options(obsolete: str) -> None:
     result = runner.invoke(
         app,
         ["runtime", "start", "--swarm-id", uuid4().hex, obsolete, "value"],
@@ -73,8 +76,6 @@ def test_runtime_start_forwards_runtime_only_overrides(
 ) -> None:
     project = tmp_path / "project"
     project.mkdir()
-    base = project / "nate-oha.json"
-    base.write_text("{}", encoding="utf-8")
     store = _persist(project)
     called: dict[str, object] = {}
 
@@ -100,8 +101,6 @@ def test_runtime_start_forwards_runtime_only_overrides(
                 "start",
                 "--swarm-id",
                 store.swarm_id,
-                "--nate-oha-config",
-                str(base),
                 "--nate-oha-runtime-mode",
                 "echo",
                 "--llm-model",
@@ -114,7 +113,6 @@ def test_runtime_start_forwards_runtime_only_overrides(
         assert called == {
             "project_path": project.resolve(),
             "swarm_id": store.swarm_id,
-            "nate_oha_config_path": base.resolve(),
             "nate_oha_runtime_mode": "echo",
             "llm_model": "gpt-cli",
             "llm_api_key": None,
