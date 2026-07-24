@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ $# -ne 1 || ! "$1" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
+  echo "usage: .nate-specify/create-epic <lowercase-hyphenated-name>" >&2
+  exit 2
+fi
+
+root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+specs="$root/specs"
+templates="$root/.nate-specify/templates"
+mkdir -p "$specs"
+
+next=1
+for path in "$specs"/[0-9][0-9][0-9]-*; do
+  [[ -e "$path" ]] || continue
+  number=${path##*/}
+  number=${number%%-*}
+  (( 10#$number >= next )) && next=$((10#$number + 1))
+done
+
+printf -v prefix '%03d' "$next"
+destination="$specs/$prefix-$1"
+[[ ! -e "$destination" ]] || { echo "already exists: $destination" >&2; exit 1; }
+
+mkdir -p "$destination"
+cp -R "$templates"/. "$destination"/
+printf '%s\n' "$destination"
