@@ -64,3 +64,6 @@ reference/
 # don't know how 
 *.sqlite3-shm
 *.sqlite3-wal
+
+
+test-swarm/
