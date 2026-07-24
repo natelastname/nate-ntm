@@ -2,20 +2,26 @@
 
 from __future__ import annotations
 
-import os
 import re
 from collections.abc import Callable, Mapping, Sequence
-from pathlib import Path
+from dataclasses import dataclass
 from secrets import token_urlsafe
 
 from nate_oha.config import AgentMailFeatureConfig
 
 from .runtime.swarm_state import SwarmState
 
-SwarmConstructor = Callable[[SwarmState], SwarmState]
-
 _DEFAULT_AGENT_MAIL_URL = "http://127.0.0.1:8765"
 _INVALID_IDENTITY_CHARS = re.compile(r"[^a-z0-9-]+")
+
+
+@dataclass(frozen=True, slots=True)
+class ConstructionContext:
+    agent_mail_project_id: str | None = None
+    agent_mail_url: str = _DEFAULT_AGENT_MAIL_URL
+
+
+SwarmConstructor = Callable[[SwarmState, ConstructionContext], SwarmState]
 
 
 def _identity(agent_id: str) -> str:
@@ -25,30 +31,16 @@ def _identity(agent_id: str) -> str:
     return identity
 
 
-def _first_environment_value(*names: str) -> str | None:
-    for name in names:
-        value = os.environ.get(name)
-        if value and value.strip():
-            return value.strip()
-    return None
-
-
-def agent_mail_constructor(swarm: SwarmState) -> SwarmState:
+def agent_mail_constructor(
+    swarm: SwarmState,
+    context: ConstructionContext,
+) -> SwarmState:
     """Add one shared Agent Mail setup to every agent in ``swarm``."""
 
     result = swarm.model_copy(deep=True)
-    project_id = (
-        result.agent_mail_project_id
-        or _first_environment_value("NATE_NTM_AGENT_MAIL_PROJECT", "AGENT_MAIL_PROJECT")
-        or f"{result.swarm_id}-agent-mail"
-    )
-    upstream_url = _first_environment_value(
-        "NATE_NTM_AGENT_MAIL_URL",
-        "AGENT_MAIL_UPSTREAM_URL",
-        "AGENT_MAIL_URL",
-    ) or _DEFAULT_AGENT_MAIL_URL
-
+    project_id = context.agent_mail_project_id or result.swarm_id
     identities: set[str] = set()
+
     for agent_id, agent in result.agents.items():
         identity = _identity(agent_id)
         if identity in identities:
@@ -57,7 +49,7 @@ def agent_mail_constructor(swarm: SwarmState) -> SwarmState:
 
         existing = agent.nate_oha_config.features.agent_mail
         if existing is not None:
-            if existing.project is not None and Path(existing.project) != Path(project_id):
+            if existing.project is not None and str(existing.project) != project_id:
                 raise ValueError(
                     f"agent {agent_id!r} has conflicting Agent Mail project "
                     f"{str(existing.project)!r}"
@@ -67,23 +59,22 @@ def agent_mail_constructor(swarm: SwarmState) -> SwarmState:
                     f"agent {agent_id!r} has conflicting Agent Mail identity "
                     f"{existing.agent_identity!r}"
                 )
+            if existing.upstream_url and existing.upstream_url != context.agent_mail_url:
+                raise ValueError(
+                    f"agent {agent_id!r} has conflicting Agent Mail URL "
+                    f"{existing.upstream_url!r}"
+                )
 
-        credentials_ref = (
-            existing.credentials_ref
-            if existing is not None and existing.credentials_ref
-            else token_urlsafe(24)
-        )
-        configured_url = (
-            existing.upstream_url
-            if existing is not None and existing.upstream_url
-            else upstream_url
-        )
         agent.nate_oha_config.features.agent_mail = AgentMailFeatureConfig(
             enabled=True,
-            project=Path(project_id),
+            project=project_id,
             agent_identity=identity,
-            credentials_ref=credentials_ref,
-            upstream_url=configured_url,
+            credentials_ref=(
+                existing.credentials_ref
+                if existing is not None and existing.credentials_ref
+                else token_urlsafe(24)
+            ),
+            upstream_url=context.agent_mail_url,
         )
 
     result.agent_mail_project_id = project_id
@@ -98,6 +89,7 @@ CONSTRUCTORS: Mapping[str, SwarmConstructor] = {
 def apply_constructors(
     swarm: SwarmState,
     names: Sequence[str],
+    context: ConstructionContext | None = None,
     *,
     registry: Mapping[str, SwarmConstructor] = CONSTRUCTORS,
 ) -> SwarmState:
@@ -106,9 +98,14 @@ def apply_constructors(
     if len(names) != len(set(names)):
         raise ValueError("a constructor may not be selected more than once")
 
+    context = context or ConstructionContext()
     result = swarm
     for name in names:
-        result = registry[name](result)
+        try:
+            constructor = registry[name]
+        except KeyError as exc:
+            raise ValueError(f"unknown swarm constructor {name!r}") from exc
+        result = constructor(result, context)
 
     if names:
         result = result.model_copy(deep=True)
