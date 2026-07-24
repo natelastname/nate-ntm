@@ -25,12 +25,28 @@ def _identity(agent_id: str) -> str:
     return identity
 
 
+def _first_environment_value(*names: str) -> str | None:
+    for name in names:
+        value = os.environ.get(name)
+        if value and value.strip():
+            return value.strip()
+    return None
+
+
 def agent_mail_constructor(swarm: SwarmState) -> SwarmState:
     """Add one shared Agent Mail setup to every agent in ``swarm``."""
 
     result = swarm.model_copy(deep=True)
-    project_id = result.agent_mail_project_id or f"{result.swarm_id}-agent-mail"
-    upstream_url = os.environ.get("NATE_NTM_AGENT_MAIL_UPSTREAM_URL", _DEFAULT_AGENT_MAIL_URL)
+    project_id = (
+        result.agent_mail_project_id
+        or _first_environment_value("NATE_NTM_AGENT_MAIL_PROJECT", "AGENT_MAIL_PROJECT")
+        or f"{result.swarm_id}-agent-mail"
+    )
+    upstream_url = _first_environment_value(
+        "NATE_NTM_AGENT_MAIL_URL",
+        "AGENT_MAIL_UPSTREAM_URL",
+        "AGENT_MAIL_URL",
+    ) or _DEFAULT_AGENT_MAIL_URL
 
     identities: set[str] = set()
     for agent_id, agent in result.agents.items():
