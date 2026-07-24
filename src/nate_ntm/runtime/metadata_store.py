@@ -25,7 +25,14 @@ def validate_swarm_id(value: str) -> str:
     return value
 
 
-def _atomic_write_json(path: Path, data: Mapping[str, Any]) -> None:
+def _atomic_write_json(
+    path: Path,
+    data: Mapping[str, Any],
+    *,
+    overwrite: bool,
+) -> None:
+    """Atomically create or replace one JSON file in its target directory."""
+
     path = path.expanduser().resolve()
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(
@@ -37,9 +44,13 @@ def _atomic_write_json(path: Path, data: Mapping[str, Any]) -> None:
             json.dump(data, file, sort_keys=True, indent=2)
             file.flush()
             os.fsync(file.fileno())
-        os.replace(tmp_path, path)
+        if overwrite:
+            os.replace(tmp_path, path)
+        else:
+            os.link(tmp_path, path)
+            tmp_path.unlink()
     finally:
-        if tmp_path.exists() and tmp_path != path:
+        if tmp_path.exists():
             try:
                 tmp_path.unlink()
             except OSError:
@@ -125,6 +136,15 @@ class MetadataStore:
             state.last_updated_at = datetime.utcnow()
             self.save_swarm_state(state)
 
-    def save_swarm_state(self, state: PersistedSwarmState) -> None:
+    def save_swarm_state(
+        self,
+        state: PersistedSwarmState,
+        *,
+        overwrite: bool = True,
+    ) -> None:
         state.validate(expected_swarm_id=self.swarm_id)
-        _atomic_write_json(self.swarm_path, state.model_dump(mode="json"))
+        _atomic_write_json(
+            self.swarm_path,
+            state.model_dump(mode="json"),
+            overwrite=overwrite,
+        )
