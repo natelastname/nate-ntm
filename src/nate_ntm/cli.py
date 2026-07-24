@@ -122,14 +122,6 @@ def swarm_create(
 @runtime_app.command("start")
 def runtime_start(
     swarm_id: str = typer.Option(..., "--swarm-id"),
-    nate_oha_config: Path | None = typer.Option(
-        None,
-        "--nate-oha-config",
-        exists=True,
-        file_okay=True,
-        dir_okay=False,
-        resolve_path=True,
-    ),
     nate_oha_runtime_mode: str | None = typer.Option(None, "--nate-oha-runtime-mode"),
     llm_model: str | None = typer.Option(None, "--llm-model"),
     llm_api_key: str | None = typer.Option(
@@ -156,7 +148,6 @@ def runtime_start(
     config = load_runtime_config(
         project_path=swarm.project_path,
         swarm_id=swarm.swarm_id,
-        nate_oha_config_path=nate_oha_config,
         nate_oha_runtime_mode=nate_oha_runtime_mode,
         llm_model=llm_model,
         llm_api_key=llm_api_key,
