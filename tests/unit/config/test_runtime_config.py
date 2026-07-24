@@ -95,6 +95,7 @@ def test_dotenv_cannot_replace_persisted_identity(
         encoding="utf-8",
     )
     monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("NATE_NTM_CONTROL_PORT", raising=False)
 
     config = load_runtime_config(project_path=project, swarm_id="persisted")
     assert config.project_path == project.resolve()
