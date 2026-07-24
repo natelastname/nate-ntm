@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import typer
 from dotenv import load_dotenv
@@ -18,10 +19,10 @@ from .api.client import JsonRpcClientError, JsonRpcHttpClient
 from .api.models import AgentDetailResult, RuntimeStatusResult, SwarmOverviewResult
 from .config.runtime_config import RuntimeConfig, load_runtime_config
 from .runtime.daemon import MetadataAlreadyExistsError, MetadataMissingError, StartupMode
-from .runtime.metadata_store import MetadataStore
+from .runtime.metadata_store import MetadataStore, validate_swarm_id
 from .runtime.runner import run_runtime_with_control_api
 from .runtime.swarm_state import AgentState, SwarmState
-from .swarm_constructors import apply_constructors
+from .swarm_constructors import ConstructionContext, apply_constructors
 
 load_dotenv()
 
@@ -60,24 +61,33 @@ def _resolve_runtime_config(
 
 @swarm_app.command("create")
 def swarm_create(
-    project: Path = typer.Option(
-        ..., "--project", "-p", exists=True, file_okay=False, dir_okay=True
-    ),
     agent: list[Path] = typer.Option(
         ..., "--agent", exists=True, file_okay=True, dir_okay=False, resolve_path=True
     ),
+    project: Path | None = typer.Option(
+        None, "--project", "-p", exists=True, file_okay=False, dir_okay=True
+    ),
     constructor: list[str] = typer.Option([], "--constructor"),  # type: ignore[assignment]
-    swarm_id: str = typer.Option("default", "--swarm-id"),
+    swarm_id: str | None = typer.Option(None, "--swarm-id"),
+    agent_mail_project_id: str | None = typer.Option(None, "--agent-mail-project-id"),
+    agent_mail_url: str = typer.Option("http://127.0.0.1:8765", "--agent-mail-url"),
     force: bool = typer.Option(False, "--force"),
     dry_run: bool = typer.Option(False, "--dry-run"),
 ) -> None:
-    """Create one swarm from complete nate-oha JSON configurations."""
+    """Materialize one swarm from complete nate-oha JSON configurations."""
 
-    config = load_runtime_config(project_path=project, swarm_id=swarm_id)
-    store = MetadataStore(config)
-    swarm_path = store.metadata_dir / "swarm.json"
-    if swarm_path.exists() and not force:
-        raise typer.BadParameter(f"swarm metadata already exists: {swarm_path}")
+    effective_swarm_id = validate_swarm_id(swarm_id or uuid4().hex)
+    effective_project = (project or Path.cwd()).expanduser().resolve()
+    if not effective_project.is_dir():
+        raise typer.BadParameter(f"project does not exist or is not a directory: {effective_project}")
+    if (agent_mail_project_id is not None or agent_mail_url != "http://127.0.0.1:8765") and "agent-mail" not in constructor:
+        raise typer.BadParameter(
+            "Agent Mail options require --constructor agent-mail"
+        )
+
+    store = MetadataStore(effective_swarm_id)
+    if store.exists() and not force:
+        raise typer.BadParameter(f"swarm metadata already exists: {store.swarm_path}")
 
     agents: dict[str, AgentState] = {}
     for path in agent:
@@ -102,13 +112,17 @@ def swarm_create(
     now = datetime.now(timezone.utc)
     swarm = apply_constructors(
         SwarmState(
-            swarm_id=config.swarm_id,
-            project_path=config.project_path,
+            swarm_id=effective_swarm_id,
+            project_path=effective_project,
             created_at=now,
             last_updated_at=now,
             agents=agents,
         ),
         constructor,
+        ConstructionContext(
+            agent_mail_project_id=agent_mail_project_id,
+            agent_mail_url=agent_mail_url,
+        ),
     )
 
     if dry_run:
@@ -117,7 +131,8 @@ def swarm_create(
 
     store.save_swarm_state(swarm)
     typer.echo(f"Created swarm {swarm.swarm_id!r} with {len(agents)} agents")
-    typer.echo(f"Metadata: {swarm_path}")
+    typer.echo(f"Swarm ID: {swarm.swarm_id}")
+    typer.echo(f"Metadata: {store.swarm_path}")
 
 
 @runtime_app.command("start")
