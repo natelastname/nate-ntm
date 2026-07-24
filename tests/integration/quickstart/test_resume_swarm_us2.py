@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import shutil
+from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import AsyncIterator
 from uuid import uuid4
 
 from nate_oha.config import build_default_config
@@ -11,6 +13,7 @@ from nate_ntm.api.server import RuntimeApiServer
 from nate_ntm.cli import app
 from nate_ntm.config.runtime_config import load_runtime_config
 from nate_ntm.runtime.acp_client import AcpAgentStatus, BaseAcpClient
+from nate_ntm.runtime.acp_update_stream import ReceivedSessionUpdate
 from nate_ntm.runtime.adapters import RuntimeAdapters
 from nate_ntm.runtime.daemon import RuntimeDaemon
 from nate_ntm.runtime.metadata_store import MetadataStore
@@ -21,16 +24,10 @@ runner = CliRunner()
 
 
 class StubAcpClient(BaseAcpClient):
-    def start_agent(self, agent_id: str, *, metadata: AgentState) -> None:
+    async def start_agent(self, agent_id: str, *, metadata: AgentState) -> None:
         pass
 
-    async def start_agent_async(self, agent_id: str, *, metadata: AgentState) -> None:
-        pass
-
-    def stop_agent(self, agent_id: str, *, timeout: float) -> None:
-        pass
-
-    async def stop_agent_async(self, agent_id: str, *, timeout: float) -> None:
+    async def stop_agent(self, agent_id: str) -> None:
         pass
 
     async def prompt(self, agent_id: str, prompt: str | None = None) -> str | None:
@@ -41,6 +38,16 @@ class StubAcpClient(BaseAcpClient):
 
     def get_status(self, agent_id: str) -> AcpAgentStatus:
         return AcpAgentStatus(agent_id=agent_id, state="idle")
+
+    @asynccontextmanager
+    async def subscribe_acp_updates(
+        self, agent_id: str
+    ) -> AsyncIterator[AsyncIterator[ReceivedSessionUpdate]]:
+        async def empty() -> AsyncIterator[ReceivedSessionUpdate]:
+            if False:
+                yield  # pragma: no cover
+
+        yield empty()
 
 
 def test_resume_reuses_materialized_project_and_agent_configuration(tmp_path: Path) -> None:
