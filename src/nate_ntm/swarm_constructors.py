@@ -18,7 +18,7 @@ _INVALID_IDENTITY_CHARS = re.compile(r"[^a-z0-9-]+")
 @dataclass(frozen=True, slots=True)
 class ConstructionContext:
     agent_mail_project_id: str | None = None
-    agent_mail_url: str = _DEFAULT_AGENT_MAIL_URL
+    agent_mail_url: str | None = None
 
 
 SwarmConstructor = Callable[[SwarmState, ConstructionContext], SwarmState]
@@ -39,6 +39,7 @@ def agent_mail_constructor(
 
     result = swarm.model_copy(deep=True)
     project_id = context.agent_mail_project_id or result.swarm_id
+    upstream_url = context.agent_mail_url or _DEFAULT_AGENT_MAIL_URL
     identities: set[str] = set()
 
     for agent_id, agent in result.agents.items():
@@ -59,7 +60,7 @@ def agent_mail_constructor(
                     f"agent {agent_id!r} has conflicting Agent Mail identity "
                     f"{existing.agent_identity!r}"
                 )
-            if existing.upstream_url and existing.upstream_url != context.agent_mail_url:
+            if existing.upstream_url and existing.upstream_url != upstream_url:
                 raise ValueError(
                     f"agent {agent_id!r} has conflicting Agent Mail URL "
                     f"{existing.upstream_url!r}"
@@ -74,7 +75,7 @@ def agent_mail_constructor(
                 if existing is not None and existing.credentials_ref
                 else token_urlsafe(24)
             ),
-            upstream_url=context.agent_mail_url,
+            upstream_url=upstream_url,
         )
 
     result.agent_mail_project_id = project_id
