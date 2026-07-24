@@ -1,4 +1,4 @@
-"""Runtime configuration model and loader."""
+"""Runtime-only configuration for an already materialized swarm."""
 
 from __future__ import annotations
 
@@ -13,58 +13,46 @@ __all__ = ["RuntimeConfig", "load_runtime_config"]
 
 _DEFAULT_CONTROL_HOST = "127.0.0.1"
 _DEFAULT_CONTROL_PORT = 8765
-_DEFAULT_SWARM_ID = "default"
 
 
 @dataclass(frozen=True, slots=True)
 class RuntimeConfig:
     project_path: Path
-    metadata_dir: Path
+    swarm_id: str
     control_api_host: str = _DEFAULT_CONTROL_HOST
     control_api_port: int = _DEFAULT_CONTROL_PORT
-    swarm_id: str = _DEFAULT_SWARM_ID
-    agent_mail_project: str | None = None
-    agent_mail_upstream_url: str | None = None
     nate_oha_executable: str = "nate-oha"
     nate_oha_config_path: Path | None = None
     nate_oha_runtime_mode: str | None = None
     llm_model: str | None = None
     llm_api_key: str | None = None
     prompt_soul_content: str | None = None
-    agent_mail_enabled: bool | None = None
 
 
 def load_runtime_config(
     *,
-    project_path: Path | str | None = None,
-    metadata_dir: Path | str | None = None,
+    project_path: Path | str,
+    swarm_id: str,
     control_api_host: str | None = None,
     control_api_port: int | str | None = None,
-    swarm_id: str | None = None,
-    agent_mail_project: str | None = None,
-    agent_mail_upstream_url: str | None = None,
     nate_oha_executable: str | None = None,
     nate_oha_config_path: Path | str | None = None,
     nate_oha_runtime_mode: str | None = None,
     llm_model: str | None = None,
     llm_api_key: str | None = None,
     prompt_soul_content: str | None = None,
-    agent_mail_enabled: bool | None = None,
     env: Mapping[str, str] | None = None,
 ) -> RuntimeConfig:
-    """Resolve explicit values, environment values, and stable defaults."""
+    """Combine persisted swarm identity with runtime-only overrides."""
 
     values = _environment(env)
-    project = _project_path(
-        project_path if project_path is not None else values.get("NATE_NTM_PROJECT_DIR")
-    )
-    metadata = _metadata_dir(
-        metadata_dir if metadata_dir is not None else values.get("NATE_NTM_METADATA_DIR"),
-        project,
-    )
+    project = _project_path(project_path)
+    if not swarm_id or swarm_id != swarm_id.strip():
+        raise ValueError("swarm_id must be non-empty without surrounding whitespace")
+
     return RuntimeConfig(
         project_path=project,
-        metadata_dir=metadata,
+        swarm_id=swarm_id,
         control_api_host=(
             control_api_host
             if control_api_host is not None
@@ -74,24 +62,6 @@ def load_runtime_config(
             control_api_port
             if control_api_port is not None
             else values.get("NATE_NTM_CONTROL_PORT")
-        ),
-        swarm_id=(
-            swarm_id
-            if swarm_id is not None
-            else values.get("NATE_NTM_SWARM_ID") or _DEFAULT_SWARM_ID
-        ),
-        agent_mail_project=_optional(
-            agent_mail_project
-            if agent_mail_project is not None
-            else values.get("NATE_NTM_AGENT_MAIL_PROJECT")
-            or values.get("AGENT_MAIL_PROJECT")
-        ),
-        agent_mail_upstream_url=_optional(
-            agent_mail_upstream_url
-            if agent_mail_upstream_url is not None
-            else values.get("NATE_NTM_AGENT_MAIL_URL")
-            or values.get("AGENT_MAIL_UPSTREAM_URL")
-            or values.get("AGENT_MAIL_URL")
         ),
         nate_oha_executable=_optional(
             nate_oha_executable
@@ -123,10 +93,6 @@ def load_runtime_config(
             if prompt_soul_content is not None
             else values.get("NATE_NTM_PROMPT_SOUL_CONTENT")
         ),
-        agent_mail_enabled=_optional_bool(
-            agent_mail_enabled,
-            values.get("NATE_NTM_AGENT_MAIL_ENABLED"),
-        ),
     )
 
 
@@ -143,25 +109,10 @@ def _environment(env: Mapping[str, str] | None) -> Mapping[str, str]:
     return values
 
 
-def _project_path(raw: Path | str | None) -> Path:
-    path = Path(raw or os.getcwd()).expanduser().resolve()
+def _project_path(raw: Path | str) -> Path:
+    path = Path(raw).expanduser().resolve()
     if not path.is_dir():
         raise ValueError(f"Project path does not exist or is not a directory: {path}")
-    return path
-
-
-def _metadata_dir(raw: Path | str | None, project: Path) -> Path:
-    path = Path(raw) if raw is not None else project / ".nate_ntm"
-    path = (
-        (project / path).resolve()
-        if not path.is_absolute()
-        else path.expanduser().resolve()
-    )
-    try:
-        path.relative_to(project)
-    except ValueError:
-        if path.parent != project.parent:
-            raise ValueError("metadata_dir must be under the project or adjacent to it")
     return path
 
 
@@ -191,16 +142,3 @@ def _optional_path(value: Path | str | None, project: Path) -> Path | None:
         if not path.is_absolute()
         else path.expanduser().resolve()
     )
-
-
-def _optional_bool(value: bool | None, raw: str | None) -> bool | None:
-    if value is not None:
-        return value
-    if raw is None:
-        return None
-    normalized = raw.strip().lower()
-    if normalized in {"1", "true", "yes", "y", "on"}:
-        return True
-    if normalized in {"0", "false", "no", "n", "off"}:
-        return False
-    raise ValueError(f"Invalid boolean value: {raw!r}")
