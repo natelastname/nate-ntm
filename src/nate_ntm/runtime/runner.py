@@ -12,8 +12,8 @@ from fastapi_jsonrpc import API
 from ..api.runtime_api import create_runtime_api_app
 from ..api.server import RuntimeApiServer
 from ..config.runtime_config import RuntimeConfig
-from .adapters import RuntimeAdapters, create_runtime_adapters
-from .daemon import RuntimeDaemon, StartupMode
+from .adapters import RuntimeAdapters
+from .daemon import RuntimeDaemon
 from .swarm_acp_tcp import SwarmACPTCPServer
 from .swarm_state import SwarmState
 
@@ -53,12 +53,13 @@ def create_runtime_control_context(
     acp_port: int = 8766,
     adapters: RuntimeAdapters | None = None,
 ) -> RuntimeControlContext:
-    adapters = adapters or create_runtime_adapters(config)
     daemon = RuntimeDaemon.resume(config, swarm_state, adapters=adapters)
+    if daemon.acp_client is None:
+        raise RuntimeError("runtime ACP client was not configured")
     api_server = RuntimeApiServer(daemon=daemon)
     acp_server = SwarmACPTCPServer(
         daemon=daemon,
-        agent_client=adapters.acp,
+        agent_client=daemon.acp_client,
         host=acp_host,
         port=acp_port,
     )
