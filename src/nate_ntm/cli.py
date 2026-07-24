@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import datetime, timezone
-from enum import Enum
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -17,8 +16,8 @@ from pydantic import ValidationError
 
 from .api.client import JsonRpcClientError, JsonRpcHttpClient
 from .api.models import AgentDetailResult, RuntimeStatusResult, SwarmOverviewResult
-from .config.runtime_config import RuntimeConfig, load_runtime_config
-from .runtime.daemon import MetadataAlreadyExistsError, MetadataMissingError, StartupMode
+from .config.runtime_config import load_runtime_config
+from .runtime.daemon import MetadataMissingError
 from .runtime.metadata_store import MetadataStore, validate_swarm_id
 from .runtime.runner import run_runtime_with_control_api
 from .runtime.swarm_state import AgentState, SwarmState
@@ -33,30 +32,6 @@ api_app = typer.Typer(help="Runtime control API commands")
 app.add_typer(runtime_app, name="runtime")
 app.add_typer(swarm_app, name="swarm")
 app.add_typer(api_app, name="api")
-
-
-class CliStartupMode(str, Enum):
-    CREATE = "create"
-    RESUME = "resume"
-
-
-def _resolve_runtime_config(
-    project: Path,
-    *,
-    nate_oha_config: Path | None = None,
-    nate_oha_runtime_mode: str | None = None,
-    llm_model: str | None = None,
-    llm_api_key: str | None = None,
-    prompt_soul_content: str | None = None,
-) -> RuntimeConfig:
-    return load_runtime_config(
-        project_path=project,
-        nate_oha_config_path=nate_oha_config,
-        nate_oha_runtime_mode=nate_oha_runtime_mode,
-        llm_model=llm_model,
-        llm_api_key=llm_api_key,
-        prompt_soul_content=prompt_soul_content,
-    )
 
 
 @swarm_app.command("create")
@@ -81,9 +56,7 @@ def swarm_create(
     if not effective_project.is_dir():
         raise typer.BadParameter(f"project does not exist or is not a directory: {effective_project}")
     if (agent_mail_project_id is not None or agent_mail_url != "http://127.0.0.1:8765") and "agent-mail" not in constructor:
-        raise typer.BadParameter(
-            "Agent Mail options require --constructor agent-mail"
-        )
+        raise typer.BadParameter("Agent Mail options require --constructor agent-mail")
 
     store = MetadataStore(effective_swarm_id)
     if store.exists() and not force:
@@ -137,11 +110,7 @@ def swarm_create(
 
 @runtime_app.command("start")
 def runtime_start(
-    project: Path = typer.Option(
-        ..., "--project", "-p", exists=True, file_okay=False, dir_okay=True
-    ),
-    mode: CliStartupMode = typer.Option(CliStartupMode.RESUME, "--mode"),
-    agents: int | None = typer.Option(None, "--agents", "-n"),
+    swarm_id: str = typer.Option(..., "--swarm-id"),
     nate_oha_config: Path | None = typer.Option(
         None,
         "--nate-oha-config",
@@ -161,26 +130,26 @@ def runtime_start(
     control_host: str | None = typer.Option(None, "--control-host"),
     control_port: int | None = typer.Option(None, "--control-port"),
 ) -> None:
-    """Create or resume a swarm runtime with TCP ACP and control endpoints."""
+    """Start an existing materialized swarm by ID."""
 
-    if agents is not None:
-        if mode is CliStartupMode.RESUME:
-            raise typer.BadParameter("--agents can only be used with --mode=create")
-        if agents <= 0:
-            raise typer.BadParameter("--agents must be a positive integer")
     if not 0 <= acp_port <= 65535:
         raise typer.BadParameter("--acp-port must be between 0 and 65535")
 
-    config = _resolve_runtime_config(
-        project,
-        nate_oha_config=nate_oha_config,
+    effective_swarm_id = validate_swarm_id(swarm_id)
+    store = MetadataStore(effective_swarm_id)
+    try:
+        swarm = store.load_swarm_state()
+    except FileNotFoundError as exc:
+        raise typer.BadParameter(f"swarm not found: {effective_swarm_id}") from exc
+
+    config = load_runtime_config(
+        project_path=swarm.project_path,
+        swarm_id=swarm.swarm_id,
+        nate_oha_config_path=nate_oha_config,
         nate_oha_runtime_mode=nate_oha_runtime_mode,
         llm_model=llm_model,
         llm_api_key=llm_api_key,
         prompt_soul_content=prompt_soul_content,
-    )
-    startup_mode = (
-        StartupMode.CREATE if mode is CliStartupMode.CREATE else StartupMode.RESUME
     )
 
     typer.echo(f"Swarm ACP: tcp://{acp_host}:{acp_port}", err=True)
@@ -192,14 +161,13 @@ def runtime_start(
     try:
         run_runtime_with_control_api(
             config,
-            startup_mode,
+            swarm,
             host=control_host,
             port=control_port,
             acp_host=acp_host,
             acp_port=acp_port,
-            agent_count=agents,
         )
-    except (MetadataAlreadyExistsError, MetadataMissingError) as exc:
+    except MetadataMissingError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from exc
     except OSError as exc:
