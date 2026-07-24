@@ -18,7 +18,7 @@ def test_defaults_are_runtime_only(tmp_path: Path) -> None:
     assert config.control_api_host == "127.0.0.1"
     assert config.control_api_port == 8765
     assert config.nate_oha_executable == "nate-oha"
-    assert config.nate_oha_config_path is None
+    assert not hasattr(config, "nate_oha_config_path")
     assert not hasattr(config, "metadata_dir")
     assert not hasattr(config, "agent_mail_project")
     assert not hasattr(config, "agent_mail_enabled")
@@ -51,7 +51,7 @@ def test_environment_supplies_only_runtime_overrides(tmp_path: Path) -> None:
         env={
             "NATE_NTM_CONTROL_HOST": "127.0.0.2",
             "NATE_NTM_CONTROL_PORT": "9999",
-            "NATE_NTM_NATE_OHA_CONFIG": "config/base.json",
+            "NATE_NTM_NATE_OHA_CONFIG": "ignored",
             "NATE_NTM_NATE_OHA_RUNTIME_MODE": "echo",
             "NATE_NTM_LLM_MODEL": "gpt-test",
         },
@@ -59,7 +59,6 @@ def test_environment_supplies_only_runtime_overrides(tmp_path: Path) -> None:
 
     assert config.control_api_host == "127.0.0.2"
     assert config.control_api_port == 9999
-    assert config.nate_oha_config_path == (project / "config/base.json").resolve()
     assert config.nate_oha_runtime_mode == "echo"
     assert config.llm_model == "gpt-test"
 
