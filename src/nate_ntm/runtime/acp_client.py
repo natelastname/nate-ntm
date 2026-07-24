@@ -190,7 +190,7 @@ class NateOhaAcpClient(BaseAcpClient):
             else:
                 response = await connection.new_session(cwd=str(self.config.project_path))
                 session.conversation_id = response.session_id
-                store = MetadataStore(config=self.config)
+                store = MetadataStore(self.config.swarm_id)
                 try:
                     persisted = store.load_agent_state(agent_id)
                 except FileNotFoundError:
