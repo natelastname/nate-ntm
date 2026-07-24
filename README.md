@@ -67,6 +67,27 @@ By default the runtime uses in-memory "fake" adapters for Agent Mail and ACP so
 that US1–US3 can be exercised without external services. REAL adapters can be
 enabled via configuration flags and environment variables as they mature.
 
+### Swarm constructors
+
+A constructor transforms the complete swarm configuration once, during
+`swarm create`. The built-in `agent-mail` constructor generates one shared
+Agent Mail project, a unique identity and credential for every agent, and stores
+the resulting complete configuration in `swarm.json`.
+
+```bash
+nate-ntm swarm create \
+  --project /abs/path/to/your/project \
+  --agent planner.json \
+  --agent implementer.json \
+  --constructor agent-mail
+```
+
+Add `--dry-run` to inspect the fully constructed JSON without writing
+`.nate_ntm/swarm.json`. Constructors are recorded in order under
+`runtime_options.constructors` and are not rerun when the swarm is resumed.
+The Agent Mail URL may be supplied through `NATE_NTM_AGENT_MAIL_URL`,
+`AGENT_MAIL_UPSTREAM_URL`, or `AGENT_MAIL_URL`.
+
 ## Control API and shared models
 
 The runtime exposes a local FastAPI-based JSON-RPC 2.0 control API
