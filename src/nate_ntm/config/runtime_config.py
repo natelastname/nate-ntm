@@ -22,7 +22,6 @@ class RuntimeConfig:
     control_api_host: str = _DEFAULT_CONTROL_HOST
     control_api_port: int = _DEFAULT_CONTROL_PORT
     nate_oha_executable: str = "nate-oha"
-    nate_oha_config_path: Path | None = None
     nate_oha_runtime_mode: str | None = None
     llm_model: str | None = None
     llm_api_key: str | None = None
@@ -36,7 +35,6 @@ def load_runtime_config(
     control_api_host: str | None = None,
     control_api_port: int | str | None = None,
     nate_oha_executable: str | None = None,
-    nate_oha_config_path: Path | str | None = None,
     nate_oha_runtime_mode: str | None = None,
     llm_model: str | None = None,
     llm_api_key: str | None = None,
@@ -69,12 +67,6 @@ def load_runtime_config(
             else values.get("NATE_NTM_NATE_OHA_EXECUTABLE")
         )
         or "nate-oha",
-        nate_oha_config_path=_optional_path(
-            nate_oha_config_path
-            if nate_oha_config_path is not None
-            else values.get("NATE_NTM_NATE_OHA_CONFIG"),
-            project,
-        ),
         nate_oha_runtime_mode=_optional(
             nate_oha_runtime_mode
             if nate_oha_runtime_mode is not None
@@ -131,14 +123,3 @@ def _optional(value: str | None) -> str | None:
         return None
     value = value.strip()
     return value or None
-
-
-def _optional_path(value: Path | str | None, project: Path) -> Path | None:
-    if value is None:
-        return None
-    path = Path(value)
-    return (
-        (project / path).resolve()
-        if not path.is_absolute()
-        else path.expanduser().resolve()
-    )
