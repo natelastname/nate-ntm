@@ -15,12 +15,12 @@ The `nate-ntm` entrypoint is defined by `pyproject.toml`.
 
 ## Create a swarm
 
-Create from the current working directory:
+Each `--agent` value has the form `AGENT_ID:CONFIG_PATH`. Agent identity is explicit and independent of the configuration filename, so one configuration can instantiate multiple agents:
 
 ```bash
 nate-ntm swarm create \
-  --agent planner.json \
-  --agent implementer.json
+  --agent planner:agent.json \
+  --agent implementer:agent.json
 ```
 
 `--project` is optional and overrides the working-directory default. `--swarm-id` is also optional; omitted IDs are generated with `uuid4().hex`.
@@ -35,12 +35,12 @@ The project directory does not identify or locate a swarm. Multiple swarms may u
 
 ## Agent Mail constructor
 
-The `agent-mail` constructor materializes one shared Agent Mail project plus an identity and credential for each agent:
+The `agent-mail` constructor materializes one shared Agent Mail project plus an identity and credential for each explicitly named agent:
 
 ```bash
 nate-ntm swarm create \
-  --agent planner.json \
-  --agent implementer.json \
+  --agent planner:agent.json \
+  --agent implementer:agent.json \
   --constructor agent-mail
 ```
 
@@ -48,7 +48,7 @@ The Agent Mail project ID defaults exactly to the swarm ID. Explicit overrides a
 
 ```bash
 nate-ntm swarm create \
-  --agent planner.json \
+  --agent planner:agent.json \
   --constructor agent-mail \
   --agent-mail-project-id planning-mail \
   --agent-mail-url http://127.0.0.1:8765
