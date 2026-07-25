@@ -225,7 +225,7 @@ def api_call(
         payload: dict[str, Any] = {"code": exc.code, "message": exc.message}
         if exc.data is not None:
             payload["data"] = exc.data
-        typer.echo(json5.dumps(payload, indent=2, sort_keys=True), err=True)
+        typer.echo(json5.dumps(payload, indent=2), err=True)
         raise typer.Exit(code=1) from exc
     except Exception as exc:
         typer.echo(f"Error calling runtime API: {exc}", err=True)
@@ -237,7 +237,7 @@ def api_call(
         "agent.get_detail": AgentDetailResult,
     }.get(method)
     payload = model.model_validate(result).model_dump() if model else result
-    typer.echo(json5.dumps(payload, indent=2, sort_keys=True))
+    typer.echo(json5.dumps(payload, indent=2))
 
 
 @app.command("console")
