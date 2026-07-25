@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import json
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
+import json5
 import pytest
 from nate_oha.config import NateOHAConfig
 from typer.testing import CliRunner
@@ -60,7 +60,10 @@ def _swarm(project: Path | None = None, *, swarm_id: str = "demo") -> SwarmState
 def _agent_files(project: Path) -> list[Path]:
     paths = [project / "Planner.json", project / "code_reviewer.json"]
     for path in paths:
-        path.write_text(_config().model_dump_json(indent=2), encoding="utf-8")
+        path.write_text(
+            json5.dumps(_config().model_dump(mode="json"), indent=2),
+            encoding="utf-8",
+        )
     return paths
 
 
@@ -93,7 +96,7 @@ def test_cli_dry_run_materializes_complete_agent_mail_swarm(tmp_path: Path) -> N
     )
 
     assert result.exit_code == 0, result.output
-    swarm = SwarmState.model_validate(json.loads(result.stdout))
+    swarm = SwarmState.model_validate(json5.loads(result.stdout))
     assert swarm.agent_mail_project_id == "demo"
     assert swarm.runtime_options["constructors"] == ["agent-mail"]
     assert not MetadataStore("demo").metadata_dir.exists()
