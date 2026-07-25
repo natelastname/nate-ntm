@@ -57,37 +57,37 @@ def _swarm(project: Path | None = None, *, swarm_id: str = "demo") -> SwarmState
     )
 
 
-def _agent_files(project: Path) -> list[Path]:
-    paths = [project / "Planner.json", project / "code_reviewer.json"]
-    for path in paths:
-        path.write_text(
-            json5.dumps(_config().model_dump(mode="json"), indent=2),
-            encoding="utf-8",
-        )
-    return paths
+def _agent_config(project: Path) -> Path:
+    path = project / "shared.json"
+    path.write_text(
+        json5.dumps(_config().model_dump(mode="json"), indent=2),
+        encoding="utf-8",
+    )
+    return path
 
 
-def _create_args(project: Path, paths: list[Path], swarm_id: str, *extra: str) -> list[str]:
-    args = [
+def _create_args(project: Path, swarm_id: str, *extra: str) -> list[str]:
+    path = _agent_config(project)
+    return [
         "swarm",
         "create",
         "--project",
         str(project),
         "--swarm-id",
         swarm_id,
+        "--agent",
+        f"Planner:{path}",
+        "--agent",
+        f"code_reviewer:{path}",
+        *extra,
     ]
-    for path in paths:
-        args.extend(["--agent", str(path)])
-    return [*args, *extra]
 
 
 def test_cli_dry_run_materializes_complete_agent_mail_swarm(tmp_path: Path) -> None:
-    paths = _agent_files(tmp_path)
     result = runner.invoke(
         app,
         _create_args(
             tmp_path,
-            paths,
             "demo",
             "--constructor",
             "agent-mail",
@@ -131,7 +131,6 @@ def test_persisted_constructed_swarm_round_trips(tmp_path: Path) -> None:
             app,
             _create_args(
                 tmp_path,
-                _agent_files(tmp_path),
                 swarm_id,
                 "--constructor",
                 "agent-mail",
@@ -186,7 +185,7 @@ def test_constructor_failure_surfaces_without_persisting(
     monkeypatch.setitem(CONSTRUCTORS, "explode", explode)
     result = runner.invoke(
         app,
-        _create_args(tmp_path, _agent_files(tmp_path), swarm_id, "--constructor", "explode"),
+        _create_args(tmp_path, swarm_id, "--constructor", "explode"),
     )
     assert isinstance(result.exception, SentinelError)
     assert not MetadataStore(swarm_id).metadata_dir.exists()
