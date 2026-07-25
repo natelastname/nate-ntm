@@ -57,9 +57,7 @@ class JsonRpcHttpClient:
                         "method": method,
                         "params": params or {},
                         "id": request_id,
-                    },
-                    quote_keys=True,
-                    trailing_commas=False,
+                    }
                 ).encode()
                 connection.request(
                     "POST",
