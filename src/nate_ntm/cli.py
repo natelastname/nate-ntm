@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -203,8 +204,8 @@ def _parse_params(pairs: list[str]) -> dict[str, Any]:
         if not key:
             raise typer.BadParameter("Parameter key must not be empty")
         try:
-            params[key] = json5.loads(raw)
-        except ValueError:
+            params[key] = json.loads(raw)
+        except json.JSONDecodeError:
             params[key] = raw
     return params
 
@@ -225,7 +226,7 @@ def api_call(
         payload: dict[str, Any] = {"code": exc.code, "message": exc.message}
         if exc.data is not None:
             payload["data"] = exc.data
-        typer.echo(json5.dumps(payload, indent=2), err=True)
+        typer.echo(json.dumps(payload, indent=2, sort_keys=True), err=True)
         raise typer.Exit(code=1) from exc
     except Exception as exc:
         typer.echo(f"Error calling runtime API: {exc}", err=True)
@@ -237,7 +238,7 @@ def api_call(
         "agent.get_detail": AgentDetailResult,
     }.get(method)
     payload = model.model_validate(result).model_dump() if model else result
-    typer.echo(json5.dumps(payload, indent=2))
+    typer.echo(json.dumps(payload, indent=2, sort_keys=True))
 
 
 @app.command("console")
