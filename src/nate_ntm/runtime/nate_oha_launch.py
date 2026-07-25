@@ -88,7 +88,7 @@ def materialize_nate_oha_config(
 
     path = Path(tempfile.mkdtemp(prefix=prefix)) / "nate-oha-config.json"
     path.write_text(
-        json5.dumps(config.model_dump(mode="json"), indent=2, sort_keys=True) + "\n",
+        json5.dumps(config.model_dump(mode="json"), indent=2) + "\n",
         encoding="utf-8",
     )
     return path
