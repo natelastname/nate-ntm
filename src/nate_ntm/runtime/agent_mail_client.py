@@ -186,11 +186,7 @@ class McpAgentMailClient(BaseAgentMailClient):
             headers["Authorization"] = f"Bearer {self.bearer_token}"
         request = Request(
             self.base_url,
-            data=json5.dumps(
-                payload,
-                quote_keys=True,
-                trailing_commas=False,
-            ).encode("utf-8"),
+            data=json5.dumps(payload).encode("utf-8"),
             headers=headers,
             method="POST",
         )
