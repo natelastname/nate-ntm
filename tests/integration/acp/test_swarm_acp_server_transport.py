@@ -1,20 +1,13 @@
-"""Macro test for the complete production ACP transport path.
-
-The test uses the real nate-oha and Agent Mail adapters. It skips when either
-external service is unavailable, but otherwise exercises one materialized swarm
-through ACP attach, prompt, interrupt, detach, persistence, and resume.
-"""
+"""Macro test for the complete production ACP transport path."""
 
 from __future__ import annotations
 
 import asyncio
 import shutil
-import socket
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, TypeVar
-from urllib.parse import urlparse
 from uuid import uuid4
 
 import acp
@@ -37,12 +30,9 @@ from nate_ntm.runtime.swarm_acp_server import (
     SwarmACPServerSession,
 )
 from nate_ntm.runtime.swarm_state import AgentState, SwarmState
-from nate_ntm.swarm_constructors import ConstructionContext, agent_mail_constructor
 
-_AGENT_MAIL_URL = "http://127.0.0.1:8765/api"
 _OPERATION_TIMEOUT = 60.0
 _CLEANUP_TIMEOUT = 5.0
-
 T = TypeVar("T")
 
 
@@ -75,11 +65,7 @@ async def _start_swarm_server(
         if not mux_future.done():
             mux_future.set_result(session.mux)
 
-        connection = SwarmACPConnection(
-            session=session,
-            writer=writer,
-            reader=reader,
-        )
+        connection = SwarmACPConnection(session=session, writer=writer, reader=reader)
         external.bind(connection)
 
         async def serve(_: SwarmACPServerSession) -> None:
@@ -116,10 +102,6 @@ def _materialize_swarm(tmp_path: Path) -> tuple[RuntimeConfig, SwarmState, Metad
             for agent_id in ("agent-1", "agent-2")
         },
     )
-    swarm = agent_mail_constructor(
-        swarm,
-        ConstructionContext(agent_mail_url=_AGENT_MAIL_URL),
-    )
     store = MetadataStore(swarm_id)
     store.save_swarm_state(swarm)
     config = load_runtime_config(
@@ -131,15 +113,9 @@ def _materialize_swarm(tmp_path: Path) -> tuple[RuntimeConfig, SwarmState, Metad
     return config, swarm, store
 
 
-def _require_external_services(config: RuntimeConfig) -> None:
+def _require_nate_oha(config: RuntimeConfig) -> None:
     if shutil.which(config.nate_oha_executable) is None:
         pytest.skip(f"{config.nate_oha_executable!r} is not installed")
-    parsed = urlparse(_AGENT_MAIL_URL)
-    try:
-        with socket.create_connection((parsed.hostname or "127.0.0.1", parsed.port or 80), timeout=1):
-            pass
-    except OSError:
-        pytest.skip(f"mcp_agent_mail is not reachable at {parsed.hostname}:{parsed.port}")
 
 
 def _notification_texts(callbacks: _Callbacks, start: int) -> list[str]:
@@ -161,7 +137,7 @@ async def _wait_for_text(callbacks: _Callbacks, expected: str, start: int) -> No
 @pytest.mark.asyncio
 async def test_real_runtime_create_swarm_acp_and_resume(tmp_path: Path) -> None:
     config, swarm, store = _materialize_swarm(tmp_path)
-    _require_external_services(config)
+    _require_nate_oha(config)
 
     internal: NateOhaAcpClient | None = None
     external: SwarmACPClient | None = None
@@ -205,7 +181,7 @@ async def test_real_runtime_create_swarm_acp_and_resume(tmp_path: Path) -> None:
 
         assert len((await _bounded(external.swarm_status())).swarm["agents"]) == 2
         detail = await _bounded(external.agent_detail("agent-1"))
-        assert detail.agent["agent_mail_identity"]
+        assert detail.agent["agent_id"] == "agent-1"
 
         await _bounded(external.attach("agent-1"))
         first = "end-to-end prompt for agent one"
