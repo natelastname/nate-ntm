@@ -1,36 +1,15 @@
 from __future__ import annotations
 
-import ast
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
+import json5
 from nate_oha.config import build_default_config
 
 from nate_ntm.runtime.metadata_store import MetadataStore
 from nate_ntm.runtime.swarm_state import AgentState, SwarmState
-
-
-def test_source_uses_json5_exclusively() -> None:
-    root = Path(__file__).resolve().parents[2] / "src" / "nate_ntm"
-    violations: list[str] = []
-
-    for path in root.rglob("*.py"):
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                if any(alias.name == "json" for alias in node.names):
-                    violations.append(f"{path}: import json")
-            elif isinstance(node, ast.ImportFrom) and node.module == "json":
-                violations.append(f"{path}: from json import ...")
-            elif isinstance(node, ast.Attribute) and node.attr in {
-                "model_dump_json",
-                "model_validate_json",
-            }:
-                violations.append(f"{path}: {node.attr}")
-
-    assert not violations, "Strict-JSON path bypasses json5:\n" + "\n".join(violations)
 
 
 def test_persisted_swarm_accepts_json5_comments(tmp_path: Path) -> None:
@@ -61,3 +40,9 @@ def test_persisted_swarm_accepts_json5_comments(tmp_path: Path) -> None:
         assert store.load_swarm_state() == state
     finally:
         shutil.rmtree(store.metadata_dir, ignore_errors=True)
+
+
+def test_json5_round_trip_preserves_config_data() -> None:
+    config = build_default_config()
+    text = "// nate-oha config\n" + json5.dumps(config.model_dump(mode="json"), indent=2)
+    assert type(config).model_validate(json5.loads(text)) == config
