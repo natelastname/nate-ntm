@@ -25,6 +25,49 @@ __all__ = [
     "run_runtime_with_control_api",
 ]
 
+_UVICORN_LOG_CONFIG = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "default": {
+            "format": "%(levelname)-8s %(name)s: %(message)s",
+        },
+        "access": {
+            "format": (
+                "%(levelname)-8s %(name)s: "
+                '%(client_addr)s - "%(request_line)s" %(status_code)s'
+            ),
+        },
+    },
+    "handlers": {
+        "default": {
+            "class": "logging.StreamHandler",
+            "formatter": "default",
+            "stream": "ext://sys.stderr",
+        },
+        "access": {
+            "class": "logging.StreamHandler",
+            "formatter": "access",
+            "stream": "ext://sys.stdout",
+        },
+    },
+    "loggers": {
+        "uvicorn": {
+            "handlers": ["default"],
+            "level": "INFO",
+            "propagate": False,
+        },
+        "uvicorn.error": {
+            "level": "INFO",
+        },
+        "uvicorn.access": {
+            "handlers": ["access"],
+            "level": "INFO",
+            "propagate": False,
+        },
+    },
+}
+
 
 @dataclass(slots=True)
 class RuntimeControlContext:
@@ -83,6 +126,7 @@ async def _start_api_server(ctx: RuntimeControlContext) -> None:
         ctx.app,
         host=ctx.host,
         port=ctx.port,
+        log_config=_UVICORN_LOG_CONFIG,
         log_level="info",
     )
     if not config.loaded:
