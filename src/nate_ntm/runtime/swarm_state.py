@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+import json5
 from nate_oha.config import NateOHAConfig
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -84,10 +85,10 @@ class SwarmState(BaseModel):
 
     @classmethod
     def from_json(cls, data: str) -> "SwarmState":
-        return cls.model_validate_json(data)
+        return cls.model_validate(json5.loads(data))
 
     def to_json(self, *, indent: int = 2) -> str:
-        return self.model_dump_json(indent=indent)
+        return json5.dumps(self.model_dump(mode="json"), indent=indent)
 
     def validate(self, *, expected_swarm_id: str) -> None:
         """Validate store-level identity without re-supplying project context."""
