@@ -7,6 +7,7 @@ from pathlib import Path
 from nate_oha.config import AgentMailFeatureConfig, build_default_config
 
 from nate_ntm.config.runtime_config import load_runtime_config
+from nate_ntm.runtime.acp_client import NateOhaAcpClient
 from nate_ntm.runtime.nate_oha_launch import (
     build_nate_oha_launch_spec,
     materialize_nate_oha_config,
@@ -60,6 +61,24 @@ def test_launch_spec_materializes_complete_persisted_config(tmp_path: Path) -> N
         assert "conversation-1" not in json.dumps(materialized)
     finally:
         shutil.rmtree(spec.base_config.parent)
+
+
+def test_acp_client_uses_canonical_launch_spec(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    config = load_runtime_config(
+        project_path=project,
+        swarm_id="swarm-1",
+        nate_oha_runtime_mode="echo",
+        env={},
+    )
+    client = NateOhaAcpClient(config)
+
+    command = client._build_command("agent-1", _persisted_agent())
+    try:
+        assert command[-2:] == ["--set", "runtime.mode=echo"]
+    finally:
+        client._cleanup_temp_config("agent-1")
 
 
 def test_materialize_nate_oha_config_round_trips_default_config() -> None:
