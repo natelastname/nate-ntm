@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import socket
 from dataclasses import dataclass, field
 
@@ -14,8 +15,9 @@ from ..api.server import RuntimeApiServer
 from ..config.runtime_config import RuntimeConfig
 from .adapters import RuntimeAdapters
 from .daemon import RuntimeDaemon
+from .state import AgentStatus
 from .swarm_acp_tcp import SwarmACPTCPServer
-from .swarm_state import SwarmState
+from .swarm_state import AgentState, SwarmState
 
 __all__ = [
     "RuntimeControlContext",
@@ -24,6 +26,8 @@ __all__ = [
     "run_runtime_with_control_api_async",
     "run_runtime_with_control_api",
 ]
+
+logger = logging.getLogger(__name__)
 
 _LOG_CONFIG = {
     "version": 1,
@@ -160,15 +164,43 @@ async def _stop_api_server(ctx: RuntimeControlContext) -> None:
     ctx.bound_port = 0
 
 
+async def _start_agent(
+    ctx: RuntimeControlContext,
+    agent_id: str,
+    metadata: AgentState,
+) -> None:
+    client = ctx.daemon.acp_client
+    assert client is not None
+    try:
+        await client.start_agent(agent_id, metadata=metadata)
+    except Exception as exc:
+        ctx.daemon.mark_agent_failed(agent_id, str(exc))
+        logger.warning("agent_start_failed agent_id=%s error=%s", agent_id, exc)
+    else:
+        ctx.daemon.state.agents[agent_id].status = AgentStatus.RUNNING
+
+
+async def _start_all_agents(ctx: RuntimeControlContext) -> None:
+    await asyncio.gather(
+        *(
+            _start_agent(ctx, agent_id, metadata)
+            for agent_id, metadata in ctx.daemon.swarm_state.agents.items()
+        )
+    )
+
+
 async def serve_runtime_control_api(
     ctx: RuntimeControlContext,
     *,
     poll_interval: float = 0.1,
+    non_lazy: bool = False,
 ) -> None:
     await _start_api_server(ctx)
     await ctx.acp_server.start()
     try:
         ctx.daemon.start()
+        if non_lazy:
+            await _start_all_agents(ctx)
         while not ctx.daemon.state.shutdown_requested:
             await asyncio.sleep(poll_interval)
     finally:
@@ -191,6 +223,7 @@ async def run_runtime_with_control_api_async(
     acp_port: int = 8766,
     poll_interval: float = 0.1,
     adapters: RuntimeAdapters | None = None,
+    non_lazy: bool = False,
 ) -> None:
     ctx = create_runtime_control_context(
         config,
@@ -201,7 +234,11 @@ async def run_runtime_with_control_api_async(
         acp_port=acp_port,
         adapters=adapters,
     )
-    await serve_runtime_control_api(ctx, poll_interval=poll_interval)
+    await serve_runtime_control_api(
+        ctx,
+        poll_interval=poll_interval,
+        non_lazy=non_lazy,
+    )
 
 
 def run_runtime_with_control_api(
@@ -214,6 +251,7 @@ def run_runtime_with_control_api(
     acp_port: int = 8766,
     poll_interval: float = 0.1,
     adapters: RuntimeAdapters | None = None,
+    non_lazy: bool = False,
 ) -> None:
     asyncio.run(
         run_runtime_with_control_api_async(
@@ -225,5 +263,6 @@ def run_runtime_with_control_api(
             acp_port=acp_port,
             poll_interval=poll_interval,
             adapters=adapters,
+            non_lazy=non_lazy,
         )
     )
