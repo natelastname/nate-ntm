@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
@@ -9,7 +10,7 @@ from enum import Enum
 from ..config.runtime_config import RuntimeConfig
 from .acp_client import BaseAcpClient
 from .adapters import RuntimeAdapters, create_runtime_adapters
-from .agent_mail_client import BaseAgentMailClient
+from .agent_mail_client import AgentMailClientError, BaseAgentMailClient
 from .metadata_store import MetadataStore
 from .state import AgentRuntimeState, AgentStatus, RuntimeState, RuntimeStatus
 from .swarm_state import SwarmState
@@ -20,6 +21,8 @@ __all__ = [
     "MetadataMissingError",
     "RuntimeDaemon",
 ]
+
+logger = logging.getLogger(__name__)
 
 
 class StartupMode(str, Enum):
@@ -144,11 +147,12 @@ class RuntimeDaemon:
 
     def get_swarm_status(self) -> dict[str, object]:
         agent_ids = sorted(set(self.swarm_state.agents) | set(self.state.agents))
-        unread = (
-            self.agent_mail_client.get_unread_mail_flags(agent_ids)
-            if self.agent_mail_client is not None
-            else {}
-        )
+        unread: dict[str, bool] = {}
+        if self.agent_mail_client is not None:
+            try:
+                unread = self.agent_mail_client.get_unread_mail_flags(agent_ids)
+            except AgentMailClientError as exc:
+                logger.warning("agent_mail_status_unavailable", extra={"error": str(exc)})
         return {
             "swarm_id": self.swarm_state.swarm_id,
             "project_path": str(self.swarm_state.project_path),
