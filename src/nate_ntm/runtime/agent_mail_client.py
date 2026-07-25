@@ -196,7 +196,7 @@ class McpAgentMailClient(BaseAgentMailClient):
             raise AgentMailClientError(
                 f"{request_name}: HTTP {exc.code} error from Agent Mail server"
             ) from exc
-        except URLError as exc:
+        except (URLError, TimeoutError) as exc:
             raise AgentMailClientError(
                 f"{request_name}: failed to reach Agent Mail server"
             ) from exc
