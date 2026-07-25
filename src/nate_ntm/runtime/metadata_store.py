@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-import json
 import os
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping
+
+import json5
 
 from .swarm_state import AgentState as PersistedAgentState, SwarmState as PersistedSwarmState
 
@@ -31,7 +32,7 @@ def _atomic_write_json(
     *,
     overwrite: bool,
 ) -> None:
-    """Atomically create or replace one JSON file in its target directory."""
+    """Atomically create or replace one JSON5 file in its target directory."""
 
     path = path.expanduser().resolve()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -41,7 +42,8 @@ def _atomic_write_json(
     tmp_path = Path(tmp_name)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as file:
-            json.dump(data, file, sort_keys=True, indent=2)
+            json5.dump(data, file, sort_keys=True, indent=2)
+            file.write("\n")
             file.flush()
             os.fsync(file.fileno())
         if overwrite:
