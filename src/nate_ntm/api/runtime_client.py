@@ -22,9 +22,7 @@ logger = logging.getLogger(__name__)
 
 
 def _wire_dumps(value: Any) -> str:
-    """Encode strict JSON with json-five for protocol interoperability."""
-
-    return json5.dumps(value, quote_keys=True, trailing_commas=False)
+    return json5.dumps(value)
 
 
 @dataclass(slots=True)
