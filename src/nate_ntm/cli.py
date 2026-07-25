@@ -148,6 +148,11 @@ def runtime_start(
     acp_port: int = typer.Option(8766, "--acp-port", envvar="NATE_NTM_ACP_PORT"),
     control_host: str | None = typer.Option(None, "--control-host"),
     control_port: int | None = typer.Option(None, "--control-port"),
+    non_lazy: bool = typer.Option(
+        False,
+        "--non-lazy",
+        help="Start every agent immediately instead of on first attachment.",
+    ),
 ) -> None:
     """Start an existing materialized swarm by ID."""
 
@@ -184,6 +189,7 @@ def runtime_start(
             port=control_port,
             acp_host=acp_host,
             acp_port=acp_port,
+            non_lazy=non_lazy,
         )
     except MetadataMissingError as exc:
         typer.echo(str(exc), err=True)
