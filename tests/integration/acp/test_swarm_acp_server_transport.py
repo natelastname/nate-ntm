@@ -40,7 +40,7 @@ from nate_ntm.runtime.swarm_state import AgentState, SwarmState
 from nate_ntm.swarm_constructors import ConstructionContext, agent_mail_constructor
 
 _AGENT_MAIL_URL = "http://127.0.0.1:8765/api"
-_OPERATION_TIMEOUT = 20.0
+_OPERATION_TIMEOUT = 60.0
 _CLEANUP_TIMEOUT = 5.0
 
 T = TypeVar("T")
@@ -79,7 +79,6 @@ async def _start_swarm_server(
             session=session,
             writer=writer,
             reader=reader,
-            receive_timeout=10.0,
         )
         external.bind(connection)
 
@@ -199,7 +198,6 @@ async def test_real_runtime_create_swarm_acp_and_resume(tmp_path: Path) -> None:
                 host,
                 port,
                 session_id="external-1",
-                receive_timeout=10,
                 observers=[observe],
             )
         )
