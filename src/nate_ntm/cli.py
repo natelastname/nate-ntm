@@ -34,10 +34,27 @@ app.add_typer(swarm_app, name="swarm")
 app.add_typer(api_app, name="api")
 
 
+def _parse_agent_spec(value: str) -> tuple[str, Path]:
+    agent_id, separator, raw_path = value.partition(":")
+    agent_id = agent_id.strip()
+    raw_path = raw_path.strip()
+    if not separator or not agent_id or not raw_path:
+        raise typer.BadParameter(
+            f"invalid --agent {value!r}; expected AGENT_ID:CONFIG_PATH"
+        )
+    path = Path(raw_path).expanduser().resolve()
+    if not path.is_file():
+        raise typer.BadParameter(f"agent config does not exist or is not a file: {path}")
+    return agent_id, path
+
+
 @swarm_app.command("create")
 def swarm_create(
-    agent: list[Path] = typer.Option(
-        ..., "--agent", exists=True, file_okay=True, dir_okay=False, resolve_path=True
+    agent: list[str] = typer.Option(
+        ...,
+        "--agent",
+        metavar="AGENT_ID:CONFIG_PATH",
+        help="Explicit agent ID and nate-oha JSON5 config path.",
     ),
     project: Path | None = typer.Option(
         None, "--project", "-p", exists=True, file_okay=False, dir_okay=True
@@ -49,7 +66,7 @@ def swarm_create(
     force: bool = typer.Option(False, "--force"),
     dry_run: bool = typer.Option(False, "--dry-run"),
 ) -> None:
-    """Materialize one swarm from complete nate-oha JSON5 configurations."""
+    """Materialize one swarm from explicitly identified nate-oha configurations."""
 
     effective_swarm_id = validate_swarm_id(swarm_id or uuid4().hex)
     effective_project = (project or Path.cwd()).expanduser().resolve()
@@ -67,10 +84,8 @@ def swarm_create(
         raise typer.BadParameter(f"swarm metadata already exists: {store.swarm_path}")
 
     agents: dict[str, AgentState] = {}
-    for path in agent:
-        agent_id = path.stem.strip()
-        if not agent_id:
-            raise typer.BadParameter(f"invalid agent config filename: {path}")
+    for spec in agent:
+        agent_id, path = _parse_agent_spec(spec)
         if agent_id in agents:
             raise typer.BadParameter(f"duplicate agent id {agent_id!r}")
         try:
