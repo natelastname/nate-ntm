@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import AsyncIterator
 from uuid import uuid4
 
+import json5
 from nate_oha.config import build_default_config
 from typer.testing import CliRunner
 
@@ -53,8 +54,11 @@ class StubAcpClient(BaseAcpClient):
 def test_resume_reuses_materialized_project_and_agent_configuration(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()
-    agent_path = tmp_path / "planner.json"
-    agent_path.write_text(build_default_config().model_dump_json(), encoding="utf-8")
+    agent_path = tmp_path / "shared.json"
+    agent_path.write_text(
+        json5.dumps(build_default_config().model_dump(mode="json")),
+        encoding="utf-8",
+    )
     swarm_id = uuid4().hex
     store = MetadataStore(swarm_id)
 
@@ -69,7 +73,7 @@ def test_resume_reuses_materialized_project_and_agent_configuration(tmp_path: Pa
                 "--swarm-id",
                 swarm_id,
                 "--agent",
-                str(agent_path),
+                f"planner:{agent_path}",
                 "--constructor",
                 "agent-mail",
                 "--agent-mail-url",
@@ -90,6 +94,7 @@ def test_resume_reuses_materialized_project_and_agent_configuration(tmp_path: Pa
         )
         daemon = RuntimeDaemon.resume(
             config,
+            persisted,
             adapters=RuntimeAdapters(agent_mail=None, acp=StubAcpClient()),
         )
         daemon.start()
