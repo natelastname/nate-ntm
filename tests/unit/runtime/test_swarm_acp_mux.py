@@ -44,7 +44,11 @@ class _AgentClient:
         self.streams = {
             agent_id: AcpSessionUpdateStream() for agent_id in agent_ids
         }
+        self.started: list[tuple[str, object]] = []
         self.fail_on_subscribe: set[str] = set()
+
+    async def start_agent(self, agent_id: str, *, metadata: object) -> None:
+        self.started.append((agent_id, metadata))
 
     def subscribe_acp_updates(self, agent_id: str):
         if agent_id in self.fail_on_subscribe:
@@ -91,6 +95,20 @@ async def _acknowledge(_: str) -> None:
 
 def _publish(stream: AcpSessionUpdateStream, text: str) -> None:
     stream.publish(_Update(text=text), received_at=datetime.now(timezone.utc))
+
+
+@pytest.mark.asyncio
+async def test_attach_starts_agent_before_subscribing() -> None:
+    client = _AgentClient("agent-a")
+    mux = _mux(client, _External())
+
+    await mux.attach("agent-a", acknowledge=_acknowledge)
+
+    assert client.started == [
+        ("agent-a", mux.daemon.swarm_state.agents["agent-a"])
+    ]
+    assert mux.attached_agent_id == "agent-a"
+    await mux.close()
 
 
 @pytest.mark.asyncio
