@@ -12,9 +12,12 @@ from .acp_update_stream import ReceivedSessionUpdate
 
 if TYPE_CHECKING:
     from .daemon import RuntimeDaemon
+    from .swarm_state import AgentState
 
 
 class SwarmAgentClient(Protocol):
+    async def start_agent(self, agent_id: str, *, metadata: AgentState) -> None: ...
+
     def subscribe_acp_updates(
         self, agent_id: str
     ) -> AbstractAsyncContextManager[AsyncIterator[ReceivedSessionUpdate]]: ...
@@ -94,7 +97,8 @@ class SwarmACPMux:
 
     async def prepare_attach(self, agent_id: str) -> PreparedAttachment:
         self._ensure_open()
-        if agent_id not in self.daemon.swarm_state.agents:
+        metadata = self.daemon.swarm_state.agents.get(agent_id)
+        if metadata is None:
             raise UnknownAgentError(f"Unknown agent_id: {agent_id!r}")
 
         async with self._lock:
@@ -113,6 +117,7 @@ class SwarmACPMux:
         if current is not None:
             await self._cleanup(current)
 
+        await self.agent_client.start_agent(agent_id, metadata=metadata)
         subscription = self.agent_client.subscribe_acp_updates(agent_id)
         updates = await subscription.__aenter__()
         attachment = _Attachment(agent_id, subscription, updates)
