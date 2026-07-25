@@ -100,7 +100,7 @@ class RuntimeClient:
     def _events_ws_uri(self) -> str:
         return f"ws://{self.host}:{self.port}/events"
 
-    def iter_events(
+    async def iter_events(
         self,
         *,
         subscription_id: Optional[str] = None,
@@ -113,67 +113,64 @@ class RuntimeClient:
         if subscription_id is not None and agent_ids is not None:
             raise ValueError("Provide either subscription_id or agent_ids, not both")
 
-        async def iterate() -> AsyncIterator[EventsNotify]:
-            auto_unsubscribe = subscription_id is None
-            sub_id = subscription_id or await self.subscribe_events(
-                agent_ids=agent_ids,
-                include_runtime=include_runtime,
-            )
-            backoff = float(reconnect_initial_backoff)
-            try:
-                while True:
-                    try:
-                        async with websockets.connect(self._events_ws_uri()) as websocket:
-                            await websocket.send(_wire_dumps({"subscription_id": sub_id}))
-                            backoff = float(reconnect_initial_backoff)
-                            while True:
-                                raw = await websocket.recv()
-                                text = raw.decode("utf-8", errors="ignore") if isinstance(raw, bytes) else raw
-                                try:
-                                    message = json5.loads(text)
-                                except ValueError:
-                                    logger.debug("runtime_client_ignored_non_json_frame")
-                                    continue
-                                if not isinstance(message, Mapping):
-                                    continue
-                                if message.get("jsonrpc") != JSONRPC_VERSION:
-                                    continue
-                                if message.get("method") != "events.notify":
-                                    continue
-                                params = message.get("params") or {}
-                                if not isinstance(params, Mapping):
-                                    continue
-                                if str(params.get("subscription_id")) != str(sub_id):
-                                    continue
-                                payload = params.get("event")
-                                if not isinstance(payload, Mapping):
-                                    continue
-                                try:
-                                    event = AgentDetailEvent.model_validate(payload)
-                                except ValidationError:
-                                    logger.debug(
-                                        "runtime_client_ignored_malformed_event",
-                                        extra={"payload": payload},
-                                    )
-                                    continue
-                                yield EventsNotify(subscription_id=str(sub_id), event=event)
-                    except (WebSocketException, OSError) as exc:
-                        logger.warning(
-                            "runtime_client_events_ws_disconnected",
-                            extra={"error": str(exc)},
-                        )
-                        if not reconnect:
-                            raise
-                        await asyncio.sleep(backoff)
-                        backoff = min(backoff * 2.0, reconnect_max_backoff)
-            finally:
-                if auto_unsubscribe:
-                    try:
-                        await self.unsubscribe_events(sub_id)
-                    except (JsonRpcClientError, OSError):
-                        logger.warning(
-                            "runtime_client_unsubscribe_failed",
-                            extra={"subscription_id": sub_id},
-                        )
-
-        return iterate()
+        auto_unsubscribe = subscription_id is None
+        sub_id = subscription_id or await self.subscribe_events(
+            agent_ids=agent_ids,
+            include_runtime=include_runtime,
+        )
+        backoff = float(reconnect_initial_backoff)
+        try:
+            while True:
+                try:
+                    async with websockets.connect(self._events_ws_uri()) as websocket:
+                        await websocket.send(_wire_dumps({"subscription_id": sub_id}))
+                        backoff = float(reconnect_initial_backoff)
+                        while True:
+                            raw = await websocket.recv()
+                            text = raw.decode("utf-8", errors="ignore") if isinstance(raw, bytes) else raw
+                            try:
+                                message = json5.loads(text)
+                            except ValueError:
+                                logger.debug("runtime_client_ignored_non_json_frame")
+                                continue
+                            if not isinstance(message, Mapping):
+                                continue
+                            if message.get("jsonrpc") != JSONRPC_VERSION:
+                                continue
+                            if message.get("method") != "events.notify":
+                                continue
+                            params = message.get("params") or {}
+                            if not isinstance(params, Mapping):
+                                continue
+                            if str(params.get("subscription_id")) != str(sub_id):
+                                continue
+                            payload = params.get("event")
+                            if not isinstance(payload, Mapping):
+                                continue
+                            try:
+                                event = AgentDetailEvent.model_validate(payload)
+                            except ValidationError:
+                                logger.debug(
+                                    "runtime_client_ignored_malformed_event",
+                                    extra={"payload": payload},
+                                )
+                                continue
+                            yield EventsNotify(subscription_id=str(sub_id), event=event)
+                except (WebSocketException, OSError) as exc:
+                    logger.warning(
+                        "runtime_client_events_ws_disconnected",
+                        extra={"error": str(exc)},
+                    )
+                    if not reconnect:
+                        raise
+                    await asyncio.sleep(backoff)
+                    backoff = min(backoff * 2.0, reconnect_max_backoff)
+        finally:
+            if auto_unsubscribe:
+                try:
+                    await self.unsubscribe_events(sub_id)
+                except (JsonRpcClientError, OSError):
+                    logger.warning(
+                        "runtime_client_unsubscribe_failed",
+                        extra={"subscription_id": sub_id},
+                    )
