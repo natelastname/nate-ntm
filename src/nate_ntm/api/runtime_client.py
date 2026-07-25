@@ -3,11 +3,11 @@ from __future__ import annotations
 """High-level async client for the runtime control API and event stream."""
 
 import asyncio
+import json
 import logging
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Dict, Iterable, Mapping, Optional
 
-import json5
 import websockets
 from pydantic import ValidationError
 from websockets.exceptions import WebSocketException
@@ -19,10 +19,6 @@ from .models import AgentDetailEvent, AgentDetailResult, RuntimeStatusResult, Sw
 __all__ = ["EventsNotify", "RuntimeClient"]
 
 logger = logging.getLogger(__name__)
-
-
-def _wire_dumps(value: Any) -> str:
-    return json5.dumps(value)
 
 
 @dataclass(slots=True)
@@ -121,14 +117,14 @@ class RuntimeClient:
             while True:
                 try:
                     async with websockets.connect(self._events_ws_uri()) as websocket:
-                        await websocket.send(_wire_dumps({"subscription_id": sub_id}))
+                        await websocket.send(json.dumps({"subscription_id": sub_id}))
                         backoff = float(reconnect_initial_backoff)
                         while True:
                             raw = await websocket.recv()
                             text = raw.decode("utf-8", errors="ignore") if isinstance(raw, bytes) else raw
                             try:
-                                message = json5.loads(text)
-                            except ValueError:
+                                message = json.loads(text)
+                            except json.JSONDecodeError:
                                 logger.debug("runtime_client_ignored_non_json_frame")
                                 continue
                             if not isinstance(message, Mapping):
