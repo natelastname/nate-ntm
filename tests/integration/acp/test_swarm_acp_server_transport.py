@@ -13,7 +13,7 @@ import socket
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, TypeVar
 from urllib.parse import urlparse
 from uuid import uuid4
 
@@ -40,6 +40,14 @@ from nate_ntm.runtime.swarm_state import AgentState, SwarmState
 from nate_ntm.swarm_constructors import ConstructionContext, agent_mail_constructor
 
 _AGENT_MAIL_URL = "http://127.0.0.1:8765/api"
+_OPERATION_TIMEOUT = 20.0
+_CLEANUP_TIMEOUT = 5.0
+
+T = TypeVar("T")
+
+
+async def _bounded(awaitable: Awaitable[T], *, timeout: float = _OPERATION_TIMEOUT) -> T:
+    return await asyncio.wait_for(awaitable, timeout=timeout)
 
 
 @dataclass
@@ -146,7 +154,7 @@ def _notification_texts(callbacks: _Callbacks, start: int) -> list[str]:
 
 
 async def _wait_for_text(callbacks: _Callbacks, expected: str, start: int) -> None:
-    async with asyncio.timeout(20):
+    async with asyncio.timeout(_OPERATION_TIMEOUT):
         while not any(expected in text for text in _notification_texts(callbacks, start)):
             await asyncio.sleep(0.05)
 
@@ -156,6 +164,11 @@ async def test_real_runtime_create_swarm_acp_and_resume(tmp_path: Path) -> None:
     config, swarm, store = _materialize_swarm(tmp_path)
     _require_external_services(config)
 
+    internal: NateOhaAcpClient | None = None
+    external: SwarmACPClient | None = None
+    server: asyncio.AbstractServer | None = None
+    daemon: RuntimeDaemon | None = None
+
     try:
         adapters = create_runtime_adapters(config, swarm)
         daemon = RuntimeDaemon.resume(config, swarm, adapters=adapters)
@@ -163,10 +176,10 @@ async def test_real_runtime_create_swarm_acp_and_resume(tmp_path: Path) -> None:
         assert isinstance(internal, NateOhaAcpClient)
 
         for agent_id, metadata in daemon.swarm_state.agents.items():
-            await internal.start_agent(agent_id, metadata=metadata)
+            await _bounded(internal.start_agent(agent_id, metadata=metadata))
         daemon.start()
 
-        server, mux_future = await _start_swarm_server(daemon, internal)
+        server, mux_future = await _bounded(_start_swarm_server(daemon, internal))
         host, port = server.sockets[0].getsockname()[:2]
         callbacks = _Callbacks()
         wire: list[tuple[str, Any]] = []
@@ -180,57 +193,50 @@ async def test_real_runtime_create_swarm_acp_and_resume(tmp_path: Path) -> None:
             elif "method" in message and "id" not in message:
                 wire.append(("notification", message["method"]))
 
-        external = await SwarmACPClient.connect(
-            callbacks,
-            host,
-            port,
-            session_id="external-1",
-            receive_timeout=10,
-            observers=[observe],
+        external = await _bounded(
+            SwarmACPClient.connect(
+                callbacks,
+                host,
+                port,
+                session_id="external-1",
+                receive_timeout=10,
+                observers=[observe],
+            )
         )
-        mux = await asyncio.wait_for(mux_future, timeout=5)
+        mux = await _bounded(mux_future, timeout=5)
 
-        try:
-            assert len((await external.swarm_status()).swarm["agents"]) == 2
-            detail = await external.agent_detail("agent-1")
-            assert detail.agent["agent_mail_identity"]
+        assert len((await _bounded(external.swarm_status())).swarm["agents"]) == 2
+        detail = await _bounded(external.agent_detail("agent-1"))
+        assert detail.agent["agent_mail_identity"]
 
-            await external.attach("agent-1")
-            first = "end-to-end prompt for agent one"
-            start = len(callbacks.notifications)
-            assert (await external.prompt_text(first)).stop_reason == "end_turn"
-            await _wait_for_text(callbacks, first, start)
+        await _bounded(external.attach("agent-1"))
+        first = "end-to-end prompt for agent one"
+        start = len(callbacks.notifications)
+        assert (await _bounded(external.prompt_text(first))).stop_reason == "end_turn"
+        await _wait_for_text(callbacks, first, start)
 
-            attach_response = next(
-                i
-                for i, item in enumerate(wire)
-                if item[0] == "response"
-                and isinstance(item[1], dict)
-                and item[1].get("attached_agent_id") == "agent-1"
-            )
-            first_update = next(
-                i
-                for i, item in enumerate(wire)
-                if item == ("notification", acp.CLIENT_METHODS["session_update"])
-            )
-            assert first_update > attach_response
+        attach_response = next(
+            i
+            for i, item in enumerate(wire)
+            if item[0] == "response"
+            and isinstance(item[1], dict)
+            and item[1].get("attached_agent_id") == "agent-1"
+        )
+        first_update = next(
+            i
+            for i, item in enumerate(wire)
+            if item == ("notification", acp.CLIENT_METHODS["session_update"])
+        )
+        assert first_update > attach_response
 
-            await external.interrupt()
-            await external.attach("agent-2")
-            second = "end-to-end prompt for agent two"
-            start = len(callbacks.notifications)
-            await external.prompt_text(second)
-            await _wait_for_text(callbacks, second, start)
-            assert mux.attached_agent_id == "agent-2"
-            assert (await external.detach()).detached is True
-        finally:
-            await external.close()
-            server.close()
-            await server.wait_closed()
-            for agent_id in daemon.swarm_state.agents:
-                await internal.stop_agent(agent_id)
-            daemon.request_shutdown()
-            daemon.mark_stopped()
+        await _bounded(external.interrupt())
+        await _bounded(external.attach("agent-2"))
+        second = "end-to-end prompt for agent two"
+        start = len(callbacks.notifications)
+        await _bounded(external.prompt_text(second))
+        await _wait_for_text(callbacks, second, start)
+        assert mux.attached_agent_id == "agent-2"
+        assert (await _bounded(external.detach())).detached is True
 
         persisted = {
             agent_id: store.load_agent_state(agent_id).conversation_id
@@ -248,4 +254,24 @@ async def test_real_runtime_create_swarm_acp_and_resume(tmp_path: Path) -> None:
         for agent_id, conversation_id in persisted.items():
             assert resumed.get_agent_detail(agent_id)["conversation_id"] == conversation_id
     finally:
+        if external is not None:
+            try:
+                await _bounded(external.close(), timeout=_CLEANUP_TIMEOUT)
+            except Exception:
+                pass
+        if server is not None:
+            server.close()
+            try:
+                await _bounded(server.wait_closed(), timeout=_CLEANUP_TIMEOUT)
+            except Exception:
+                pass
+        if internal is not None and daemon is not None:
+            for agent_id in daemon.swarm_state.agents:
+                try:
+                    await _bounded(internal.stop_agent(agent_id), timeout=_CLEANUP_TIMEOUT)
+                except Exception:
+                    pass
+        if daemon is not None:
+            daemon.request_shutdown()
+            daemon.mark_stopped()
         shutil.rmtree(store.metadata_dir, ignore_errors=True)
