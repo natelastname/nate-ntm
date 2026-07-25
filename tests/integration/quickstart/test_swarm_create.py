@@ -5,6 +5,7 @@ import shutil
 from pathlib import Path
 from uuid import uuid4
 
+import json5
 import pytest
 from nate_oha.config import build_default_config
 from typer.testing import CliRunner
@@ -16,7 +17,10 @@ runner = CliRunner()
 
 
 def _write_config(path: Path) -> None:
-    path.write_text(build_default_config().model_dump_json(), encoding="utf-8")
+    path.write_text(
+        json5.dumps(build_default_config().model_dump(mode="json"), indent=2),
+        encoding="utf-8",
+    )
 
 
 def _created_id(output: str) -> str:
@@ -44,6 +48,39 @@ def test_create_defaults_to_working_directory_and_generated_id(
         assert state.project_path == project.resolve()
         assert set(state.agents) == {"navigator"}
         assert not (project / ".nate_ntm").exists()
+    finally:
+        shutil.rmtree(store.metadata_dir, ignore_errors=True)
+
+
+def test_create_accepts_commented_json5_agent_config(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    agent = tmp_path / "commented.json"
+    config = json5.dumps(
+        build_default_config().model_dump(mode="json"),
+        indent=2,
+        trailing_commas=True,
+    )
+    agent.write_text("// human-maintained nate-oha config\n" + config, encoding="utf-8")
+    swarm_id = uuid4().hex
+    store = MetadataStore(swarm_id)
+
+    try:
+        result = runner.invoke(
+            app,
+            [
+                "swarm",
+                "create",
+                "--project",
+                str(project),
+                "--swarm-id",
+                swarm_id,
+                "--agent",
+                str(agent),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert set(store.load_swarm_state().agents) == {"commented"}
     finally:
         shutil.rmtree(store.metadata_dir, ignore_errors=True)
 
