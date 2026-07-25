@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import json
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping, Sequence
 
+import json5
 from nate_oha.config import NateOHAConfig
 
 from ..config.runtime_config import RuntimeConfig
@@ -84,11 +84,11 @@ def materialize_nate_oha_config(
     config: NateOHAConfig,
     prefix: str = "nate-ntm-nate-oha-config-",
 ) -> Path:
-    """Write one complete nate-oha configuration to a temporary JSON file."""
+    """Write one complete nate-oha configuration to a temporary JSON5 file."""
 
     path = Path(tempfile.mkdtemp(prefix=prefix)) / "nate-oha-config.json"
     path.write_text(
-        json.dumps(config.model_dump(mode="json"), indent=2, sort_keys=True),
+        json5.dumps(config.model_dump(mode="json"), indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
     return path
