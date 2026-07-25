@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from dataclasses import dataclass
 from typing import Any, Mapping
+
+import json5
 
 from .models import AgentDetailResult, RuntimeStatusResult, SwarmOverviewResult
 
@@ -50,13 +51,15 @@ class JsonRpcHttpClient:
                 timeout=self.timeout,
             )
             try:
-                body = json.dumps(
+                body = json5.dumps(
                     {
                         "jsonrpc": JSONRPC_VERSION,
                         "method": method,
                         "params": params or {},
                         "id": request_id,
-                    }
+                    },
+                    quote_keys=True,
+                    trailing_commas=False,
                 ).encode()
                 connection.request(
                     "POST",
@@ -70,7 +73,10 @@ class JsonRpcHttpClient:
                 connection.close()
             if response.status != 200:
                 raise RuntimeError(f"HTTP {response.status} {response.reason}: {raw}")
-            return json.loads(raw)
+            result = json5.loads(raw)
+            if not isinstance(result, Mapping):
+                raise ValueError("JSON-RPC response must be an object")
+            return result
 
         return await asyncio.to_thread(request)
 
