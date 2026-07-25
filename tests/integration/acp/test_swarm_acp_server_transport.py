@@ -18,6 +18,7 @@ from urllib.parse import urlparse
 from uuid import uuid4
 
 import acp
+import json5
 import pytest
 from acp.connection import StreamDirection, StreamEvent
 from nate_oha.config import NateOHAConfig
@@ -91,7 +92,7 @@ def _materialize_swarm(tmp_path: Path) -> tuple[RuntimeConfig, SwarmState, Metad
     project = tmp_path / "project"
     project.mkdir()
     profile = Path(__file__).resolve().parents[3] / "nate-oha-profiles" / "profile1.json"
-    base = NateOHAConfig.model_validate_json(profile.read_text(encoding="utf-8"))
+    base = NateOHAConfig.model_validate(json5.loads(profile.read_text(encoding="utf-8")))
     swarm_id = uuid4().hex
     now = datetime.now(timezone.utc)
     swarm = SwarmState(
