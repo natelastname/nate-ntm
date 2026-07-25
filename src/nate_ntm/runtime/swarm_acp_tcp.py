@@ -81,7 +81,7 @@ class SwarmACPTCPServer:
         bridge.bind(connection)
 
         async def serve_inbound(_: SwarmACPServerSession) -> None:
-            await connection.run()
+            await connection.main_loop()
 
         async def close_transport() -> None:
             try:
