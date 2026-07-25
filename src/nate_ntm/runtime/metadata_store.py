@@ -42,7 +42,7 @@ def _atomic_write_json(
     tmp_path = Path(tmp_name)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as file:
-            json5.dump(data, file, sort_keys=True, indent=2)
+            json5.dump(data, file, indent=2)
             file.write("\n")
             file.flush()
             os.fsync(file.fileno())
