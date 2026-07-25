@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
-
-import json5
 
 __all__ = ["AgentMailClientError", "BaseAgentMailClient", "McpAgentMailClient"]
 
@@ -186,7 +185,7 @@ class McpAgentMailClient(BaseAgentMailClient):
             headers["Authorization"] = f"Bearer {self.bearer_token}"
         request = Request(
             self.base_url,
-            data=json5.dumps(payload).encode("utf-8"),
+            data=json.dumps(payload).encode("utf-8"),
             headers=headers,
             method="POST",
         )
@@ -202,8 +201,8 @@ class McpAgentMailClient(BaseAgentMailClient):
                 f"{request_name}: failed to reach Agent Mail server"
             ) from exc
         try:
-            decoded = json5.loads(body.decode("utf-8")) if body else {}
-        except ValueError as exc:
+            decoded = json.loads(body.decode("utf-8")) if body else {}
+        except json.JSONDecodeError as exc:
             raise AgentMailClientError(
                 f"{request_name}: invalid JSON response from Agent Mail server"
             ) from exc
