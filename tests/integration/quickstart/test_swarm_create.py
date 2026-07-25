@@ -70,11 +70,10 @@ def test_create_accepts_commented_json5_agent_config(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()
     config_path = tmp_path / "shared.json"
-    config = json5.dumps(
-        build_default_config().model_dump(mode="json"),
-        indent=2,
-        trailing_commas=True,
-    )
+    config = json5.dumps(build_default_config().model_dump(mode="json"), indent=2)
+    config = config.rstrip()
+    assert config.endswith("}")
+    config = config[:-1].rstrip() + ",\n}\n"
     config_path.write_text("// human-maintained nate-oha config\n" + config, encoding="utf-8")
     swarm_id = uuid4().hex
     store = MetadataStore(swarm_id)
