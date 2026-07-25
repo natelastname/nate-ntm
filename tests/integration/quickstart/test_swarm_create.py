@@ -23,6 +23,10 @@ def _write_config(path: Path) -> None:
     )
 
 
+def _agent(agent_id: str, path: Path) -> str:
+    return f"{agent_id}:{path}"
+
+
 def _created_id(output: str) -> str:
     match = re.search(r"Swarm ID: ([0-9a-f]{32})", output)
     assert match is not None, output
@@ -34,11 +38,21 @@ def test_create_defaults_to_working_directory_and_generated_id(
 ) -> None:
     project = tmp_path / "project"
     project.mkdir()
-    agent = tmp_path / "navigator.json"
-    _write_config(agent)
+    config = tmp_path / "shared.json"
+    _write_config(config)
     monkeypatch.chdir(project)
 
-    result = runner.invoke(app, ["swarm", "create", "--agent", str(agent)])
+    result = runner.invoke(
+        app,
+        [
+            "swarm",
+            "create",
+            "--agent",
+            _agent("planner", config),
+            "--agent",
+            _agent("implementer", config),
+        ],
+    )
     assert result.exit_code == 0, result.output
     swarm_id = _created_id(result.output)
     store = MetadataStore(swarm_id)
@@ -46,7 +60,7 @@ def test_create_defaults_to_working_directory_and_generated_id(
         state = store.load_swarm_state()
         assert state.swarm_id == swarm_id
         assert state.project_path == project.resolve()
-        assert set(state.agents) == {"navigator"}
+        assert set(state.agents) == {"planner", "implementer"}
         assert not (project / ".nate_ntm").exists()
     finally:
         shutil.rmtree(store.metadata_dir, ignore_errors=True)
@@ -55,13 +69,13 @@ def test_create_defaults_to_working_directory_and_generated_id(
 def test_create_accepts_commented_json5_agent_config(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()
-    agent = tmp_path / "commented.json"
+    config_path = tmp_path / "shared.json"
     config = json5.dumps(
         build_default_config().model_dump(mode="json"),
         indent=2,
         trailing_commas=True,
     )
-    agent.write_text("// human-maintained nate-oha config\n" + config, encoding="utf-8")
+    config_path.write_text("// human-maintained nate-oha config\n" + config, encoding="utf-8")
     swarm_id = uuid4().hex
     store = MetadataStore(swarm_id)
 
@@ -76,7 +90,7 @@ def test_create_accepts_commented_json5_agent_config(tmp_path: Path) -> None:
                 "--swarm-id",
                 swarm_id,
                 "--agent",
-                str(agent),
+                _agent("commented", config_path),
             ],
         )
         assert result.exit_code == 0, result.output
@@ -88,8 +102,8 @@ def test_create_accepts_commented_json5_agent_config(tmp_path: Path) -> None:
 def test_two_swarms_for_one_project_are_independent(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()
-    agent = tmp_path / "agent.json"
-    _write_config(agent)
+    config = tmp_path / "agent.json"
+    _write_config(config)
     stores: list[MetadataStore] = []
     try:
         for _ in range(2):
@@ -101,7 +115,7 @@ def test_two_swarms_for_one_project_are_independent(tmp_path: Path) -> None:
                     "--project",
                     str(project),
                     "--agent",
-                    str(agent),
+                    _agent("agent", config),
                 ],
             )
             assert result.exit_code == 0, result.output
@@ -119,11 +133,8 @@ def test_create_rejects_invalid_inputs_without_writing_state(tmp_path: Path) -> 
     project = tmp_path / "project"
     project.mkdir()
     valid = tmp_path / "agent.json"
-    duplicate = tmp_path / "other" / "agent.json"
-    duplicate.parent.mkdir()
     invalid = tmp_path / "invalid.json"
     _write_config(valid)
-    _write_config(duplicate)
     invalid.write_text("not json", encoding="utf-8")
 
     duplicate_result = runner.invoke(
@@ -134,17 +145,36 @@ def test_create_rejects_invalid_inputs_without_writing_state(tmp_path: Path) -> 
             "--project",
             str(project),
             "--agent",
-            str(valid),
+            _agent("agent", valid),
             "--agent",
-            str(duplicate),
+            _agent("agent", valid),
         ],
     )
     assert duplicate_result.exit_code != 0
     assert "duplicate agent id" in duplicate_result.output
 
+    for invalid_spec in (
+        str(valid),
+        f":{valid}",
+        "agent:",
+        f"agent:{tmp_path / 'missing.json'}",
+    ):
+        result = runner.invoke(
+            app,
+            ["swarm", "create", "--project", str(project), "--agent", invalid_spec],
+        )
+        assert result.exit_code != 0
+
     invalid_result = runner.invoke(
         app,
-        ["swarm", "create", "--project", str(project), "--agent", str(invalid)],
+        [
+            "swarm",
+            "create",
+            "--project",
+            str(project),
+            "--agent",
+            _agent("agent", invalid),
+        ],
     )
     assert invalid_result.exit_code != 0
     assert "invalid agent config" in invalid_result.output
@@ -164,7 +194,7 @@ def test_create_rejects_invalid_inputs_without_writing_state(tmp_path: Path) -> 
                 "--swarm-id",
                 swarm_id,
                 "--agent",
-                str(valid),
+                _agent("agent", valid),
                 option,
                 value,
             ],
