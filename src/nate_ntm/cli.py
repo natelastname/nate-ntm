@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+import json5
 import typer
 from dotenv import load_dotenv
 from nate_oha.config import NateOHAConfig
@@ -49,7 +49,7 @@ def swarm_create(
     force: bool = typer.Option(False, "--force"),
     dry_run: bool = typer.Option(False, "--dry-run"),
 ) -> None:
-    """Materialize one swarm from complete nate-oha JSON configurations."""
+    """Materialize one swarm from complete nate-oha JSON5 configurations."""
 
     effective_swarm_id = validate_swarm_id(swarm_id or uuid4().hex)
     effective_project = (project or Path.cwd()).expanduser().resolve()
@@ -74,8 +74,8 @@ def swarm_create(
         if agent_id in agents:
             raise typer.BadParameter(f"duplicate agent id {agent_id!r}")
         try:
-            nate_oha_config = NateOHAConfig.model_validate_json(
-                path.read_text(encoding="utf-8")
+            nate_oha_config = NateOHAConfig.model_validate(
+                json5.loads(path.read_text(encoding="utf-8"))
             )
         except (OSError, ValidationError, ValueError) as exc:
             raise typer.BadParameter(f"invalid agent config {path}: {exc}") from exc
@@ -105,7 +105,7 @@ def swarm_create(
     )
 
     if dry_run:
-        typer.echo(swarm.model_dump_json(indent=2))
+        typer.echo(json5.dumps(swarm.model_dump(mode="json"), indent=2))
         return
 
     try:
@@ -188,8 +188,8 @@ def _parse_params(pairs: list[str]) -> dict[str, Any]:
         if not key:
             raise typer.BadParameter("Parameter key must not be empty")
         try:
-            params[key] = json.loads(raw)
-        except json.JSONDecodeError:
+            params[key] = json5.loads(raw)
+        except ValueError:
             params[key] = raw
     return params
 
@@ -210,7 +210,7 @@ def api_call(
         payload: dict[str, Any] = {"code": exc.code, "message": exc.message}
         if exc.data is not None:
             payload["data"] = exc.data
-        typer.echo(json.dumps(payload, indent=2, sort_keys=True), err=True)
+        typer.echo(json5.dumps(payload, indent=2, sort_keys=True), err=True)
         raise typer.Exit(code=1) from exc
     except Exception as exc:
         typer.echo(f"Error calling runtime API: {exc}", err=True)
@@ -222,7 +222,7 @@ def api_call(
         "agent.get_detail": AgentDetailResult,
     }.get(method)
     payload = model.model_validate(result).model_dump() if model else result
-    typer.echo(json.dumps(payload, indent=2, sort_keys=True))
+    typer.echo(json5.dumps(payload, indent=2, sort_keys=True))
 
 
 @app.command("console")
