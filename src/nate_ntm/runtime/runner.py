@@ -25,7 +25,7 @@ __all__ = [
     "run_runtime_with_control_api",
 ]
 
-_UVICORN_LOG_CONFIG = {
+_LOG_CONFIG = {
     "version": 1,
     "disable_existing_loggers": False,
     "formatters": {
@@ -65,6 +65,10 @@ _UVICORN_LOG_CONFIG = {
             "level": "INFO",
             "propagate": False,
         },
+    },
+    "root": {
+        "handlers": ["default"],
+        "level": "INFO",
     },
 }
 
@@ -126,7 +130,7 @@ async def _start_api_server(ctx: RuntimeControlContext) -> None:
         ctx.app,
         host=ctx.host,
         port=ctx.port,
-        log_config=_UVICORN_LOG_CONFIG,
+        log_config=_LOG_CONFIG,
         log_level="info",
     )
     if not config.loaded:
