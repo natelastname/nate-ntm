@@ -33,10 +33,12 @@ _LOG_CONFIG = {
             "format": "%(levelname)-8s %(name)s: %(message)s",
         },
         "access": {
+            "()": "uvicorn.logging.AccessFormatter",
             "format": (
                 "%(levelname)-8s %(name)s: "
                 '%(client_addr)s - "%(request_line)s" %(status_code)s'
             ),
+            "use_colors": False,
         },
     },
     "handlers": {
