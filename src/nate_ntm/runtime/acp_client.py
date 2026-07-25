@@ -26,7 +26,7 @@ from .acp_update_stream import (
     StreamClosedError,
 )
 from .metadata_store import MetadataStore
-from .nate_oha_launch import materialize_nate_oha_config
+from .nate_oha_launch import build_nate_oha_launch_spec
 from .swarm_state import AgentState
 
 __all__ = [
@@ -281,12 +281,9 @@ class NateOhaAcpClient(BaseAcpClient):
         return session
 
     def _build_command(self, agent_id: str, metadata: AgentState) -> list[str]:
-        config_path = materialize_nate_oha_config(config=metadata.nate_oha_config)
-        self._temp_config_dirs[agent_id] = str(config_path.parent)
-        command = [self.executable, "acp", "--config", str(config_path)]
-        if metadata.conversation_id:
-            command.extend(["--resume", metadata.conversation_id])
-        return command
+        spec = build_nate_oha_launch_spec(config=self.config, metadata=metadata)
+        self._temp_config_dirs[agent_id] = str(spec.base_config.parent)
+        return list(spec.to_argv())
 
     def _build_env(self, agent_id: str, metadata: AgentState) -> dict[str, str]:
         env = dict(os.environ)
