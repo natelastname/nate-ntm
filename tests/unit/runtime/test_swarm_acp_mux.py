@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -108,6 +109,28 @@ async def test_attach_starts_agent_before_subscribing() -> None:
         ("agent-a", mux.daemon.swarm_state.agents["agent-a"])
     ]
     assert mux.attached_agent_id == "agent-a"
+    await mux.close()
+
+
+@pytest.mark.asyncio
+async def test_attach_logs_complete_after_acknowledgment(caplog) -> None:
+    client = _AgentClient("agent-a")
+    mux = _mux(client, _External())
+    acknowledged = False
+
+    async def acknowledge(_: str) -> None:
+        nonlocal acknowledged
+        acknowledged = True
+        assert "session_attach_complete" not in caplog.text
+
+    with caplog.at_level(logging.INFO, logger="nate_ntm.runtime.swarm_acp_mux"):
+        await mux.attach("agent-a", acknowledge=acknowledge)
+
+    assert acknowledged
+    assert (
+        "session_attach_complete external_session_id=external agent_id=agent-a"
+        in caplog.text
+    )
     await mux.close()
 
 
