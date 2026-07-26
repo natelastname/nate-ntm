@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import AsyncIterator
 
+from acp import RequestError
 from acp.client.connection import ClientSideConnection
 from acp.meta import PROTOCOL_VERSION
 from acp.schema import TextContentBlock
@@ -250,10 +251,26 @@ class NateOhaAcpClient(BaseAcpClient):
 
     async def prompt(self, agent_id: str, prompt: str | None = None) -> str | None:
         session = self._require_active_session(agent_id)
-        await session.connection.prompt(
-            session.conversation_id,
-            [TextContentBlock(type="text", text=prompt or "")],
-        )
+        try:
+            await session.connection.prompt(
+                session.conversation_id,
+                [TextContentBlock(type="text", text=prompt or "")],
+            )
+        except RequestError as exc:
+            data = {
+                "agent_id": agent_id,
+                "conversation_id": session.conversation_id,
+                "downstream_code": exc.code,
+                "downstream_data": exc.data,
+            }
+            logger.error(
+                "Prompt failed for agent %r: %s (code=%s, data=%r)",
+                agent_id,
+                exc,
+                exc.code,
+                exc.data,
+            )
+            raise RequestError(exc.code, str(exc), data) from None
         return None
 
     async def interrupt(self, agent_id: str) -> None:
