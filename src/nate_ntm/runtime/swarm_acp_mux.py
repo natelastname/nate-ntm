@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, AsyncIterator, Awaitable, Callable, Protocol
@@ -13,6 +14,8 @@ from .acp_update_stream import ReceivedSessionUpdate
 if TYPE_CHECKING:
     from .daemon import RuntimeDaemon
     from .swarm_state import AgentState
+
+logger = logging.getLogger(__name__)
 
 
 class SwarmAgentClient(Protocol):
@@ -166,6 +169,11 @@ class SwarmACPMux:
             await self.abort_attachment(prepared)
             raise
         await self.activate_attachment(prepared)
+        logger.info(
+            "session_attach_complete external_session_id=%s agent_id=%s",
+            self.external_session_id,
+            agent_id,
+        )
 
     async def detach(self) -> None:
         self._ensure_open()
