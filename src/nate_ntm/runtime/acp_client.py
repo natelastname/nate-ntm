@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import shutil
@@ -9,7 +10,7 @@ from asyncio.subprocess import Process
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import AsyncIterator
+from typing import AsyncIterator, Awaitable, TypeVar
 
 from acp import RequestError
 from acp.client.connection import ClientSideConnection
@@ -39,6 +40,8 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
+
+_T = TypeVar("_T")
 
 
 class AcpClientError(RuntimeError):
@@ -98,6 +101,7 @@ class NateOhaAcpClient(BaseAcpClient):
 
     config: RuntimeConfig
     executable: str = "nate-oha"
+    startup_timeout_seconds: float = 30.0
 
     _sessions: dict[str, AcpAgentSession] = field(default_factory=dict, init=False)
     _session_contexts: dict[
@@ -108,6 +112,36 @@ class NateOhaAcpClient(BaseAcpClient):
 
     def __post_init__(self) -> None:
         self.executable = self.config.nate_oha_executable
+
+    async def _startup_phase(
+        self,
+        agent_id: str,
+        phase: str,
+        operation: Awaitable[_T],
+        **details: object,
+    ) -> _T:
+        logger.info("%s_begin agent_id=%s", phase, agent_id, extra=details)
+        try:
+            async with asyncio.timeout(self.startup_timeout_seconds):
+                result = await operation
+        except TimeoutError as exc:
+            logger.error(
+                "%s_timeout agent_id=%s timeout_seconds=%s",
+                phase,
+                agent_id,
+                self.startup_timeout_seconds,
+                extra=details,
+            )
+            raise RequestError.internal_error(
+                {
+                    "agent_id": agent_id,
+                    "phase": phase,
+                    "timeout_seconds": self.startup_timeout_seconds,
+                    **details,
+                }
+            ) from exc
+        logger.info("%s_complete agent_id=%s", phase, agent_id, extra=details)
+        return result
 
     def _on_session_update(
         self,
@@ -158,6 +192,7 @@ class NateOhaAcpClient(BaseAcpClient):
         if current is not None and current.status in {"starting", "running", "waiting"}:
             return
 
+        logger.info("agent_start_begin agent_id=%s", agent_id)
         context = open_nate_oha_acp_client(
             command=self._build_command(agent_id, metadata),
             env=self._build_env(agent_id, metadata),
@@ -179,17 +214,32 @@ class NateOhaAcpClient(BaseAcpClient):
             self._sessions[agent_id] = session
             self._session_contexts[agent_id] = context
 
-            await connection.initialize(
-                protocol_version=PROTOCOL_VERSION,
-                client_capabilities=NATE_NTM_CLIENT_CAPABILITIES,
+            await self._startup_phase(
+                agent_id,
+                "agent_initialize",
+                connection.initialize(
+                    protocol_version=PROTOCOL_VERSION,
+                    client_capabilities=NATE_NTM_CLIENT_CAPABILITIES,
+                ),
             )
             if session.conversation_id:
-                await connection.load_session(
-                    cwd=str(self.config.project_path),
-                    session_id=session.conversation_id,
+                await self._startup_phase(
+                    agent_id,
+                    "agent_session_load",
+                    connection.load_session(
+                        cwd=str(self.config.project_path),
+                        session_id=session.conversation_id,
+                    ),
+                    operation="load",
+                    conversation_id=session.conversation_id,
                 )
             else:
-                response = await connection.new_session(cwd=str(self.config.project_path))
+                response = await self._startup_phase(
+                    agent_id,
+                    "agent_session_load",
+                    connection.new_session(cwd=str(self.config.project_path)),
+                    operation="create",
+                )
                 session.conversation_id = response.session_id
                 store = MetadataStore(self.config.swarm_id)
                 try:
@@ -204,6 +254,11 @@ class NateOhaAcpClient(BaseAcpClient):
 
             session.status = "running"
             self._terminal_statuses.pop(agent_id, None)
+            logger.info(
+                "agent_start_complete agent_id=%s conversation_id=%s",
+                agent_id,
+                session.conversation_id,
+            )
         except Exception as exc:
             self._sessions.pop(agent_id, None)
             self._session_contexts.pop(agent_id, None)
@@ -217,6 +272,8 @@ class NateOhaAcpClient(BaseAcpClient):
                 state="failed",
                 last_error=str(exc),
             )
+            if isinstance(exc, RequestError):
+                raise
             raise AcpClientError(
                 f"Failed to establish ACP connection for agent {agent_id!r}: {exc}"
             ) from exc
