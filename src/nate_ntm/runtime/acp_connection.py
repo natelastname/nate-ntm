@@ -33,7 +33,7 @@ async def _log_stderr(process: Process, agent_id: str) -> None:
     while line := await process.stderr.readline():
         message = line.decode(errors="replace").rstrip()
         if message:
-            logger.warning("nate-oha[%s]: %s", agent_id, message)
+            logger.info("nate-oha[%s]: %s", agent_id, message)
 
 
 @asynccontextmanager
