@@ -1,3 +1,5 @@
+import asyncio
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -14,16 +16,17 @@ async def test_startup_phase_timeout_reports_agent_and_phase(caplog) -> None:
     )
 
     async def never_finishes() -> None:
-        await __import__("asyncio").sleep(10)
+        await asyncio.sleep(10)
 
-    with pytest.raises(RequestError) as raised:
-        await client._startup_phase(
-            "agent-a",
-            "agent_session_load",
-            never_finishes(),
-            operation="load",
-            conversation_id="conversation-a",
-        )
+    with caplog.at_level(logging.INFO, logger="nate_ntm.runtime.acp_client"):
+        with pytest.raises(RequestError) as raised:
+            await client._startup_phase(
+                "agent-a",
+                "agent_session_load",
+                never_finishes(),
+                operation="load",
+                conversation_id="conversation-a",
+            )
 
     assert raised.value.data == {
         "agent_id": "agent-a",
