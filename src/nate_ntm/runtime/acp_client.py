@@ -304,6 +304,7 @@ class NateOhaAcpClient(BaseAcpClient):
 
     def _build_env(self, agent_id: str, metadata: AgentState) -> dict[str, str]:
         env = dict(os.environ)
+        env["COLUMNS"] = "1000000"
         env.setdefault("NATE_NTM_PROJECT_PATH", str(self.config.project_path))
         env.setdefault("NATE_NTM_SWARM_ID", self.config.swarm_id)
         env.setdefault("NATE_NTM_AGENT_ID", agent_id)
