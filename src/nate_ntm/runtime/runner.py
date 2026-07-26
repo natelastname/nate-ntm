@@ -8,6 +8,7 @@ import socket
 from dataclasses import dataclass, field
 
 import uvicorn
+from acp import RequestError
 from fastapi_jsonrpc import API
 
 from ..api.runtime_api import create_runtime_api_app
@@ -29,9 +30,26 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
+
+class _ExpectedAcpRequestFilter(logging.Filter):
+    """Hide ACP task errors whose JSON-RPC error response was already sent."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        exc = record.exc_info[1] if record.exc_info else None
+        return not (
+            record.getMessage() == "Background task failed"
+            and isinstance(exc, RequestError)
+        )
+
+
 _LOG_CONFIG = {
     "version": 1,
     "disable_existing_loggers": False,
+    "filters": {
+        "expected_acp_requests": {
+            "()": "nate_ntm.runtime.runner._ExpectedAcpRequestFilter",
+        },
+    },
     "formatters": {
         "default": {
             "format": "%(levelname)-8s %(name)s: %(message)s",
@@ -48,6 +66,7 @@ _LOG_CONFIG = {
     "handlers": {
         "default": {
             "class": "logging.StreamHandler",
+            "filters": ["expected_acp_requests"],
             "formatter": "default",
             "stream": "ext://sys.stderr",
         },
