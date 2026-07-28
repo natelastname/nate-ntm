@@ -8,39 +8,41 @@ That model duplicates responsibility already owned by nate-oha. nate-oha is the 
 
 The existing design also assumes that an Agent Mail project is derived from a filesystem or Git identity and corresponds one-to-one with a swarm. That prevents clean creation of multiple independent swarms for the same repository and makes “discard this swarm and start over” ambiguous.
 
-A further design error would be to move all Agent Mail configuration into swarm metadata merely because the coordination namespace is shared. Agent Mail has shared, per-agent, and deployment-level concerns. Only the values whose semantics are genuinely shared by every Agent Mail-enabled agent belong at the swarm level.
+A further design error would be to replace that repository-to-project assumption with a swarm-to-project assumption. Agent Mail project membership is part of an individual nate-oha instance's launch configuration. A constructor may choose to place every agent in one project, but the runtime does not require all agents in a swarm to share one Agent Mail project.
 
 ## Motivation
 
-A swarm is an orchestration instance, not a repository. The system needs to support:
+A swarm is an orchestration instance, not an Agent Mail namespace. The system needs to support:
 
 - multiple independent swarms using the same repository or remote;
 - abandoning an old swarm and creating a clean replacement without inheriting its mail;
-- explicit resume of one existing swarm with the same coordination namespace;
+- explicit resume of existing agents with the same launch configuration;
 - one Agent Mail lifecycle owner per managed agent;
-- agents with distinct Agent Mail enablement, identities, programs, models, and credentials;
-- future constructors that give each agent an isolated clone while preserving one swarm-scoped communication space.
+- agents with distinct Agent Mail enablement, project keys, identities, programs, models, and credentials;
+- constructors that normally place agents in one shared coordination project without making that topology a runtime invariant;
+- future constructors that give each agent an isolated clone while choosing whatever Agent Mail topology fits the swarm.
 
-Removing direct Agent Mail access from nate-ntm keeps the runtime focused on orchestration: constructing workspaces, launching agents, supervising ACP connections, persisting swarm metadata, and exposing runtime state.
+Removing direct Agent Mail access from nate-ntm keeps the runtime focused on orchestration: constructing workspaces, launching agents, supervising ACP connections, persisting agent launch metadata, and exposing runtime state.
 
 ## Required Behavior
 
 1. nate-ntm MUST NOT connect directly to mcp_agent_mail, call Agent Mail tools, register agents, poll inboxes, or store Agent Mail transport or registration secrets.
 2. nate-oha MUST remain the sole Agent Mail client for each managed agent.
-3. Creating a swarm MUST allocate a unique swarm instance identifier and a unique virtual Agent Mail project key independent of repository path, Git remote, and human-readable swarm name.
-4. The virtual Agent Mail project key MUST be swarm-level metadata because it identifies the shared coordination namespace used by all Agent Mail-enabled agents in that swarm.
-5. Agent Mail enablement MUST be an agent-level property. A swarm MAY contain agents that do not use Agent Mail.
-6. Each Agent Mail-enabled agent MUST have its own stable requested Agent Mail identity in agent metadata.
-7. nate-ntm MUST pass the swarm’s virtual project key and the agent’s requested identity into that agent’s nate-oha launch configuration.
-8. nate-oha MUST ensure the virtual project, register or restore its own Agent Mail identity, retain its registration token, and expose the curated Agent Mail facade to the model.
-9. Agent-specific Agent Mail settings, including enablement, requested identity, program, model metadata, and any agent-specific policy or prompt choice, MUST remain in the agent’s launch configuration rather than being promoted into swarm metadata.
-10. Agent Mail server connection settings and transport credential references MUST be treated as deployment or nate-oha configuration. They MUST NOT be persisted as swarm identity merely because every agent currently uses the same server.
-11. nate-ntm MAY carry opaque, non-secret configuration references required to construct nate-oha launch configuration, but it MUST NOT resolve, inspect, duplicate, or persist Agent Mail bearer tokens or per-agent registration tokens.
-12. nate-ntm MUST persist only the orchestration metadata required to recreate each launch: swarm instance ID, virtual project key, per-agent Agent Mail enablement, requested Agent Mail identity, nate-oha conversation identifier, workspace configuration, and constructor-specific state.
-13. Resuming a swarm MUST reuse the existing swarm instance identifier, virtual Agent Mail project key, per-agent Agent Mail enablement, requested identities, workspaces, and conversations.
-14. Creating a new swarm for the same repository MUST create a new swarm instance identifier and virtual Agent Mail project key by default, without checking for or reusing another swarm’s Agent Mail project.
-15. Existing real and fake Agent Mail adapters in nate-ntm MUST be removed rather than retained as compatibility abstractions.
-16. Mailbox monitoring and mailbox-driven scheduling are explicitly outside the scope of this epic. Their accepted future ownership is documented in `specs/014-agent-mail-revamp/agent-mail-monitoring-decision.md`.
+3. Agent Mail enablement MUST be an agent-level property. A swarm MAY contain agents that do not use Agent Mail.
+4. Each Agent Mail-enabled agent MUST have its own Agent Mail project key in its persisted launch configuration.
+5. Each Agent Mail-enabled agent MUST have its own stable requested Agent Mail identity in its persisted launch configuration.
+6. nate-ntm MUST pass that agent's project key and requested identity into that agent's nate-oha launch configuration.
+7. nate-oha MUST ensure the configured project, register or restore its own Agent Mail identity, retain its registration token, and expose the curated Agent Mail facade to the model.
+8. Agent-specific Agent Mail settings, including enablement, project key, requested identity, program, model metadata, and any agent-specific policy or prompt choice, MUST remain in the agent's launch configuration.
+9. Agent Mail server connection settings and transport credential references MUST be treated as deployment or nate-oha configuration. They MUST NOT be persisted as swarm identity merely because several agents currently use the same server.
+10. nate-ntm MAY carry opaque, non-secret configuration references required to construct nate-oha launch configuration, but it MUST NOT resolve, inspect, duplicate, or persist Agent Mail bearer tokens or per-agent registration tokens.
+11. nate-ntm MUST persist only the orchestration metadata required to recreate each launch: swarm instance ID, per-agent Agent Mail enablement, per-agent project key, requested Agent Mail identity, nate-oha conversation identifier, workspace configuration, and constructor-specific state.
+12. Resuming a swarm MUST recreate every agent with its previously persisted Agent Mail enablement, project key, requested identity, workspace, and conversation.
+13. Creating a new swarm MUST create new agent launch specifications by default. A constructor MAY generate new virtual Agent Mail project keys, reuse explicit keys supplied by the operator, assign different keys to different agents, or disable Agent Mail for selected agents.
+14. No runtime invariant may require all Agent Mail-enabled agents in a swarm to share the same Agent Mail project.
+15. A swarm constructor MAY define a shared default project key and copy it into every new Agent Mail-enabled agent specification.
+16. Existing real and fake Agent Mail adapters in nate-ntm MUST be removed rather than retained as compatibility abstractions.
+17. Mailbox monitoring and mailbox-driven scheduling are explicitly outside the scope of this epic. Their accepted future ownership is documented in `specs/014-agent-mail-revamp/agent-mail-monitoring-decision.md`.
 
 ## Configuration Ownership
 
@@ -48,18 +50,16 @@ Agent Mail configuration is divided by semantic ownership rather than stored who
 
 ### Swarm-level
 
-The swarm owns only values that define shared coordination identity:
+The swarm has no authoritative Agent Mail project field.
 
-- `agent_mail_project_key`
-- optional swarm-wide defaults used solely to initialize new agent specifications
-
-A default is not authoritative agent configuration. Once an agent specification is created, its effective settings are stored with that agent.
+A swarm constructor may accept defaults such as a shared virtual project key, but those values are constructor inputs only. The constructor copies the effective value into each generated agent specification. After construction, each agent's launch configuration is authoritative.
 
 ### Agent-level
 
 Each managed agent owns the Agent Mail settings that may differ between agents:
 
 - `agent_mail_enabled`
+- `agent_mail_project_key`
 - `requested_agent_mail_identity`
 - Agent Mail program and model metadata supplied during registration
 - model-facing prompt or tool-policy selection
@@ -83,36 +83,54 @@ These settings do not define swarm identity. nate-ntm should pass through an opa
 
 ### Create two swarms for one repository
 
-Given one repository at `/work/project`, creating swarms twice produces distinct coordination namespaces:
+Given one repository at `/work/project`, a constructor may create two independent swarms and assign fresh virtual Agent Mail project keys to their agents:
 
 ```text
 swarm instance: 01K...A
-Agent Mail project: nate-ntm:01K...A
+agent-a project: nate-ntm:01K...A
+agent-b project: nate-ntm:01K...A
 
 swarm instance: 01K...B
-Agent Mail project: nate-ntm:01K...B
+agent-a project: nate-ntm:01K...B
+agent-b project: nate-ntm:01K...B
 ```
 
-Both swarms may use the same repository or Git remote without seeing each other’s Agent Mail messages.
+This is a useful constructor policy, not a swarm-level invariant. Both swarms may use the same repository or Git remote without seeing each other's Agent Mail messages.
 
-### Agents with different Agent Mail settings
+### Agents with different Agent Mail projects
 
 One swarm may contain:
 
 ```text
 agent-a:
   Agent Mail enabled
-  requested identity: architect
+  project key: project:implementation
+  requested identity: implementer
 
 agent-b:
   Agent Mail enabled
-  requested identity: implementer
+  project key: project:review
+  requested identity: reviewer
 
 agent-c:
   Agent Mail disabled
 ```
 
-The enabled agents receive the same swarm-level virtual project key but retain separate agent-level identities and configuration. The disabled agent receives no Agent Mail launch configuration.
+This topology is unusual but valid. nate-ntm launches each agent from its own persisted specification and does not attempt to reconcile or normalize project membership.
+
+### Conventional shared-project swarm
+
+A normal constructor may generate one virtual key and copy it into each Agent Mail-enabled agent:
+
+```text
+constructor default: nate-ntm:01K...A
+
+agent-a.agent_mail_project_key = nate-ntm:01K...A
+agent-b.agent_mail_project_key = nate-ntm:01K...A
+agent-c.agent_mail_enabled = false
+```
+
+The shared project is therefore an outcome of construction, not a separate authoritative field that agents inherit dynamically.
 
 ### Shared server configuration
 
@@ -120,58 +138,59 @@ Several nate-oha processes may connect to the same Agent Mail server and may obt
 
 ### Discard and restart
 
-An operator abandons swarm `01K...A` and creates a new swarm. nate-ntm leaves the old metadata and Agent Mail history untouched, creates a new swarm instance, and launches new nate-oha agents into the new virtual Agent Mail project.
+An operator abandons an old swarm and creates a new swarm. The selected constructor creates new agent launch specifications. By default it may assign a new virtual project key to all new Agent Mail-enabled agents, while leaving the old Agent Mail history untouched.
 
 ### Resume
 
-An operator resumes swarm `01K...A`. nate-ntm reloads the exact virtual project key and each agent’s Agent Mail enablement and requested identity, recreates the same nate-oha launch configuration, and resumes the same OpenHands conversations. Each nate-oha instance restores or re-registers its own Agent Mail identity within that project.
+An operator resumes a swarm. nate-ntm reloads each agent's exact Agent Mail enablement, project key, and requested identity, recreates the same nate-oha launch configuration, and resumes the same OpenHands conversation. Each nate-oha instance restores or re-registers its own Agent Mail identity within its configured project.
 
 ### Git-remote clone swarm
 
-A constructor creates one central Git remote and one clone per agent. Every Agent Mail-enabled nate-oha process receives:
+A constructor creates one central Git remote and one clone per agent. It may also create one virtual Agent Mail project key and copy it into every Agent Mail-enabled agent specification. Each nate-oha process receives:
 
 - its clone as `openhands.workspace_root`;
-- the same swarm-scoped virtual Agent Mail project key;
-- its own agent-level requested Agent Mail identity and settings.
+- its own persisted Agent Mail project key;
+- its own requested Agent Mail identity and settings.
 
-Repository identity, workspace identity, swarm identity, and Agent Mail identity remain separate.
+Repository identity, workspace identity, swarm identity, Agent Mail project membership, and Agent Mail agent identity remain separate.
 
 ## Constraints
 
 - The design MUST preserve one implementation path for Agent Mail ownership: nate-oha.
 - No compatibility layer for `BaseAgentMailClient`, `FakeAgentMailClient`, or runtime-side inbox polling is retained.
 - Agent Mail secrets MUST not be written into nate-ntm project metadata.
-- Shared current values MUST NOT be promoted to swarm-level identity unless their semantics are inherently swarm-wide.
+- No Agent Mail value may be promoted to swarm-level identity merely because a constructor commonly gives that value to every agent.
 - The virtual Agent Mail project capability may require an upstream mcp_agent_mail change. nate-ntm must model the desired contract explicitly rather than reproducing path-based identity locally.
 - The runtime must remain valid when Agent Mail is disabled for a particular agent.
+- The runtime must remain valid when Agent Mail-enabled agents in one swarm use different project keys.
 
 ## Success Criteria
 
 - nate-ntm has no production or fake dependency that invokes mcp_agent_mail.
 - No nate-ntm metadata file contains an Agent Mail bearer token or per-agent registration token.
-- Two new swarms created from the same repository receive different virtual Agent Mail project keys.
-- Resuming a swarm reuses its previous virtual Agent Mail project key and each agent’s effective Agent Mail launch settings.
+- Every Agent Mail-enabled agent has an explicit project key in its persisted launch specification.
+- Resuming a swarm recreates every agent with its previous Agent Mail project key and other effective launch settings.
 - nate-oha is solely responsible for project creation, registration, inbox access, and model-facing Agent Mail tools.
 - Agent Mail can be enabled or disabled independently per agent.
-- The swarm metadata contains the shared virtual project key but does not absorb agent-specific policy or deployment-level connection configuration.
-- Macro-level tests cover create, resume, start-over, mixed Agent Mail enablement, and launch-configuration reconstruction without mocking mcp_agent_mail inside nate-ntm.
+- Two agents in one swarm may use different Agent Mail project keys without violating runtime validation.
+- A constructor may still produce the conventional topology where every enabled agent shares one new virtual project key.
+- Macro-level tests cover create, resume, start-over, mixed Agent Mail enablement, heterogeneous project membership, and launch-configuration reconstruction without mocking mcp_agent_mail inside nate-ntm.
 
 ## Scope
 
-- Correct swarm, repository, workspace, and Agent Mail identity semantics.
+- Correct repository, workspace, swarm, Agent Mail project, and Agent Mail identity semantics.
 - Remove runtime-owned Agent Mail adapters and polling.
-- Add swarm-scoped virtual Agent Mail project metadata.
-- Add explicit per-agent Agent Mail enablement and requested identity metadata.
-- Extend nate-oha launch configuration with the effective swarm-level project key and agent-level settings.
+- Add explicit per-agent Agent Mail project-key, enablement, and requested-identity metadata.
+- Extend nate-oha launch configuration with each agent's effective Agent Mail settings.
 - Preserve those public launch inputs across resume.
 - Define the upstream virtual-project requirement for mcp_agent_mail.
-- Correct older Feature 001 assumptions that make nate-ntm an Agent Mail client.
+- Correct older Feature 001 assumptions that make nate-ntm an Agent Mail client or require one Agent Mail project per swarm.
 
 ## Non-Goals
 
 - Mailbox monitoring or mailbox-driven scheduling.
 - Custom ACP or JSON-RPC mailbox notifications.
-- Implement the Git-remote clone constructor itself; this epic prepares the identity and ownership model it requires.
+- Implement the Git-remote clone constructor itself; this epic establishes the launch model that constructor will use.
 - Add a second Agent Mail facade to nate-ntm.
 - Store or proxy Agent Mail messages in nate-ntm.
 - Make nate-ntm an Agent Mail credential broker.
@@ -184,7 +203,8 @@ Repository identity, workspace identity, swarm identity, and Agent Mail identity
 - **Workspace identity**: The concrete directory assigned to one agent, such as its dedicated clone.
 - **Swarm name**: A human-readable label that may be reused.
 - **Swarm instance ID**: A unique durable identifier for one orchestration instance.
-- **Virtual Agent Mail project key**: A swarm-scoped, non-filesystem coordination namespace, normally `nate-ntm:<swarm-instance-id>`.
+- **Agent Mail project key**: An agent-level launch value identifying the Agent Mail project that one nate-oha instance joins. Several agents may share a key, but the runtime does not require them to do so.
+- **Virtual Agent Mail project key**: A non-filesystem project key generated explicitly, commonly by a swarm constructor.
 - **Agent Mail enablement**: An agent-level decision indicating whether that nate-oha instance should initialize Agent Mail.
 - **Requested Agent Mail identity**: The stable per-agent name or identity hint nate-ntm supplies when launching nate-oha.
 - **Deployment-level Agent Mail configuration**: Server, transport, retry, and secret-reference configuration owned by the execution environment or nate-oha rather than by swarm identity.
@@ -195,4 +215,4 @@ Repository identity, workspace identity, swarm identity, and Agent Mail identity
 1. What exact upstream API should create or ensure a virtual Agent Mail project: a new `ensure_project_by_key` tool or an explicit `virtual`/`literal` identity mode?
 2. Does nate-oha already have a durable place for its registration token, or should it re-register idempotently on every process start?
 3. Should nate-ntm model an opaque nate-oha configuration profile reference per agent, or should all non-secret nate-oha settings be materialized directly in each agent launch specification?
-4. Should swarm constructors be allowed to define Agent Mail defaults for new agents, provided those defaults are copied into agent specifications rather than treated as authoritative swarm configuration?
+4. Which constructors should default all Agent Mail-enabled agents to one generated virtual project, and which should require project keys to be specified explicitly?
