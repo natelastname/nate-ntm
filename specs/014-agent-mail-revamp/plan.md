@@ -2,9 +2,11 @@
 
 ## Summary
 
-Refactor nate-ntm so it no longer acts as an Agent Mail client. nate-oha becomes the sole owner of Agent Mail transport authentication, virtual-project creation, agent registration, inbox access, and the model-facing facade. nate-ntm owns only swarm-scoped coordination identifiers, launch configuration, process supervision, ACP/control connections, workspace construction, and public runtime state reported by nate-oha.
+Refactor nate-ntm so it no longer acts as an Agent Mail client. nate-oha becomes the sole owner of Agent Mail transport authentication, virtual-project creation, agent registration, inbox access, credentials, and the model-facing facade.
 
-The change deliberately removes the old Agent Mail adapter abstraction instead of adapting it. The resulting design establishes the identity model needed by future swarm constructors, especially a Git-remote constructor where every agent has an isolated clone but all agents share one virtual swarm mailbox namespace.
+nate-ntm will own only swarm-scoped coordination identifiers, launch configuration, process supervision, control connections, workspace construction, and persisted orchestration metadata.
+
+This MVP deliberately does not implement mailbox watching, unsolicited control notifications, mailbox state in runtime APIs, or event-driven wake scheduling. The accepted future architecture is an embedded Agent Mail monitor inside nate-oha, documented in `agent-mail-monitoring-decision.md`.
 
 ## User Stories
 
@@ -12,11 +14,11 @@ The change deliberately removes the old Agent Mail adapter abstraction instead o
 
 **Priority**: P1
 
-An operator can create a new swarm for a repository without reusing or discovering an existing Agent Mail project associated with that repository.
+An operator can create a new swarm for a repository without reusing or discovering an Agent Mail project associated with that repository.
 
 **Independent checkpoint**:
 
-Creating two swarms for the same project path produces different `swarm_instance_id` and `agent_mail_project_key` values, and every agent launch in each swarm receives that swarm’s project key.
+Creating two swarms for the same project path produces different `swarm_instance_id` and `agent_mail_project_key` values, and every Agent Mail-enabled nate-oha launch in each swarm receives that swarm’s project key.
 
 ### US2 — Resume the same swarm identity
 
@@ -28,33 +30,23 @@ An operator can resume an existing swarm and recreate each nate-oha process with
 
 Create a swarm, persist metadata, rebuild the runtime in resume mode, and verify that all public launch inputs are identical while no Agent Mail secret is present in nate-ntm metadata.
 
-### US3 — Observe mailbox state without direct Agent Mail access
+### US3 — Launch nate-oha as the sole Agent Mail owner
 
 **Priority**: P1
 
-The runtime can display an agent’s resolved Agent Mail name and mailbox state and can wake an idle agent when nate-oha reports new mail, without nate-ntm connecting to mcp_agent_mail.
+Each managed nate-oha process receives enough public configuration to ensure the virtual project and register or restore its own identity, while nate-ntm never receives the resulting registration token.
 
 **Independent checkpoint**:
 
-Feed resolved-identity and mailbox-wake events through the control-channel adapter and verify runtime state, event streams, status APIs, and scheduler behavior with no Agent Mail client in the runtime.
-
-### US4 — Launch nate-oha with one explicit Agent Mail owner
-
-**Priority**: P2
-
-Each managed nate-oha process receives enough configuration to ensure the virtual project and register or restore its own identity, while nate-ntm never receives the resulting registration token.
-
-**Independent checkpoint**:
-
-A macro launch test verifies the generated nate-oha configuration, the reported public identity, and the absence of direct mcp_agent_mail calls or stored secrets in nate-ntm.
+A macro launch test verifies the generated nate-oha configuration and proves that nate-ntm neither invokes `mcp_agent_mail` nor stores Agent Mail secrets.
 
 ## Technical Context
 
 - Python package under `src/nate_ntm/` with Typer CLI, runtime daemon, scheduler, metadata store, ACP adapter, and WebSocket control API.
 - Existing Agent Mail assumptions are concentrated in `src/nate_ntm/runtime/agent_mail_client.py`, `src/nate_ntm/runtime/daemon.py`, `src/nate_ntm/runtime/scheduler.py`, runtime metadata models, and tests under `tests/integration/runtime_mail/`.
-- nate-oha already owns a curated Agent Mail facade and can ensure a project, register an agent, retain the registration token, and expose only safe tools to the model.
-- mcp_agent_mail currently derives projects from filesystem or Git identities; this epic requires an upstream virtual-project contract.
-- The implementation should use the existing ACP/control connection for agent-originated public integration events where practical.
+- nate-oha already owns a curated Agent Mail facade and the Agent Mail registration lifecycle.
+- `mcp_agent_mail` currently derives projects from filesystem or Git identities; this epic requires an upstream virtual-project contract.
+- No scheduler or control-channel extension is required to complete this MVP.
 
 ## Architecture and Approach
 
@@ -67,9 +59,7 @@ nate-ntm owns:
 - requested per-agent identity generation and persistence;
 - nate-oha launch configuration;
 - workspace and Git topology;
-- process supervision and control connections;
-- public Agent Mail status reported by nate-oha;
-- scheduler decisions based on reported events.
+- process supervision and control connections.
 
 nate-oha owns:
 
@@ -78,56 +68,46 @@ nate-oha owns:
 - agent registration or restoration;
 - registration-token storage and use;
 - inbox reads and all Agent Mail tool calls;
-- model-facing facade policy;
-- emission of resolved-identity and mailbox-status events.
+- model-facing facade policy.
 
 ### Identity model
 
-Add a unique `swarm_instance_id` distinct from the reusable human-facing `swarm_id`. Generate the virtual project key from the unique instance:
+Add a unique `swarm_instance_id` distinct from the reusable human-facing `swarm_id`:
 
 ```text
 agent_mail_project_key = "nate-ntm:" + swarm_instance_id
 ```
 
-Per-agent metadata carries a stable `requested_agent_mail_identity`. A resolved public Agent Mail name is runtime-observed state and may be persisted only if resume or UI requirements justify it; registration tokens are never persisted by nate-ntm.
-
-### Control events
-
-Introduce a narrow agent-originated integration event contract with at least:
-
-- `AgentMailIdentityResolved`
-- `AgentMailMailboxChanged`
-- `AgentMailIntegrationFailed`
-- `AgentMailIntegrationRecovered`
-
-These events update `AgentRuntimeState`, append to the existing per-agent `AgentEventStream`, and may enqueue scheduler work. The contract must contain no transport bearer token or registration token.
-
-### Scheduler
-
-Remove runtime inbox polling. The scheduler reacts to mailbox events already attributed to an agent. It deduplicates wake events using an event or message cursor reported by nate-oha and starts a turn only when the agent is eligible.
+Each Agent Mail-enabled agent stores a stable `requested_agent_mail_identity`. nate-ntm does not need the resolved Agent Mail name for this MVP and never stores registration tokens.
 
 ### Upstream contract
 
-Document and target one explicit virtual-project API in mcp_agent_mail. Preferred shape:
+Document and target one explicit virtual-project API in `mcp_agent_mail`. Preferred shape:
 
 ```text
 ensure_project_by_key(project_key)
 ```
 
-A `virtual` identity mode is acceptable if upstream strongly prefers one project tool, but nate-ntm must pass a non-filesystem swarm key and must not locally emulate project creation.
+A `virtual` identity mode is acceptable if upstream strongly prefers one project tool, but nate-ntm must pass a non-filesystem swarm key and must not emulate project creation locally.
+
+### Deferred monitoring architecture
+
+Mailbox monitoring belongs inside nate-oha as an embedded async task sharing the same Agent Mail integration as the facade. A later epic may add public state-change notifications over the existing control connection and allow nate-ntm to schedule turns from them.
+
+No part of that monitoring path is required or implemented here.
 
 ## Repository Changes
 
 - Remove `src/nate_ntm/runtime/agent_mail_client.py`.
 - Remove all `BaseAgentMailClient` and `FakeAgentMailClient` construction from `src/nate_ntm/runtime/daemon.py`, `src/nate_ntm/runtime/scheduler.py`, and tests.
+- Remove fake unread-mail state and runtime-side Agent Mail polling paths.
 - Extend `src/nate_ntm/runtime/metadata_store.py` with `swarm_instance_id`, `agent_mail_project_key`, and per-agent requested identity fields; remove runtime-owned Agent Mail credential fields.
-- Extend `src/nate_ntm/runtime/state.py` with public Agent Mail runtime status only.
-- Add or extend launch configuration code so each nate-oha process receives virtual project and requested identity values.
-- Extend the ACP/control adapter and event translation in `src/nate_ntm/runtime/acp_client.py`, `src/nate_ntm/runtime/events.py`, and `src/nate_ntm/runtime/scheduler.py`.
-- Update `src/nate_ntm/runtime/daemon.py` create/resume paths.
-- Update `src/nate_ntm/api/server.py` response shaping for public Agent Mail state.
-- Replace `tests/integration/runtime_mail/` tests with control-event and launch-boundary tests that do not instantiate mcp_agent_mail.
+- Extend launch configuration so each nate-oha process receives the virtual project key and requested identity.
+- Update `src/nate_ntm/runtime/daemon.py` create and resume paths.
+- Replace Agent Mail integration tests with ownership, metadata, and launch-boundary tests that do not instantiate `mcp_agent_mail`.
 - Update Feature 001 documents where they still state that nate-ntm creates, polls, or owns Agent Mail identities.
+
+The scheduler, ACP adapter, runtime event model, and runtime API require only cleanup necessary to remove old fake Agent Mail behavior. They do not gain a new mailbox event contract in this epic.
 
 ## Data Model
 
@@ -149,26 +129,14 @@ class SwarmMetadata:
 @dataclass
 class AgentMetadata:
     agent_id: str
-    requested_agent_mail_identity: str
+    requested_agent_mail_identity: str | None
     conversation_id: str
     launch_config: object
 ```
 
-The model may retain a resolved public Agent Mail name if needed, but must not contain server bearer tokens or registration tokens.
+`requested_agent_mail_identity` is `None` when Agent Mail is disabled for that agent type.
 
-### Runtime state
-
-```python
-@dataclass
-class AgentMailRuntimeStatus:
-    resolved_name: str | None
-    has_unread_mail: bool
-    integration_status: str
-    last_mail_cursor: str | None
-    last_error: str | None
-```
-
-This is transient state populated from nate-oha events.
+Neither model may contain server bearer tokens, registration tokens, fake Agent Mail identities, or unread-mail state.
 
 ## Interfaces and Contracts
 
@@ -177,38 +145,18 @@ This is transient state populated from nate-oha events.
 The launch adapter must be able to supply:
 
 ```text
-Agent Mail enabled
-Agent Mail upstream URL or credentials reference already understood by nate-oha
+Agent Mail enabled/disabled
+normal nate-oha Agent Mail server configuration reference
 virtual project key
 requested agent identity
 model/program metadata
 ```
 
-nate-ntm may carry opaque references needed to construct nate-oha configuration, but it must not read or persist resolved Agent Mail secrets.
+nate-ntm may carry opaque configuration references already required to launch nate-oha, but it must not read, derive, or persist resolved Agent Mail secrets.
 
-### Agent-originated events
+### mcp_agent_mail virtual project
 
-Every event includes:
-
-```text
-agent_id
-event type
-timestamp
-public payload
-```
-
-Mailbox-change payloads should include enough information for deduplication and scheduling, preferably a cursor or latest message identifier, but not message bodies unless explicitly required by a future UI feature.
-
-### Runtime API
-
-`swarm.get_overview` and `agent.get_detail` may expose:
-
-- resolved Agent Mail name;
-- integration status;
-- `has_unread_mail`;
-- last public Agent Mail error summary.
-
-They must not expose credentials.
+The upstream contract must distinguish an explicit virtual project key from a filesystem or Git path. Repeated ensure calls for the same key must resolve the same project; different keys must remain isolated even when agents work in the same repository.
 
 ## Validation Strategy
 
@@ -216,25 +164,28 @@ Use a small number of macro tests:
 
 1. Create two swarms for one repository and verify distinct virtual project keys and launch configurations.
 2. Resume one swarm and verify exact reuse of its project key, requested identities, workspaces, and conversations.
-3. Feed nate-oha identity and mailbox events into a running runtime and verify API state, event streaming, deduplication, and scheduler wake behavior.
-4. Inspect persisted metadata recursively and verify that no Agent Mail bearer token or registration token is present.
-5. Verify that the nate-ntm package has no runtime import or invocation path for mcp_agent_mail.
+3. Build or launch nate-oha configuration and verify project-key and requested-identity propagation.
+4. Inspect persisted metadata recursively and verify that no Agent Mail bearer token, registration token, unread-mail state, or legacy credential field is present.
+5. Verify that nate-ntm has no runtime import or invocation path for `mcp_agent_mail` and no fake replacement adapter.
+6. Verify Agent Mail-disabled agents remain launchable without synthetic Agent Mail metadata.
 
-Unit tests are appropriate only for deterministic key generation, metadata validation, and event translation where macro tests would obscure failures.
+Unit tests are appropriate only for deterministic key generation and metadata validation where macro tests would obscure failures.
 
 ## Risks and Tradeoffs
 
-- Mail-triggered scheduling depends on nate-oha emitting timely events. This is intentional; duplicating inbox polling in nate-ntm would violate the ownership boundary.
-- A virtual-project API may not yet exist upstream. The epic should define the required contract and may temporarily block final integration on the upstream change.
-- Registration restoration semantics must be finalized in nate-oha. Re-registration by stable requested name may be preferable to sharing registration tokens with nate-ntm.
-- Extending ACP with custom events creates a nate-oha-specific surface. Keep the envelope generic and the payload narrow.
-- Removing fake Agent Mail behavior will require rewriting some Feature 001 tests and language, but retaining it would preserve the wrong architecture.
+- A virtual-project API may not yet exist upstream. The epic should define the required contract and may temporarily block complete end-to-end launch validation on that upstream change.
+- Registration restoration semantics must be finalized in nate-oha. Re-registration by stable requested identity may be preferable to sharing registration tokens with nate-ntm.
+- Removing fake Agent Mail behavior requires rewriting some Feature 001 tests and language, but retaining it would preserve the wrong architecture.
+- The MVP will not wake idle agents when mail arrives. That limitation is explicit and acceptable until the later scheduler epic implements the embedded-monitor event path.
 
 ## Explicit Non-Goals
 
+- Mailbox monitoring or polling in nate-oha.
+- Agent-originated mailbox notifications over ACP or another control channel.
+- Mailbox-driven or event-driven scheduling.
+- Public mailbox state in nate-ntm runtime APIs.
 - Git-remote clone construction.
 - Runtime-side Agent Mail polling or message proxying.
 - A generic secrets manager.
-- Backward compatibility with persisted pre-revamp fake Agent Mail metadata.
-- Automatic migration of abandoned development metadata.
-- Direct UI access to mcp_agent_mail.
+- Backward compatibility or migration for pre-revamp fake Agent Mail metadata.
+- Direct UI access to `mcp_agent_mail`.
